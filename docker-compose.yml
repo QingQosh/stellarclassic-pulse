@@ -1,0 +1,27 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: soroban_pulse
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  app:
+    build: .
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgres://postgres:password@db:5432/soroban_pulse
+      STELLAR_RPC_URL: https://soroban-testnet.stellar.org
+      START_LEDGER: 0
+      PORT: 3000
+      RUST_LOG: info
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
