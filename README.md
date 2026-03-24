@@ -103,7 +103,7 @@ Returns paginated events across all contracts.
 Returns all events for a specific contract.
 
 ### `GET /events/tx/{tx_hash}`
-Returns all events from a specific transaction.
+Returns all events from a specific transaction. If nothing has been indexed for that hash yet (including valid on-chain transactions that emitted no Soroban events), the response is **200 OK** with an empty `"data"` array — not **404**.
 
 ## How It Works
 
