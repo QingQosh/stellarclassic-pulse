@@ -20,16 +20,39 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let config = config::Config::from_env();
+    let config = match config::Config::from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("{:#}", e);
+            std::process::exit(1);
+        }
+    };
     let pool = db::create_pool(&config.database_url).await;
-    db::run_migrations(&pool).await;
+    
+    if let Err(e) = db::run_migrations(&pool).await {
+        tracing::error!("Migration failed: {}", e);
+        std::process::exit(1);
+    }
 
     info!("Migrations applied successfully");
 
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let mut shutdown_rx_axum = shutdown_rx.clone();
+
     // Spawn background indexer
-    let indexer = indexer::Indexer::new(pool.clone(), config.clone());
-    tokio::spawn(async move {
+    let indexer = indexer::Indexer::new(pool.clone(), config.clone(), shutdown_rx);
+    let indexer_handle = tokio::spawn(async move {
         indexer.run().await;
+    });
+
+    tokio::spawn(async move {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = sigterm.recv() => {},
+        }
+        tracing::info!("Shutdown signal received");
+        let _ = shutdown_tx.send(true);
     });
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
@@ -45,9 +68,19 @@ async fn main() {
             listener,
             router.into_make_service_with_connect_info::<SocketAddr>(),
         )
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx_axum.changed().await;
+        })
         .await
         .unwrap();
     } else {
-        axum::serve(listener, router).await.unwrap();
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx_axum.changed().await;
+            })
+            .await
+            .unwrap();
     }
+
+    let _ = indexer_handle.await;
 }

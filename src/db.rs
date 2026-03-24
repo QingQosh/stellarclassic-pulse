@@ -8,9 +8,6 @@ pub async fn create_pool(database_url: &str) -> PgPool {
         .expect("Failed to connect to PostgreSQL")
 }
 
-pub async fn run_migrations(pool: &PgPool) {
-    sqlx::migrate!("./migrations")
-        .run(pool)
-        .await
-        .expect("Failed to run migrations");
+pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
+    sqlx::migrate!("./migrations").run(pool).await
 }
