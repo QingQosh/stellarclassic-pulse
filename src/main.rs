@@ -37,5 +37,16 @@ async fn main() {
     info!("Soroban Pulse listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, router).await.unwrap();
+
+    if config.behind_proxy {
+        info!("Running behind proxy — trusting X-Forwarded-For");
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    } else {
+        axum::serve(listener, router).await.unwrap();
+    }
 }

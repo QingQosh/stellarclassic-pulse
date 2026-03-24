@@ -109,3 +109,7 @@ Returns all events from a specific transaction.
 - The indexer polls every 5 seconds when no new ledgers are available, and 10 seconds on error.
 - `START_LEDGER=0` automatically starts from the latest ledger at boot time.
 - All endpoints return JSON. Errors include an `"error"` field with a description.
+
+## Deployment
+
+See [docs/deployment.md](docs/deployment.md) for TLS termination options (nginx, Caddy, AWS ALB) and production security guidance.
