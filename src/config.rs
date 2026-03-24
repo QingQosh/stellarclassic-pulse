@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use std::env;
 
 #[derive(Clone, Debug)]
@@ -5,6 +6,7 @@ pub struct Config {
     pub database_url: String,
     pub stellar_rpc_url: String,
     pub start_ledger: u64,
+    pub start_ledger_fallback: bool,
     pub port: u16,
     pub api_key: Option<String>,
     pub db_max_connections: u32,
@@ -26,14 +28,9 @@ impl Config {
             database_url: env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
             stellar_rpc_url: env::var("STELLAR_RPC_URL")
                 .unwrap_or_else(|_| "https://soroban-testnet.stellar.org".to_string()),
-            start_ledger: env::var("START_LEDGER")
-                .unwrap_or_else(|_| "0".to_string())
-                .parse()
-                .expect("START_LEDGER must be a number"),
-            port: env::var("PORT")
-                .unwrap_or_else(|_| "3000".to_string())
-                .parse()
-                .expect("PORT must be a number"),
+            start_ledger,
+            start_ledger_fallback,
+            port,
             api_key: env::var("API_KEY").ok(),
             db_max_connections: env::var("DB_MAX_CONNECTIONS")
                 .unwrap_or_else(|_| "10".to_string())

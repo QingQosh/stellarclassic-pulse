@@ -27,14 +27,16 @@ pub struct Indexer {
     pool: PgPool,
     client: Client,
     config: Config,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 impl Indexer {
-    pub fn new(pool: PgPool, config: Config) -> Self {
+    pub fn new(pool: PgPool, config: Config, shutdown_rx: tokio::sync::watch::Receiver<bool>) -> Self {
         Self {
             pool,
             client: Client::new(),
             config,
+            shutdown_rx,
         }
     }
 
@@ -43,11 +45,39 @@ impl Indexer {
         let mut consecutive_db_errors = 0u32;
 
         if current_ledger == 0 {
-            current_ledger = self.get_latest_ledger().await.unwrap_or(1);
-            info!("Starting from latest ledger: {}", current_ledger);
+            let mut retries = 0;
+            loop {
+                match self.get_latest_ledger().await {
+                    Ok(ledger) => {
+                        current_ledger = ledger;
+                        info!("Starting from latest ledger: {}", current_ledger);
+                        break;
+                    }
+                    Err(e) => {
+                        error!("Failed to get latest ledger (attempt {}): {}", retries + 1, e);
+                        retries += 1;
+                        if retries >= 5 {
+                            if self.config.start_ledger_fallback {
+                                warn!("Falling back to genesis ledger (1) due to RPC failure");
+                                current_ledger = 1;
+                                break;
+                            } else {
+                                error!("Fatal RPC error: Could not fetch initial ledger after 5 attempts.");
+                                std::process::exit(1);
+                            }
+                        }
+                        sleep(Duration::from_secs(5)).await;
+                    }
+                }
+            }
         }
 
         loop {
+            if *self.shutdown_rx.borrow() {
+                info!("Indexer shutting down gracefully");
+                break;
+            }
+
             match self.fetch_and_store_events(current_ledger).await {
                 Ok(latest) => {
                     consecutive_db_errors = 0;
