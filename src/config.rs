@@ -6,6 +6,7 @@ pub struct Config {
     pub stellar_rpc_url: String,
     pub start_ledger: u64,
     pub port: u16,
+    pub api_key: Option<String>,
 }
 
 impl Config {
@@ -22,6 +23,7 @@ impl Config {
                 .unwrap_or_else(|_| "3000".to_string())
                 .parse()
                 .expect("PORT must be a number"),
+            api_key: env::var("API_KEY").ok(),
         }
     }
 }

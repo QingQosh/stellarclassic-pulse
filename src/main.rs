@@ -3,6 +3,7 @@ mod db;
 mod error;
 mod handlers;
 mod indexer;
+mod middleware;
 mod models;
 mod routes;
 
@@ -32,7 +33,7 @@ async fn main() {
     });
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
-    let router = routes::create_router(pool);
+    let router = routes::create_router(pool, config.api_key);
 
     info!("Soroban Pulse listening on {}", addr);
 
