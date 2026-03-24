@@ -20,19 +20,14 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let config = match config::Config::from_env() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("{:#}", e);
-            std::process::exit(1);
-        }
-    };
-    let pool = db::create_pool(&config.database_url).await;
-    
-    if let Err(e) = db::run_migrations(&pool).await {
-        tracing::error!("Migration failed: {}", e);
-        std::process::exit(1);
-    }
+    let config = config::Config::from_env();
+    let pool = db::create_pool(
+        &config.database_url,
+        config.db_max_connections,
+        config.db_min_connections,
+    )
+    .await;
+    db::run_migrations(&pool).await;
 
     info!("Migrations applied successfully");
 

@@ -9,42 +9,38 @@ pub struct Config {
     pub start_ledger_fallback: bool,
     pub port: u16,
     pub api_key: Option<String>,
+    pub db_max_connections: u32,
+    pub db_min_connections: u32,
     pub behind_proxy: bool,
 }
 
 impl Config {
-    pub fn from_env() -> Result<Self> {
-        let database_url = env::var("DATABASE_URL").context("DATABASE_URL must be set")?;
-
-        let start_ledger: u64 = env::var("START_LEDGER")
-            .unwrap_or_else(|_| "0".to_string())
-            .parse()
-            .context("START_LEDGER must be a valid u64")?;
-
-        let port_str = env::var("PORT").unwrap_or_else(|_| "3000".to_string());
-        let port: u16 = port_str.parse().context("PORT must be a valid u16")?;
-        
-        if port == 0 {
-            anyhow::bail!("PORT must be a valid u16");
-        }
-
-        let start_ledger_fallback = env::var("START_LEDGER_FALLBACK")
-            .map(|s| s == "true" || s == "1")
-            .unwrap_or(false);
-
+    pub fn from_env() -> Self {
         let behind_proxy = env::var("BEHIND_PROXY")
-            .map(|s| s == "true" || s == "1")
+            .ok()
+            .map(|v| {
+                let v = v.to_ascii_lowercase();
+                matches!(v.as_str(), "true" | "1" | "yes" | "y")
+            })
             .unwrap_or(false);
 
-        Ok(Self {
-            database_url,
+        Self {
+            database_url: env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
             stellar_rpc_url: env::var("STELLAR_RPC_URL")
                 .unwrap_or_else(|_| "https://soroban-testnet.stellar.org".to_string()),
             start_ledger,
             start_ledger_fallback,
             port,
             api_key: env::var("API_KEY").ok(),
+            db_max_connections: env::var("DB_MAX_CONNECTIONS")
+                .unwrap_or_else(|_| "10".to_string())
+                .parse()
+                .expect("DB_MAX_CONNECTIONS must be a number"),
+            db_min_connections: env::var("DB_MIN_CONNECTIONS")
+                .unwrap_or_else(|_| "1".to_string())
+                .parse()
+                .expect("DB_MIN_CONNECTIONS must be a number"),
             behind_proxy,
-        })
+        }
     }
 }
