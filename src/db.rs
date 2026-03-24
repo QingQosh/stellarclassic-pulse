@@ -1,8 +1,19 @@
 use sqlx::{postgres::PgPoolOptions, PgPool};
+use tracing::info;
 
-pub async fn create_pool(database_url: &str) -> PgPool {
+pub async fn create_pool(
+    database_url: &str,
+    db_max_connections: u32,
+    db_min_connections: u32,
+) -> PgPool {
+    info!(
+        "Configuring Postgres connection pool: min_connections={}, max_connections={}",
+        db_min_connections, db_max_connections
+    );
+
     PgPoolOptions::new()
-        .max_connections(10)
+        .max_connections(db_max_connections)
+        .min_connections(db_min_connections)
         .connect(database_url)
         .await
         .expect("Failed to connect to PostgreSQL")
