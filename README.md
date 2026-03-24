@@ -49,6 +49,9 @@ Open the newly created `.env` file in your editor and fill in your own real valu
 | `STELLAR_RPC_URL` | Soroban RPC endpoint                 | `https://soroban-testnet.stellar.org`    |
 | `START_LEDGER`    | Ledger to start indexing from (0 = latest) | `0`                               |
 | `PORT`            | HTTP server port                     | `3000`                                   |
+| `API_KEY`         | Optional key for API authentication  | (disabled)                               |
+
+> **Note on Authentication:** You can enable optional API key authentication by setting the `API_KEY` environment variable. When set, all requests (except `/health` and `/healthz/*` endpoints) will require either an `Authorization: Bearer <API_KEY>` or an `X-Api-Key: <API_KEY>` header. If `API_KEY` is unset or omitted from your configuration, authentication is bypassed and all requests pass through.
 
 ### 3. Run with Docker Compose (easiest)
 

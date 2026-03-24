@@ -6,7 +6,7 @@ pub struct Config {
     pub stellar_rpc_url: String,
     pub start_ledger: u64,
     pub port: u16,
-    pub behind_proxy: bool,
+    pub api_key: Option<String>,
 }
 
 impl Config {
@@ -23,9 +23,7 @@ impl Config {
                 .unwrap_or_else(|_| "3000".to_string())
                 .parse()
                 .expect("PORT must be a number"),
-            behind_proxy: env::var("BEHIND_PROXY")
-                .map(|v| v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false),
+            api_key: env::var("API_KEY").ok(),
         }
     }
 }
