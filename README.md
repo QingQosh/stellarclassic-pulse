@@ -47,6 +47,8 @@ Open the newly created `.env` file in your editor and fill in your own real valu
 |-------------------|--------------------------------------|------------------------------------------|
 | `DATABASE_URL`    | PostgreSQL connection string         | required                                 |
 | `STELLAR_RPC_URL` | Soroban RPC endpoint                 | `https://soroban-testnet.stellar.org`    |
+| `DB_MAX_CONNECTIONS` | Max number of connections in the Postgres pool | `10` |
+| `DB_MIN_CONNECTIONS` | Min number of connections in the Postgres pool | `1` |
 | `START_LEDGER`    | Ledger to start indexing from (0 = latest) | `0`                               |
 | `PORT`            | HTTP server port                     | `3000`                                   |
 | `API_KEY`         | Optional key for API authentication  | (disabled)                               |

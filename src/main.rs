@@ -21,7 +21,12 @@ async fn main() {
         .init();
 
     let config = config::Config::from_env();
-    let pool = db::create_pool(&config.database_url).await;
+    let pool = db::create_pool(
+        &config.database_url,
+        config.db_max_connections,
+        config.db_min_connections,
+    )
+    .await;
     db::run_migrations(&pool).await;
 
     info!("Migrations applied successfully");
