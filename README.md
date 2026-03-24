@@ -35,10 +35,13 @@ migrations/
 
 ### 2. Configure environment
 
+Copy the provided `.env.example` template to a new file named `.env`:
+
 ```bash
 cp .env.example .env
-# Edit .env with your values
 ```
+
+Open the newly created `.env` file in your editor and fill in your own real values. Be sure to replace the placeholder credentials (e.g., `<USER>`, `<PASSWORD>`) with your actual database and network details.
 
 | Variable          | Description                          | Default                                  |
 |-------------------|--------------------------------------|------------------------------------------|
