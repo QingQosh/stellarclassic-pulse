@@ -13,6 +13,8 @@ pub struct Config {
     pub db_max_connections: u32,
     pub db_min_connections: u32,
     pub behind_proxy: bool,
+    pub rpc_connect_timeout_secs: u64,
+    pub rpc_request_timeout_secs: u64,
     pub allowed_origins: Vec<String>,
     pub rate_limit_per_minute: u32,
 }
@@ -78,6 +80,24 @@ impl Config {
             })
             .unwrap_or(false);
 
+        let start_ledger = env::var("START_LEDGER")
+            .unwrap_or_else(|_| "0".to_string())
+            .parse()
+            .expect("START_LEDGER must be a number");
+
+        let start_ledger_fallback = env::var("START_LEDGER_FALLBACK")
+            .ok()
+            .map(|v| {
+                let v = v.to_ascii_lowercase();
+                matches!(v.as_str(), "true" | "1" | "yes" | "y")
+            })
+            .unwrap_or(false);
+
+        let port = env::var("PORT")
+            .unwrap_or_else(|_| "3000".to_string())
+            .parse()
+            .expect("PORT must be a number");
+
         Self {
             database_url: env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
             stellar_rpc_url: validate_rpc_url(
@@ -97,6 +117,14 @@ impl Config {
                 .parse()
                 .expect("DB_MIN_CONNECTIONS must be a number"),
             behind_proxy,
+            rpc_connect_timeout_secs: env::var("RPC_CONNECT_TIMEOUT_SECS")
+                .unwrap_or_else(|_| "5".to_string())
+                .parse()
+                .expect("RPC_CONNECT_TIMEOUT_SECS must be a number"),
+            rpc_request_timeout_secs: env::var("RPC_REQUEST_TIMEOUT_SECS")
+                .unwrap_or_else(|_| "30".to_string())
+                .parse()
+                .expect("RPC_REQUEST_TIMEOUT_SECS must be a number"),
             allowed_origins: env::var("ALLOWED_ORIGINS")
                 .unwrap_or_else(|_| "*".to_string())
                 .split(',')
