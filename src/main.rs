@@ -27,7 +27,7 @@ async fn main() {
         config.db_min_connections,
     )
     .await;
-    db::run_migrations(&pool).await;
+    db::run_migrations(&pool).await.expect("Failed to run database migrations");
 
     info!("Migrations applied successfully");
 

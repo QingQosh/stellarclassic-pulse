@@ -11,7 +11,7 @@ pub fn create_router(pool: PgPool, api_key: Option<String>) -> Router {
     Router::new()
         .route("/health", get(handlers::health))
         .route("/events", get(handlers::get_events))
-        .route("/events/:contract_id", get(handlers::get_events_by_contract))
+        .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
         .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx))
         .layer(axum::middleware::from_fn_with_state(auth_state, middleware::auth_middleware))
         .layer(CorsLayer::permissive())

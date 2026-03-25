@@ -37,6 +37,19 @@ impl PaginationParams {
 #[derive(Debug, Deserialize)]
 pub struct RpcResponse<T> {
     pub result: Option<T>,
+    pub error: Option<RpcError>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RpcError {
+    #[allow(dead_code)]
+    pub code: i64,
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LatestLedgerResult {
+    pub sequence: u64,
 }
 
 #[derive(Debug, Deserialize)]

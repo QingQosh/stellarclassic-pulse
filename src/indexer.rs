@@ -1,6 +1,6 @@
 use chrono::DateTime;
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::json;
 use sqlx::PgPool;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -8,7 +8,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     config::Config,
-    models::{GetEventsResult, RpcResponse, SorobanEvent},
+    models::{GetEventsResult, LatestLedgerResult, RpcResponse, SorobanEvent},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -19,9 +19,6 @@ enum IndexerFetchError {
     DbConnection(#[from] sqlx::Error),
 }
 
-fn is_connection_class_db_error(e: &sqlx::Error) -> bool {
-    matches!(e, sqlx::Error::PoolTimedOut | sqlx::Error::Io(_))
-}
 
 pub struct Indexer {
     pool: PgPool,
@@ -66,7 +63,7 @@ impl Indexer {
                                 std::process::exit(1);
                             }
                         }
-                        sleep(Duration::from_secs(5)).await;
+                        sleep(Duration::from_secs(10)).await;
                     }
                 }
             }
@@ -119,7 +116,7 @@ impl Indexer {
             "method": "getLatestLedger"
         });
 
-        let resp: Value = self
+        let resp: RpcResponse<LatestLedgerResult> = self
             .client
             .post(&self.config.stellar_rpc_url)
             .json(&body)
@@ -130,9 +127,15 @@ impl Indexer {
             .await
             .map_err(|e| e.to_string())?;
 
-        resp["result"]["sequence"]
-            .as_u64()
-            .ok_or_else(|| "Missing sequence".to_string())
+        match resp.result {
+            Some(r) => Ok(r.sequence),
+            None => {
+                if let Some(err) = resp.error {
+                    warn!("RPC error response: {}", err.message);
+                }
+                Err("RPC returned no result".to_string())
+            }
+        }
     }
 
     async fn fetch_and_store_events(&self, start_ledger: u64) -> Result<u64, IndexerFetchError> {
@@ -160,7 +163,12 @@ impl Indexer {
 
         let result = match resp.result {
             Some(r) => r,
-            None => return Ok(start_ledger),
+            None => {
+                if let Some(err) = resp.error {
+                    warn!("RPC error response: {}", err.message);
+                }
+                return Err(IndexerFetchError::Rpc("RPC returned no result".to_string()));
+            }
         };
 
         let latest = result.latest_ledger;
@@ -194,20 +202,20 @@ impl Indexer {
 
         Ok(latest + 1)
     }
- fix-indexer-logging
-    async fn store_event(&self, event: &SorobanEvent) -> Result<u64, sqlx::Error> {
-    async fn store_event(&self, event: &SorobanEvent) -> Result<(), sqlx::Error> {
+    async fn store_event(&self, event: &SorobanEvent) -> Result<u64, anyhow::Error> {
         let ledger = match i64::try_from(event.ledger) {
             Ok(v) => v,
             Err(_) => {
                 error!(ledger = event.ledger, "Ledger number overflows i64, skipping event");
-                return Ok(());
+                return Ok(0);
             }
         };
- main
         let timestamp = DateTime::parse_from_rfc3339(&event.ledger_closed_at)
             .map(|dt| dt.with_timezone(&chrono::Utc))
-            .unwrap_or_else(|_| chrono::Utc::now());
+            .map_err(|_| {
+                warn!(raw = event.ledger_closed_at, "Unparseable ledger_closed_at, skipping event");
+                anyhow::anyhow!("Unparseable ledger_closed_at: {}", event.ledger_closed_at)
+            })?;
 
         let event_data = json!({
             "value": event.value,
@@ -254,5 +262,36 @@ mod tests {
     #[test]
     fn ledger_overflow_returns_err() {
         assert!(i64::try_from(make_event(u64::MAX).ledger).is_err());
+    }
+
+    #[test]
+    fn test_rpc_error_deserialization() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid Request"}}"#;
+        let resp: RpcResponse<GetEventsResult> = serde_json::from_str(json).unwrap();
+        assert!(resp.result.is_none());
+        assert!(resp.error.is_some());
+        assert_eq!(resp.error.unwrap().message, "Invalid Request");
+    }
+
+    #[test]
+    fn test_rpc_success_deserialization() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"result":{"events":[],"latestLedger":123}}"#;
+        let resp: RpcResponse<GetEventsResult> = serde_json::from_str(json).unwrap();
+        assert!(resp.result.is_some());
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result.unwrap().latest_ledger, 123);
+    }
+
+    #[tokio::test]
+    async fn test_store_event_malformed_timestamp() {
+        let pool = PgPool::connect_lazy("postgres://localhost/unused").unwrap();
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let indexer = Indexer::new(pool, Config::default(), shutdown_rx);
+        let mut event = make_event(100);
+        event.ledger_closed_at = "invalid-date".into();
+
+        let result = indexer.store_event(&event).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unparseable ledger_closed_at: invalid-date"));
     }
 }
