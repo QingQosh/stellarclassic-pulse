@@ -25,6 +25,17 @@ fn is_connection_class_db_error(e: &sqlx::Error) -> bool {
 }
 */
 
+fn build_rpc_client(config: &Config) -> Client {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(config.rpc_connect_timeout_secs))
+        .timeout(Duration::from_secs(config.rpc_request_timeout_secs))
+        .pool_max_idle_per_host(5)
+        .pool_idle_timeout(Duration::from_secs(30))
+        .tcp_keepalive(Duration::from_secs(60))
+        .build()
+        .expect("Failed to build HTTP client")
+}
+
 pub struct Indexer {
     pool: PgPool,
     client: Client,
@@ -34,11 +45,7 @@ pub struct Indexer {
 
 impl Indexer {
     pub fn new(pool: PgPool, config: Config, shutdown_rx: tokio::sync::watch::Receiver<bool>) -> Self {
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(config.rpc_connect_timeout_secs))
-            .timeout(Duration::from_secs(config.rpc_request_timeout_secs))
-            .build()
-            .expect("Failed to build HTTP client");
+        let client = build_rpc_client(&config);
 
         Self {
             pool,
