@@ -111,7 +111,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn get_events_by_tx_no_events_returns_200_empty_data(pool: PgPool) {
-        let app = crate::routes::create_router(pool, None);
+        let app = crate::routes::create_router(pool, None, &[], 60);
 
         let response = app
             .oneshot(
@@ -148,7 +148,7 @@ mod tests {
         .await
         .unwrap();
 
-        let app = crate::routes::create_router(pool, None);
+        let app = crate::routes::create_router(pool, None, &[], 60);
 
         let response = app
             .oneshot(
@@ -170,7 +170,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn database_error_response_does_not_leak_internals(pool: PgPool) {
-        let app = crate::routes::create_router(pool, None);
+        let app = crate::routes::create_router(pool, None, &[], 60);
 
         let response = app
             .oneshot(
@@ -198,7 +198,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn contract_id_too_long_returns_400(pool: PgPool) {
-        let app = crate::routes::create_router(pool, None);
+        let app = crate::routes::create_router(pool, None, &[], 60);
         let long_id = "C".repeat(100);
 
         let response = app
@@ -219,7 +219,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn contract_id_invalid_format_returns_400(pool: PgPool) {
-        let app = crate::routes::create_router(pool, None);
+        let app = crate::routes::create_router(pool, None, &[], 60);
 
         let response = app
             .oneshot(
@@ -239,7 +239,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn tx_hash_invalid_length_returns_400(pool: PgPool) {
-        let app = crate::routes::create_router(pool, None);
+        let app = crate::routes::create_router(pool, None, &[], 60);
 
         let response = app
             .oneshot(
@@ -259,7 +259,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn tx_hash_non_hex_returns_400(pool: PgPool) {
-        let app = crate::routes::create_router(pool, None);
+        let app = crate::routes::create_router(pool, None, &[], 60);
         let invalid_hex = "z".repeat(64);
 
         let response = app
@@ -280,7 +280,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn tx_hash_uppercase_hex_returns_400(pool: PgPool) {
-        let app = crate::routes::create_router(pool, None);
+        let app = crate::routes::create_router(pool, None, &[], 60);
         let uppercase_hex = "A".repeat(64);
 
         let response = app

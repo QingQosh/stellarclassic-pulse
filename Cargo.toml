@@ -22,4 +22,7 @@ tower-http = { version = "0.5", features = ["trace", "cors"] }
 axum-extra = { version = "0.9", features = ["typed-header"] }
 anyhow = "1.0.102"
 url = "2"
-tower-governor = { version = "0.8", features = ["axum"] }
+tower_governor = { version = "0.7.0", features = ["axum"] }
+
+[dev-dependencies]
+mockito = "1.7.2"

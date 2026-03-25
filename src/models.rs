@@ -44,6 +44,8 @@ pub struct GetEventsResult {
     pub events: Vec<SorobanEvent>,
     #[serde(rename = "latestLedger")]
     pub latest_ledger: u64,
+    #[serde(rename = "cursor")]
+    pub rpc_cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
