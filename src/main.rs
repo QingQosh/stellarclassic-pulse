@@ -30,6 +30,7 @@ async fn main() -> anyhow::Result<()> {
     db::run_migrations(&pool).await;
 
     info!("Migrations applied successfully");
+    info!("Soroban RPC URL: {}", config.stellar_rpc_url);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let mut shutdown_rx_axum = shutdown_rx.clone();
@@ -51,7 +52,9 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
-    let router = routes::create_router(pool, config.api_key);
+    info!("Allowed CORS origins: {:?}", config.allowed_origins);
+    info!("Rate limit: {} requests/minute per IP", config.rate_limit_per_minute);
+    let router = routes::create_router(pool, config.api_key, &config.allowed_origins, config.rate_limit_per_minute);
 
     info!("Soroban Pulse listening on {}", addr);
 
@@ -91,6 +94,16 @@ async fn main() -> anyhow::Result<()> {
             .await
             .unwrap();
     }
+    // GovernorLayer requires connect_info to extract peer IP — always use it.
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        let _ = shutdown_rx_axum.changed().await;
+    })
+    .await
+    .unwrap();
 
     let _ = indexer_handle.await;
  main
