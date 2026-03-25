@@ -20,3 +20,4 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["trace", "cors"] }
 tokio-tungstenite = "0.21"
 axum-extra = { version = "0.9", features = ["typed-header"] }
+anyhow = "1.0.102"

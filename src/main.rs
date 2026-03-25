@@ -7,11 +7,11 @@ mod models;
 mod routes;
 
 use std::net::SocketAddr;
-use tracing::info;
+use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
     tracing_subscriber::registry()
@@ -36,7 +36,10 @@ async fn main() {
 
     info!("Soroban Pulse listening on {}", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+        error!("Address already in use");
+        e
+    })?;
 
     if config.behind_proxy {
         info!("Running behind proxy — trusting X-Forwarded-For");
@@ -45,8 +48,16 @@ async fn main() {
             router.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .await
-        .unwrap();
+        .map_err(|e| {
+            error!("{}", e);
+            e
+        })?;
     } else {
-        axum::serve(listener, router).await.unwrap();
+        axum::serve(listener, router).await.map_err(|e| {
+            error!("{}", e);
+            e
+        })?;
     }
+
+    Ok(())
 }
