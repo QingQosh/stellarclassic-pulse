@@ -8,11 +8,11 @@ mod models;
 mod routes;
 
 use std::net::SocketAddr;
-use tracing::info;
+use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
     tracing_subscriber::registry()
@@ -30,6 +30,7 @@ async fn main() {
     db::run_migrations(&pool).await;
 
     info!("Migrations applied successfully");
+    info!("Soroban RPC URL: {}", config.stellar_rpc_url);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let mut shutdown_rx_axum = shutdown_rx.clone();
@@ -51,11 +52,16 @@ async fn main() {
     });
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
-    let router = routes::create_router(pool, config.api_key);
+    info!("Allowed CORS origins: {:?}", config.allowed_origins);
+    info!("Rate limit: {} requests/minute per IP", config.rate_limit_per_minute);
+    let router = routes::create_router(pool, config.api_key, &config.allowed_origins, config.rate_limit_per_minute);
 
     info!("Soroban Pulse listening on {}", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+        error!("Address already in use");
+        e
+    })?;
 
     if config.behind_proxy {
         info!("Running behind proxy — trusting X-Forwarded-For");
@@ -67,8 +73,20 @@ async fn main() {
             let _ = shutdown_rx_axum.changed().await;
         })
         .await
-        .unwrap();
+        .map_err(|e| {
+            error!("{}", e);
+            e
+        })?;
     } else {
+ fix/graceful-startup-errors
+        axum::serve(listener, router).await.map_err(|e| {
+            error!("{}", e);
+            e
+        })?;
+    }
+
+    Ok(())
+
         axum::serve(listener, router)
             .with_graceful_shutdown(async move {
                 let _ = shutdown_rx_axum.changed().await;
@@ -76,6 +94,17 @@ async fn main() {
             .await
             .unwrap();
     }
+    // GovernorLayer requires connect_info to extract peer IP — always use it.
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        let _ = shutdown_rx_axum.changed().await;
+    })
+    .await
+    .unwrap();
 
     let _ = indexer_handle.await;
+ main
 }
