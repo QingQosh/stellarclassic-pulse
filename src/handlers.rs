@@ -37,6 +37,7 @@ pub async fn get_events(
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit();
     let offset = params.offset();
+    let exact = params.exact_count.unwrap_or(false);
 
     let events: Vec<Event> = sqlx::query_as(
         "SELECT * FROM events ORDER BY ledger DESC LIMIT $1 OFFSET $2",
@@ -46,15 +47,26 @@ pub async fn get_events(
     .fetch_all(&pool)
     .await?;
 
-    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+    let (total, approximate): (i64, bool) = if exact {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+            .fetch_one(&pool)
+            .await?;
+        (count, false)
+    } else {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT reltuples::bigint FROM pg_class WHERE relname = 'events'",
+        )
         .fetch_one(&pool)
         .await?;
+        (count, true)
+    };
 
     Ok(Json(json!({
         "data": events,
         "total": total,
         "page": params.page.unwrap_or(1),
-        "limit": limit
+        "limit": limit,
+        "approximate": approximate
     })))
 }
 
@@ -297,5 +309,47 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["error"], "invalid tx_hash format");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_events_paginated_returns_approximate_count_by_default(pool: PgPool) {
+        let app = crate::routes::create_router(pool, None, &[], 60);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/events")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["approximate"], true);
+        assert!(v.get("total").is_some());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_events_paginated_returns_exact_count_when_requested(pool: PgPool) {
+        let app = crate::routes::create_router(pool, None, &[], 60);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/events?exact_count=true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["approximate"], false);
+        assert_eq!(v["total"], 0); // Empty table
     }
 }
