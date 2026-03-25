@@ -140,4 +140,32 @@ mod tests {
         assert_eq!(v["data"].as_array().unwrap().len(), 1);
         assert_eq!(v["tx_hash"], json!(tx_hash));
     }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn database_error_response_does_not_leak_internals(pool: PgPool) {
+        let app = crate::routes::create_router(pool, None);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/events?limit=invalid")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        
+        // Verify response contains generic error message
+        assert!(body_str.contains("internal server error"));
+        
+        // Verify no SQLx internals are leaked
+        assert!(!body_str.to_lowercase().contains("sqlx"));
+        assert!(!body_str.contains("events"));
+        assert!(!body_str.contains("table"));
+        assert!(!body_str.contains("column"));
+    }
 }
