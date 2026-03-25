@@ -27,7 +27,7 @@ async fn main() {
         config.db_min_connections,
     )
     .await;
-    db::run_migrations(&pool).await;
+    let _ = db::run_migrations(&pool).await;
 
     info!("Migrations applied successfully");
 

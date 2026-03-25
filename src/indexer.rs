@@ -19,9 +19,6 @@ enum IndexerFetchError {
     DbConnection(#[from] sqlx::Error),
 }
 
-fn is_connection_class_db_error(e: &sqlx::Error) -> bool {
-    matches!(e, sqlx::Error::PoolTimedOut | sqlx::Error::Io(_))
-}
 
 pub struct Indexer {
     pool: PgPool,
@@ -194,17 +191,15 @@ impl Indexer {
 
         Ok(latest + 1)
     }
- fix-indexer-logging
     async fn store_event(&self, event: &SorobanEvent) -> Result<u64, sqlx::Error> {
-    async fn store_event(&self, event: &SorobanEvent) -> Result<(), sqlx::Error> {
         let ledger = match i64::try_from(event.ledger) {
             Ok(v) => v,
             Err(_) => {
                 error!(ledger = event.ledger, "Ledger number overflows i64, skipping event");
-                return Ok(());
+                return Ok(0);
             }
         };
- main
+
         let timestamp = DateTime::parse_from_rfc3339(&event.ledger_closed_at)
             .map(|dt| dt.with_timezone(&chrono::Utc))
             .unwrap_or_else(|_| chrono::Utc::now());
