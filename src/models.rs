@@ -13,6 +13,9 @@ pub struct Event {
     pub timestamp: DateTime<Utc>,
     pub event_data: Value,
     pub created_at: DateTime<Utc>,
+    #[sqlx(default)]
+    #[serde(skip)]
+    pub total_count: i64,
 }
 
 #[derive(Debug, Deserialize)]
