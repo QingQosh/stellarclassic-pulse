@@ -465,4 +465,55 @@ mod tests {
         assert!(event.get("contract_id").is_none());
         assert!(event.get("event_data").is_none());
     }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_events_total_count_scenarios(pool: PgPool) {
+        let app = crate::routes::create_router(pool.clone(), None, &[], 60);
+
+        // 1. Empty set
+        let response = app.clone()
+            .oneshot(Request::builder().uri("/events").body(Body::empty()).unwrap())
+            .await.unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["total"], 0);
+        assert_eq!(v["data"].as_array().unwrap().len(), 0);
+
+        // 2. Single page (3 events, limit 20)
+        for i in 0..3 {
+            sqlx::query("INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data) VALUES ($1, $2, $3, $4, $5, $6)")
+                .bind(format!("C{:0>55}", i))
+                .bind("contract")
+                .bind(format!("{:0>64}", i))
+                .bind(i as i64)
+                .bind(Utc::now())
+                .bind(json!({}))
+                .execute(&pool).await.unwrap();
+        }
+
+        let response = app.clone()
+            .oneshot(Request::builder().uri("/events?limit=20").body(Body::empty()).unwrap())
+            .await.unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert!(v["total"].as_u64().is_some());
+        assert_eq!(v["data"].as_array().unwrap().len(), 3);
+
+        // 3. Multi-page (limit 2, total 3)
+        let response = app.clone()
+            .oneshot(Request::builder().uri("/events?limit=2&page=1").body(Body::empty()).unwrap())
+            .await.unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert!(v["total"].as_u64().is_some());
+        assert_eq!(v["data"].as_array().unwrap().len(), 2);
+
+        let response = app
+            .oneshot(Request::builder().uri("/events?limit=2&page=2").body(Body::empty()).unwrap())
+            .await.unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert!(v["total"].as_u64().is_some());
+        assert_eq!(v["data"].as_array().unwrap().len(), 1);
+    }
 }
