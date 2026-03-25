@@ -14,6 +14,9 @@ pub enum AppError {
     #[error("Not found")]
     NotFound,
 
+    #[error("Validation error: {0}")]
+    Validation(String),
+
     #[error("Internal error: {0}")]
     #[allow(dead_code)]
     Internal(String),
@@ -25,6 +28,7 @@ impl IntoResponse for AppError {
         
         let (status, message) = match &self {
             AppError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
+            AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             AppError::Database(e) => {
                 tracing::error!(
                     correlation_id = %correlation_id,
