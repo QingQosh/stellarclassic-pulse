@@ -4,10 +4,11 @@ use serde_json::json;
 use sqlx::PgPool;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{error, info, warn};
+use tracing::{error, info, warn, instrument, span, Level};
 
 use crate::{
     config::Config,
+    metrics,
     models::{GetEventsResult, LatestLedgerResult, RpcResponse, SorobanEvent},
 };
 
@@ -59,11 +60,12 @@ impl Indexer {
                 match self.get_latest_ledger().await {
                     Ok(ledger) => {
                         current_ledger = ledger;
-                        info!("Starting from latest ledger: {}", current_ledger);
+                        info!(ledger = current_ledger, "Starting from latest ledger");
+                        metrics::update_current_ledger(current_ledger);
                         break;
                     }
                     Err(e) => {
-                        error!("Failed to get latest ledger (attempt {}): {}", retries + 1, e);
+                        error!(attempt = retries + 1, error = %e, "Failed to get latest ledger");
                         retries += 1;
                         if retries >= 5 {
                             if self.config.start_ledger_fallback {
@@ -71,7 +73,7 @@ impl Indexer {
                                 current_ledger = 1;
                                 break;
                             } else {
-                                error!("Fatal RPC error: Could not fetch initial ledger after 5 attempts.");
+                                error!("Fatal RPC error: Could not fetch initial ledger after 5 attempts");
                                 std::process::exit(1);
                             }
                         }
@@ -92,6 +94,23 @@ impl Indexer {
                     consecutive_db_errors = 0;
                     if latest > current_ledger {
                         current_ledger = latest;
+                        metrics::update_current_ledger(current_ledger);
+                        
+                        // Calculate and update lag
+                        let latest_ledger = self.get_latest_ledger().await.unwrap_or(0);
+                        if latest_ledger > current_ledger {
+                            let lag = latest_ledger - current_ledger;
+                            metrics::update_indexer_lag(lag);
+                            
+                            // Warn if lag exceeds threshold
+                            if lag > self.config.indexer_lag_warn_threshold {
+                                warn!(
+                                    lag = lag,
+                                    threshold = self.config.indexer_lag_warn_threshold,
+                                    "Indexer is falling behind"
+                                );
+                            }
+                        }
                     } else {
                         sleep(Duration::from_secs(5)).await;
                     }
@@ -109,12 +128,12 @@ impl Indexer {
                             "DB unavailable, backing off"
                         );
                     } else if consecutive_db_errors < 5 {
-                        error!("Indexer error: {e}");
+                        error!(error = %e, "Indexer error");
                     }
                     sleep(Duration::from_secs(backoff_secs)).await;
                 }
                 Err(IndexerFetchError::Rpc(msg)) => {
-                    error!("Indexer error: {}", msg);
+                    error!(error = %msg, "Indexer error");
                     sleep(Duration::from_secs(10)).await;
                 }
             }
@@ -127,6 +146,9 @@ impl Indexer {
             "id": 1,
             "method": "getLatestLedger"
         });
+
+        let span = span!(Level::INFO, "rpc_get_latest_ledger", url = %self.config.stellar_rpc_url);
+        let _enter = span.enter();
 
         let resp: RpcResponse<LatestLedgerResult> = self
             .client
@@ -141,6 +163,7 @@ impl Indexer {
                         "RPC request timeout"
                     );
                 }
+                metrics::record_rpc_error();
                 e.to_string()
             })?
             .json()
@@ -148,16 +171,21 @@ impl Indexer {
             .map_err(|e| e.to_string())?;
 
         match resp.result {
-            Some(r) => Ok(r.sequence),
+            Some(r) => {
+                metrics::update_latest_ledger(r.sequence);
+                Ok(r.sequence)
+            }
             None => {
                 if let Some(err) = resp.error {
-                    warn!("RPC error response: {}", err.message);
+                    warn!(error = %err.message, "RPC error response");
+                    metrics::record_rpc_error();
                 }
                 Err("RPC returned no result".to_string())
             }
         }
     }
 
+    #[instrument(skip(self), fields(start_ledger = start_ledger))]
     async fn fetch_and_store_events(&self, start_ledger: u64) -> Result<u64, IndexerFetchError> {
         let mut cursor: Option<String> = None;
         let mut latest_ledger = start_ledger;
@@ -197,6 +225,7 @@ impl Indexer {
                             "RPC request timeout"
                         );
                     }
+                    metrics::record_rpc_error();
                     IndexerFetchError::Rpc(e.to_string())
                 })?
                 .json()
@@ -207,7 +236,8 @@ impl Indexer {
                 Some(r) => r,
                 None => {
                     if let Some(err) = resp.error {
-                        warn!("RPC error response: {}", err.message);
+                        warn!(error = %err.message, "RPC error response");
+                        metrics::record_rpc_error();
                         return Err(IndexerFetchError::Rpc(err.message));
                     }
                     break;
@@ -227,7 +257,7 @@ impl Indexer {
                         }
                     }
                     Err(e) => {
-                        warn!("Failed to store event {}: {}", event.tx_hash, e);
+                        warn!(tx_hash = %event.tx_hash, error = %e, "Failed to store event");
                     }
                 }
             }
@@ -244,11 +274,13 @@ impl Indexer {
             ledger = latest_ledger,
             "Indexed ledger range"
         );
+        metrics::record_events_indexed(total_inserted as u64);
 
         let _duplicate_events_skipped = total_skipped;
 
         Ok(latest_ledger + 1)
     }
+    #[instrument(skip(self, event), fields(tx_hash = %event.tx_hash, contract_id = %event.contract_id, ledger = event.ledger))]
     async fn store_event(&self, event: &SorobanEvent) -> Result<u64, anyhow::Error> {
         let ledger = match i64::try_from(event.ledger) {
             Ok(v) => v,
@@ -260,7 +292,7 @@ impl Indexer {
         let timestamp = DateTime::parse_from_rfc3339(&event.ledger_closed_at)
             .map(|dt| dt.with_timezone(&chrono::Utc))
             .map_err(|_| {
-                warn!(raw = event.ledger_closed_at, "Unparseable ledger_closed_at, skipping event");
+                warn!(raw = %event.ledger_closed_at, "Unparseable ledger_closed_at, skipping event");
                 anyhow::anyhow!("Unparseable ledger_closed_at: {}", event.ledger_closed_at)
             })?;
 
@@ -340,6 +372,8 @@ mod tests {
         let result = indexer.store_event(&event).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Unparseable ledger_closed_at: invalid-date"));
+    }
+
     #[tokio::test]
     async fn test_fetch_and_store_events_pagination() {
         let mut server = mockito::Server::new_async().await;

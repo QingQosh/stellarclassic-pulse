@@ -3,19 +3,29 @@ use axum::http::{HeaderValue, Method, StatusCode};
 use serde_json::json;
 use sqlx::PgPool;
 use std::sync::Arc;
+use std::time::Instant;
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tower_http::{cors::CorsLayer, trace::TraceLayer, compression::CompressionLayer};
+use metrics_exporter_prometheus::PrometheusHandle;
 
-use crate::{handlers, middleware};
+use crate::{handlers, middleware, metrics};
+
+#[derive(Clone)]
+pub struct AppState {
+    pub pool: PgPool,
+    pub prometheus_handle: PrometheusHandle,
+}
 
 pub fn create_router(
     pool: PgPool,
     api_key: Option<String>,
     allowed_origins: &[String],
     rate_limit_per_minute: u32,
+    prometheus_handle: PrometheusHandle,
 ) -> Router {
     let cors = build_cors(allowed_origins);
     let auth_state = Arc::new(middleware::AuthState { api_key });
+    let app_state = AppState { pool, prometheus_handle };
 
     // Replenish one token every (60 / rate_limit_per_minute) seconds.
     // burst_size = rate_limit_per_minute so a fresh client can use the full quota at once.
@@ -40,15 +50,26 @@ pub fn create_router(
 
     Router::new()
         .route("/health", get(handlers::health))
+        .route("/metrics", get(handlers::metrics))
         .merge(api)
         .layer(axum::middleware::from_fn_with_state(
             auth_state,
             middleware::auth_middleware,
         ))
+        .layer(axum::middleware::from_fn(|req, next| async {
+            let method = req.method().as_str().to_string();
+            let route = req.uri().path().to_string();
+            let start = Instant::now();
+            let response = next.run(req).await;
+            let duration = start.elapsed();
+            let status = response.status().as_u16().to_string();
+            metrics::record_http_request_duration(duration, &method, &route, &status);
+            response
+        }))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
-        .with_state(pool)
+        .with_state(app_state)
 }
 
 fn build_cors(allowed_origins: &[String]) -> CorsLayer {
