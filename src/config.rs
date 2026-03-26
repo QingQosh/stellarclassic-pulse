@@ -1,4 +1,3 @@
-use anyhow::{Context, Result};
 use std::env;
 use url::Url;
 
@@ -155,6 +154,22 @@ impl Config {
                 .unwrap_or_else(|_| "60".to_string())
                 .parse()
                 .expect("RATE_LIMIT_PER_MINUTE must be a positive integer"),
+        }
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            database_url: "postgres://localhost/soroban_pulse".to_string(),
+            stellar_rpc_url: "https://soroban-testnet.stellar.org".to_string(),
+            start_ledger: 0,
+            start_ledger_fallback: false,
+            port: 8080,
+            api_key: None,
+            db_max_connections: 10,
+            db_min_connections: 1,
+            behind_proxy: false,
         }
     }
 }

@@ -34,7 +34,7 @@ pub fn create_router(
     // Rate-limited API routes
     let api = Router::new()
         .route("/events", get(handlers::get_events))
-        .route("/events/:contract_id", get(handlers::get_events_by_contract))
+        .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
         .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx));
         // .layer(GovernorLayer::new(governor_conf));
 
