@@ -16,6 +16,7 @@ pub struct Config {
     pub rpc_request_timeout_secs: u64,
     pub allowed_origins: Vec<String>,
     pub rate_limit_per_minute: u32,
+    pub indexer_lag_warn_threshold: u64,
 }
 
 impl Default for Config {
@@ -34,6 +35,7 @@ impl Default for Config {
             rpc_request_timeout_secs: 30,
             allowed_origins: vec!["*".to_string()],
             rate_limit_per_minute: 60,
+            indexer_lag_warn_threshold: 100,
         }
     }
 }
@@ -154,6 +156,10 @@ impl Config {
                 .unwrap_or_else(|_| "60".to_string())
                 .parse()
                 .expect("RATE_LIMIT_PER_MINUTE must be a positive integer"),
+            indexer_lag_warn_threshold: env::var("INDEXER_LAG_WARN_THRESHOLD")
+                .unwrap_or_else(|_| "100".to_string())
+                .parse()
+                .expect("INDEXER_LAG_WARN_THRESHOLD must be a number"),
         }
     }
 }
@@ -170,6 +176,11 @@ impl Default for Config {
             db_max_connections: 10,
             db_min_connections: 1,
             behind_proxy: false,
+            rpc_connect_timeout_secs: 5,
+            rpc_request_timeout_secs: 30,
+            allowed_origins: vec!["*".to_string()],
+            rate_limit_per_minute: 60,
+            indexer_lag_warn_threshold: 100,
         }
     }
 }
