@@ -2,12 +2,13 @@ use chrono::DateTime;
 use reqwest::Client;
 use serde_json::json;
 use sqlx::PgPool;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
 use crate::{
-    config::Config,
+    config::{Config, HealthState},
     models::{GetEventsResult, LatestLedgerResult, RpcResponse, SorobanEvent},
 };
 
@@ -35,6 +36,7 @@ pub struct Indexer {
     client: Client,
     config: Config,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    health_state: Option<Arc<HealthState>>,
 }
 
 impl Indexer {
@@ -46,7 +48,13 @@ impl Indexer {
             client,
             config,
             shutdown_rx,
+            health_state: None,
         }
+    }
+
+    /// Set the health state for updating the last poll timestamp
+    pub fn set_health_state(&mut self, health_state: Arc<HealthState>) {
+        self.health_state = Some(health_state);
     }
 
     pub async fn run(&self) {
@@ -90,6 +98,10 @@ impl Indexer {
             match self.fetch_and_store_events(current_ledger).await {
                 Ok(latest) => {
                     consecutive_db_errors = 0;
+                    // Update the last poll timestamp on success
+                    if let Some(ref health_state) = self.health_state {
+                        health_state.update_last_poll();
+                    }
                     if latest > current_ledger {
                         current_ledger = latest;
                     } else {
@@ -340,6 +352,8 @@ mod tests {
         let result = indexer.store_event(&event).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Unparseable ledger_closed_at: invalid-date"));
+    }
+
     #[tokio::test]
     async fn test_fetch_and_store_events_pagination() {
         let mut server = mockito::Server::new_async().await;

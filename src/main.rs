@@ -8,6 +8,7 @@ mod models;
 mod routes;
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -51,20 +52,31 @@ async fn main() -> anyhow::Result<()> {
     info!("Migrations applied successfully");
     info!("Soroban RPC URL: {}", config.stellar_rpc_url);
 
+    // Create shared health state for indexer and HTTP handlers
+    let health_state = Arc::new(config::HealthState::new(config.indexer_stall_timeout_secs));
+
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let mut shutdown_rx_axum = shutdown_rx.clone();
 
-    // Spawn background indexer
-    let indexer = indexer::Indexer::new(pool.clone(), config.clone(), shutdown_rx);
+    // Spawn background indexer with health state
+    let mut indexer = indexer::Indexer::new(pool.clone(), config.clone(), shutdown_rx);
+    indexer.set_health_state(health_state.clone());
     let indexer_handle = tokio::spawn(async move {
         indexer.run().await;
     });
 
     tokio::spawn(async move {
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {},
-            _ = sigterm.recv() => {},
+        #[cfg(unix)]
+        {
+            let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = sigterm.recv() => {},
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c().await.ok();
         }
         tracing::info!("Shutdown signal received");
         let _ = shutdown_tx.send(true);
@@ -73,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     info!("Allowed CORS origins: {:?}", config.allowed_origins);
     info!("Rate limit: {} requests/minute per IP", config.rate_limit_per_minute);
-    let router = routes::create_router(pool, config.api_key, &config.allowed_origins, config.rate_limit_per_minute);
+    let router = routes::create_router(pool, config.api_key, &config.allowed_origins, config.rate_limit_per_minute, health_state);
 
     info!("Soroban Pulse listening on {}", addr);
 
@@ -84,10 +96,11 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Running server - trusting X-Forwarded-For: {}", config.behind_proxy);
 
-    // GovernorLayer requires connect_info to extract peer IP — always use it.
+    // Use regular make_service since we handle connect_info through middleware
+    // Use the router directly as it implements Service for incoming connections
     axum::serve(
         listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
+        router,
     )
     .with_graceful_shutdown(async move {
         let _ = shutdown_rx_axum.changed().await;

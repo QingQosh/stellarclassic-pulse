@@ -1,5 +1,56 @@
 use std::env;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use url::Url;
+
+/// Shared state for health checks, accessible between the indexer and HTTP handlers
+#[derive(Clone)]
+pub struct HealthState {
+    /// Unix timestamp of the last successful indexer poll
+    pub last_indexer_poll: Arc<AtomicU64>,
+    /// Timeout in seconds after which the indexer is considered stalled
+    pub indexer_stall_timeout_secs: u64,
+}
+
+impl HealthState {
+    pub fn new(indexer_stall_timeout_secs: u64) -> Self {
+        Self {
+            last_indexer_poll: Arc::new(AtomicU64::new(0)),
+            indexer_stall_timeout_secs,
+        }
+    }
+
+    /// Update the last poll timestamp to the current time
+    pub fn update_last_poll(&self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        self.last_indexer_poll.store(now, Ordering::SeqCst);
+    }
+
+    /// Check if the indexer is stalled (no successful poll within the timeout)
+    /// Returns Some(seconds_ago) if stalled, None if OK
+    pub fn is_indexer_stalled(&self) -> Option<u64> {
+        let last_poll = self.last_indexer_poll.load(Ordering::SeqCst);
+        if last_poll == 0 {
+            // No poll ever completed
+            return Some(0);
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let elapsed = now.saturating_sub(last_poll);
+        if elapsed > self.indexer_stall_timeout_secs {
+            Some(elapsed)
+        } else {
+            None
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -16,6 +67,7 @@ pub struct Config {
     pub rpc_request_timeout_secs: u64,
     pub allowed_origins: Vec<String>,
     pub rate_limit_per_minute: u32,
+    pub indexer_stall_timeout_secs: u64,
 }
 
 impl Default for Config {
@@ -34,6 +86,7 @@ impl Default for Config {
             rpc_request_timeout_secs: 30,
             allowed_origins: vec!["*".to_string()],
             rate_limit_per_minute: 60,
+            indexer_stall_timeout_secs: 60,
         }
     }
 }
@@ -154,22 +207,10 @@ impl Config {
                 .unwrap_or_else(|_| "60".to_string())
                 .parse()
                 .expect("RATE_LIMIT_PER_MINUTE must be a positive integer"),
-        }
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            database_url: "postgres://localhost/soroban_pulse".to_string(),
-            stellar_rpc_url: "https://soroban-testnet.stellar.org".to_string(),
-            start_ledger: 0,
-            start_ledger_fallback: false,
-            port: 8080,
-            api_key: None,
-            db_max_connections: 10,
-            db_min_connections: 1,
-            behind_proxy: false,
+            indexer_stall_timeout_secs: env::var("INDEXER_STALL_TIMEOUT_SECS")
+                .unwrap_or_else(|_| "60".to_string())
+                .parse()
+                .expect("INDEXER_STALL_TIMEOUT_SECS must be a positive integer"),
         }
     }
 }
