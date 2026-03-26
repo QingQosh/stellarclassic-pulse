@@ -22,7 +22,6 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = config::Config::from_env();
-    
     let pool = {
         let mut attempt = 0;
         loop {

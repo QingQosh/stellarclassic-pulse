@@ -214,6 +214,27 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn get_events_by_contract_no_events_returns_200_empty_data(pool: PgPool) {
+        let app = crate::routes::create_router(pool, None, &[], 60);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/events/contract/unknown_contract_no_events_deadbeef")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["data"], json!([]));
+        assert_eq!(v["contract_id"], json!("unknown_contract_no_events_deadbeef"));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn get_events_by_tx_with_row_returns_200_with_data(pool: PgPool) {
         let tx_hash = "a1b2c3d4e5f6";
         sqlx::query(
