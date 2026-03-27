@@ -85,6 +85,9 @@ Migrations run automatically on startup.
 Returns paginated events across all contracts.
 
 - **`exact_count`**: (Optional) Use `true` for a precise `COUNT(*)` result on a large dataset. Default is `false`, which provides an approximate count via PostgreSQL statistics for low-latency responses.
+- **`event_type`**: (Optional) Filter by event type. Accepted values: `contract`, `diagnostic`, `system`. Returns `400` for unknown values.
+- **`from_ledger`**: (Optional) Return only events at or after this ledger sequence number.
+- **`to_ledger`**: (Optional) Return only events at or before this ledger sequence number. Returns `400` if `from_ledger > to_ledger`.
 
 ```json
 {
