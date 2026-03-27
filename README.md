@@ -88,12 +88,19 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full developer workflow.
 
 ## API
 
+All canonical routes are versioned under `/v1/`. The unversioned paths (`/events`, etc.) remain as deprecated aliases and return a `Deprecation: true` response header.
+
+### Interactive Documentation
+
+- **Swagger UI**: `GET /docs` — interactive API explorer
+- **OpenAPI JSON**: `GET /openapi.json` — machine-readable OpenAPI 3.0 spec
+
 ### `GET /health`
 ```json
 { "status": "ok" }
 ```
 
-### `GET /events?page=1&limit=20&exact_count=false`
+### `GET /v1/events?page=1&limit=20&exact_count=false`
 Returns paginated events across all contracts.
 
 - **`exact_count`**: (Optional) Use `true` for a precise `COUNT(*)` result on a large dataset. Default is `false`, which provides an approximate count via PostgreSQL statistics for low-latency responses.
@@ -122,11 +129,38 @@ Returns paginated events across all contracts.
 }
 ```
 
-### `GET /events/{contract_id}`
+### `GET /v1/events/{contract_id}`
 Returns all events for a specific contract.
 
-### `GET /events/tx/{tx_hash}`
+### `GET /v1/events/tx/{tx_hash}`
 Returns all events from a specific transaction. If nothing has been indexed for that hash yet (including valid on-chain transactions that emitted no Soroban events), the response is **200 OK** with an empty `"data"` array — not **404**.
+
+### `GET /v1/events/stream?contract_id=CABC...`
+Server-Sent Events stream. New events are pushed to connected clients within one poll cycle of being indexed.
+
+- **`contract_id`**: (Optional) Filter the stream to a specific contract.
+- Returns `Content-Type: text/event-stream`.
+- Each SSE message is a JSON-serialised event object.
+- The connection is cleaned up automatically when the client disconnects.
+
+```bash
+# Subscribe to all events
+curl -N http://localhost:3000/v1/events/stream
+
+# Subscribe to a specific contract
+curl -N "http://localhost:3000/v1/events/stream?contract_id=CABC..."
+```
+
+### Deprecated unversioned routes
+
+The unversioned paths (`/events`, `/events/{contract_id}`, `/events/tx/{tx_hash}`, `/events/stream`) continue to work but return:
+
+```
+Deprecation: true
+Link: </v1/events>; rel="successor-version"
+```
+
+Migrate to `/v1/` paths at your earliest convenience.
 
 ## How It Works
 
