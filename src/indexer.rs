@@ -177,7 +177,7 @@ impl Indexer {
             }
             None => {
                 if let Some(err) = resp.error {
-                    warn!(error = %err.message, "RPC error response");
+                    warn!(code = err.code, message = %err.message, "RPC error");
                     metrics::record_rpc_error();
                 }
                 Err("RPC returned no result".to_string())
@@ -236,7 +236,7 @@ impl Indexer {
                 Some(r) => r,
                 None => {
                     if let Some(err) = resp.error {
-                        warn!(error = %err.message, "RPC error response");
+                        warn!(code = err.code, message = %err.message, "RPC error");
                         metrics::record_rpc_error();
                         return Err(IndexerFetchError::Rpc(err.message));
                     }
