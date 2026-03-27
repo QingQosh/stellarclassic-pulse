@@ -88,6 +88,7 @@ async fn main() -> anyhow::Result<()> {
                 &config.database_url,
                 config.db_max_connections,
                 config.db_min_connections,
+                config.db_statement_timeout_ms,
             )
             .await
             {
