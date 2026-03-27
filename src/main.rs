@@ -62,6 +62,17 @@ async fn main() -> anyhow::Result<()> {
     let prometheus_handle = metrics::init_metrics();
 
     let config = config::Config::from_env();
+
+    info!(
+        rpc_url = %config.stellar_rpc_url,
+        start_ledger = config.start_ledger,
+        port = config.port,
+        db_url = %config.safe_db_url(),
+        db_max_connections = config.db_max_connections,
+        db_min_connections = config.db_min_connections,
+        "Resolved configuration",
+    );
+
     let pool = {
         let mut attempt = 0;
         loop {
