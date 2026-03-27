@@ -3,7 +3,6 @@ use axum::http::{HeaderValue, Method, Request};
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Instant;
-use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tower_http::{
     compression::CompressionLayer,
     cors::CorsLayer,
@@ -28,6 +27,8 @@ impl MakeRequestId for UuidMakeRequestId {
 #[derive(Clone)]
 pub struct AppState {
     pub pool: PgPool,
+    pub health_state: Arc<HealthState>,
+    pub indexer_state: Arc<IndexerState>,
     pub prometheus_handle: PrometheusHandle,
 }
 
@@ -42,44 +43,23 @@ pub fn create_router(
 ) -> Router {
     let cors = build_cors(allowed_origins);
     let auth_state = Arc::new(middleware::AuthState { api_key });
-
-    let app_state = handlers::AppState {
-        pool,
-        health_state,
-        indexer_state,
-    };
+    let app_state = AppState { pool, health_state, indexer_state, prometheus_handle };
 
     // Replenish one token every (60 / rate_limit_per_minute) seconds.
-    // burst_size = rate_limit_per_minute so a fresh client can use the full quota at once.
-    let _period_secs = 60u64.div_ceil(rate_limit_per_minute as u64);
-    /*
-    let governor_conf = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(period_secs)
-            .burst_size(rate_limit_per_minute)
-            .use_headers()
-            .finish()
-            .expect("invalid rate limit configuration"),
-    );
-    */
-
-    // Rate-limited API routes - must be typed with AppState
-    let api: Router<AppState> = Router::<AppState>::new()
-        .route("/events", get(handlers_module::get_events))
-        .route("/events/contract/:contract_id", get(handlers_module::get_events_by_contract))
-        .route("/events/tx/:tx_hash", get(handlers_module::get_events_by_tx));
-        // .layer(GovernorLayer::new(governor_conf));
+    let _period_secs = 60u64.div_ceil(u64::from(rate_limit_per_minute));
 
     Router::new()
         .route("/health", get(handlers::health))
         .route("/status", get(handlers::status))
         .route("/metrics", get(handlers::metrics))
-        .merge(api)
+        .route("/events", get(handlers::get_events))
+        .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
+        .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx))
         .layer(axum::middleware::from_fn_with_state(
             auth_state,
             middleware::auth_middleware,
         ))
-        .layer(axum::middleware::from_fn(|req, next| async {
+        .layer(axum::middleware::from_fn(|req: axum::http::Request<Body>, next: axum::middleware::Next| async move {
             let method = req.method().as_str().to_string();
             let route = req.uri().path().to_string();
             let start = Instant::now();
@@ -142,17 +122,15 @@ mod tests {
     #[tokio::test]
     async fn test_compression_header() {
         let pool = PgPool::connect_lazy("postgres://localhost/unused").unwrap();
-        
-        // Manual router construction for testing with a large response
+
         let api = Router::new()
             .route("/large", axum::routing::get(|| async { "A".repeat(2000) }));
-        
+
         let app = Router::new()
             .merge(api)
             .layer(tower_http::compression::CompressionLayer::new())
             .with_state(pool);
 
-        // Requested gzip
         let response = app.clone().oneshot(
             Request::builder()
                 .uri("/large")
@@ -163,7 +141,6 @@ mod tests {
 
         assert_eq!(response.headers().get(header::CONTENT_ENCODING).unwrap(), "gzip");
 
-        // Requested nothing
         let response = app.oneshot(
             Request::builder()
                 .uri("/large")

@@ -1,3 +1,10 @@
+#![deny(clippy::all, clippy::pedantic)]
+#![allow(
+    clippy::module_name_repetitions, // e.g. AppError, AppState — idiomatic in Rust
+    clippy::missing_errors_doc,      // internal handlers; not a public library
+    clippy::missing_panics_doc,      // panics only on misconfiguration at startup
+    clippy::wildcard_imports,        // used sparingly in test modules only
+)]
 mod config;
 mod db;
 mod error;
@@ -101,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Migrations applied successfully");
     info!(url = %config.stellar_rpc_url, "Soroban RPC URL");
+    info!(environment = ?config.environment, "Running environment");
 
     // Create shared health state for indexer and HTTP handlers
     let health_state = Arc::new(config::HealthState::new(config.indexer_stall_timeout_secs));
