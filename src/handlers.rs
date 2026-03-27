@@ -1,11 +1,23 @@
 use axum::{extract::{Path, Query, State}, Json, response::IntoResponse};
 use serde_json::{json, Value};
-use sqlx::{PgPool, Row};
+use sqlx::Row;
+use std::sync::Arc;
+use std::time::Duration;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use metrics_exporter_prometheus::PrometheusHandle;
 
-use crate::{error::AppError, models::PaginationParams};
+use crate::{config::HealthState, error::AppError, models::PaginationParams};
+
+/// State type for the application that includes both DB pool and health state
+#[derive(Clone)]
+pub struct AppState {
+    pub pool: sqlx::PgPool,
+    pub health_state: Arc<HealthState>,
+}
+
+/// State type for health check endpoint - same as AppState
+pub type HealthCheckState = AppState;
 
 fn validate_contract_id(contract_id: &str) -> Result<(), AppError> {
     if contract_id.len() != 56 {
@@ -30,8 +42,67 @@ fn validate_tx_hash(tx_hash: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-pub async fn health() -> Json<Value> {
-    Json(json!({ "status": "ok" }))
+/// Health check endpoint that verifies DB connectivity and indexer status
+pub async fn health(State(state): State<HealthCheckState>) -> (axum::http::StatusCode, Json<Value>) {
+    let mut db_ok = true;
+    let mut db_reachable = true;
+
+    // Check DB connectivity with 2-second timeout
+    let db_check = tokio::time::timeout(
+        Duration::from_secs(2),
+        sqlx::query("SELECT 1")
+            .fetch_one(&state.pool)
+    );
+
+    match db_check.await {
+        Ok(Ok(_)) => {
+            // DB is reachable
+        }
+        Ok(Err(_)) => {
+            db_ok = false;
+            db_reachable = false;
+        }
+        Err(_) => {
+            // Timeout
+            db_ok = false;
+            db_reachable = false;
+        }
+    }
+
+    // Check indexer status
+    let indexer_status = if let Some(secs_ago) = state.health_state.is_indexer_stalled() {
+        json!({
+            "indexer": "stalled",
+            "last_poll_secs_ago": secs_ago
+        })
+    } else {
+        json!({"indexer": "ok"})
+    };
+
+    // Determine overall status
+    let is_degraded = !db_ok || indexer_status.get("indexer").and_then(|v| v.as_str()) == Some("stalled");
+
+    if is_degraded {
+        let response = json!({
+            "status": "degraded",
+            "db": if db_reachable { "ok" } else { "unreachable" }
+        });
+        // Merge indexer status
+        let mut obj = serde_json::to_value(response).unwrap();
+        if let Value::Object(ref mut map) = obj {
+            if let Value::Object(indexer_map) = indexer_status {
+                map.extend(indexer_map);
+            }
+        }
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(obj))
+    } else {
+        let response = json!({
+            "status": "ok",
+            "db": "ok",
+            "indexer": "ok"
+        });
+        (axum::http::StatusCode::OK, Json(response))
+    }
 }
 
 pub async fn metrics(State(state): State<crate::routes::AppState>) -> impl IntoResponse {
@@ -47,14 +118,6 @@ pub async fn get_events(
     let offset = params.offset();
     let exact = params.exact_count.unwrap_or(false);
 
-    let events: Vec<Event> = sqlx::query_as(
-        "SELECT *, COUNT(*) OVER () AS total_count FROM events ORDER BY ledger DESC LIMIT $1 OFFSET $2",
-    )
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&pool)
-    .await?;
-
     let columns = params.columns();
 
     let query_str = format!(
@@ -65,7 +128,7 @@ pub async fn get_events(
     let rows = sqlx::query(&query_str)
         .bind(limit)
         .bind(offset)
-        .fetch_all(&pool)
+        .fetch_all(&state.pool)
         .await?;
 
     let mut events = Vec::new();
@@ -89,14 +152,14 @@ pub async fn get_events(
 
     let (total, approximate): (i64, bool) = if exact {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
-            .fetch_one(&pool)
+            .fetch_one(&state.pool)
             .await?;
         (count, false)
     } else {
         let count: i64 = sqlx::query_scalar(
             "SELECT reltuples::bigint FROM pg_class WHERE relname = 'events'",
         )
-        .fetch_one(&pool)
+        .fetch_one(&state.pool)
         .await?;
         (count, true)
     };
@@ -131,7 +194,7 @@ pub async fn get_events_by_contract(
         .bind(&contract_id)
         .bind(limit)
         .bind(offset)
-        .fetch_all(&pool)
+        .fetch_all(&state.pool)
         .await?;
 
     if rows.is_empty() {
@@ -176,7 +239,7 @@ pub async fn get_events_by_tx(
 
     let rows = sqlx::query(&query_str)
         .bind(&tx_hash)
-        .fetch_all(&pool)
+        .fetch_all(&state.pool)
         .await?;
 
     let mut events = Vec::new();
@@ -208,11 +271,18 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use chrono::Utc;
     use sqlx::PgPool;
+    use std::sync::Arc;
     use tower::ServiceExt;
+    use crate::config::HealthState;
+
+    fn create_test_router(pool: PgPool) -> impl axum::extract::InferRouteService<AppState> {
+        let health_state = Arc::new(HealthState::new(60));
+        crate::routes::create_router(pool, None, &[], 60, health_state)
+    }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn get_events_by_tx_no_events_returns_200_empty_data(pool: PgPool) {
-        let app = crate::routes::create_router(pool, None, &[], 60);
+        let app = create_test_router(pool);
 
         let response = app
             .oneshot(
@@ -232,7 +302,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn get_events_by_contract_no_events_returns_200_empty_data(pool: PgPool) {
-        let app = crate::routes::create_router(pool, None, &[], 60);
+        let app = create_test_router(pool);
 
         let response = app
             .oneshot(
@@ -270,7 +340,7 @@ mod tests {
         .await
         .unwrap();
 
-        let app = crate::routes::create_router(pool, None, &[], 60);
+        let app = create_test_router(pool);
 
         let response = app
             .oneshot(
@@ -292,7 +362,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn database_error_response_does_not_leak_internals(pool: PgPool) {
-        let app = crate::routes::create_router(pool, None, &[], 60);
+        let app = create_test_router(pool);
 
         let response = app
             .oneshot(
@@ -320,7 +390,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn contract_id_too_long_returns_400(pool: PgPool) {
-        let app = crate::routes::create_router(pool, None, &[], 60);
+        let app = create_test_router(pool);
         let long_id = "C".repeat(100);
 
         let response = app
@@ -341,7 +411,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn contract_id_invalid_format_returns_400(pool: PgPool) {
-        let app = crate::routes::create_router(pool, None, &[], 60);
+        let app = create_test_router(pool);
 
         let response = app
             .oneshot(
@@ -361,7 +431,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn tx_hash_invalid_length_returns_400(pool: PgPool) {
-        let app = crate::routes::create_router(pool, None, &[], 60);
+        let app = create_test_router(pool);
 
         let response = app
             .oneshot(
@@ -381,7 +451,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn tx_hash_non_hex_returns_400(pool: PgPool) {
-        let app = crate::routes::create_router(pool, None, &[], 60);
+        let app = create_test_router(pool);
         let invalid_hex = "z".repeat(64);
 
         let response = app
@@ -402,7 +472,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn tx_hash_uppercase_hex_returns_400(pool: PgPool) {
-        let app = crate::routes::create_router(pool, None, &[], 60);
+        let app = create_test_router(pool);
         let uppercase_hex = "A".repeat(64);
 
         let response = app
@@ -423,7 +493,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn get_events_paginated_returns_approximate_count_by_default(pool: PgPool) {
-        let app = crate::routes::create_router(pool, None, &[], 60);
+        let app = create_test_router(pool);
 
         let response = app
             .oneshot(
@@ -444,7 +514,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn get_events_paginated_returns_exact_count_when_requested(pool: PgPool) {
-        let app = crate::routes::create_router(pool, None, &[], 60);
+        let app = create_test_router(pool);
 
         let response = app
             .oneshot(
@@ -465,7 +535,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn get_events_with_fields_filter_returns_only_requested_fields(pool: PgPool) {
-        let app = crate::routes::create_router(pool.clone(), None, &[], 60);
+        let app = create_test_router(pool.clone());
         
         // Insert a test row
         sqlx::query(
@@ -506,7 +576,7 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn get_events_total_count_scenarios(pool: PgPool) {
-        let app = crate::routes::create_router(pool.clone(), None, &[], 60);
+        let app = create_test_router(pool.clone());
 
         // 1. Empty set
         let response = app.clone()
@@ -554,5 +624,31 @@ mod tests {
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert!(v["total"].as_u64().is_some());
         assert_eq!(v["data"].as_array().unwrap().len(), 1);
+    }
+
+    /// Test that health endpoint returns 503 when DB is unreachable
+    #[tokio::test]
+    async fn health_db_unreachable_returns_503() {
+        // Create a pool that will fail to connect
+        let pool = PgPool::connect_lazy("postgres://invalid-host:5432/invalid_db").unwrap();
+        let health_state = Arc::new(HealthState::new(60));
+        let app = crate::routes::create_router(pool, None, &[], 60, health_state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // The DB is unreachable so should return 503
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["status"], "degraded");
+        assert_eq!(v["db"], "unreachable");
     }
 }

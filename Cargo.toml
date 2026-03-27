@@ -30,6 +30,7 @@ metrics-exporter-prometheus = "0.12"
 
 [dev-dependencies]
 mockito = "1.7.2"
+tower = "0.5"
 
 [features]
 default = []

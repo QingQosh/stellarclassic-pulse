@@ -1,5 +1,56 @@
 use std::env;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use url::Url;
+
+/// Shared state for health checks, accessible between the indexer and HTTP handlers
+#[derive(Clone)]
+pub struct HealthState {
+    /// Unix timestamp of the last successful indexer poll
+    pub last_indexer_poll: Arc<AtomicU64>,
+    /// Timeout in seconds after which the indexer is considered stalled
+    pub indexer_stall_timeout_secs: u64,
+}
+
+impl HealthState {
+    pub fn new(indexer_stall_timeout_secs: u64) -> Self {
+        Self {
+            last_indexer_poll: Arc::new(AtomicU64::new(0)),
+            indexer_stall_timeout_secs,
+        }
+    }
+
+    /// Update the last poll timestamp to the current time
+    pub fn update_last_poll(&self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        self.last_indexer_poll.store(now, Ordering::SeqCst);
+    }
+
+    /// Check if the indexer is stalled (no successful poll within the timeout)
+    /// Returns Some(seconds_ago) if stalled, None if OK
+    pub fn is_indexer_stalled(&self) -> Option<u64> {
+        let last_poll = self.last_indexer_poll.load(Ordering::SeqCst);
+        if last_poll == 0 {
+            // No poll ever completed
+            return Some(0);
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let elapsed = now.saturating_sub(last_poll);
+        if elapsed > self.indexer_stall_timeout_secs {
+            Some(elapsed)
+        } else {
+            None
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -35,6 +86,7 @@ impl Default for Config {
             rpc_request_timeout_secs: 30,
             allowed_origins: vec!["*".to_string()],
             rate_limit_per_minute: 60,
+            indexer_stall_timeout_secs: 60,
             indexer_lag_warn_threshold: 100,
         }
     }

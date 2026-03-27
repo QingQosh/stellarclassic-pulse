@@ -9,6 +9,7 @@ mod models;
 mod routes;
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -90,20 +91,31 @@ async fn main() -> anyhow::Result<()> {
     info!("Migrations applied successfully");
     info!(url = %config.stellar_rpc_url, "Soroban RPC URL");
 
+    // Create shared health state for indexer and HTTP handlers
+    let health_state = Arc::new(config::HealthState::new(config.indexer_stall_timeout_secs));
+
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let mut shutdown_rx_axum = shutdown_rx.clone();
 
-    // Spawn background indexer
-    let indexer = indexer::Indexer::new(pool.clone(), config.clone(), shutdown_rx);
+    // Spawn background indexer with health state
+    let mut indexer = indexer::Indexer::new(pool.clone(), config.clone(), shutdown_rx);
+    indexer.set_health_state(health_state.clone());
     let indexer_handle = tokio::spawn(async move {
         indexer.run().await;
     });
 
     tokio::spawn(async move {
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {},
-            _ = sigterm.recv() => {},
+        #[cfg(unix)]
+        {
+            let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = sigterm.recv() => {},
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c().await.ok();
         }
         tracing::info!("Shutdown signal received");
         let _ = shutdown_tx.send(true);
@@ -123,10 +135,11 @@ async fn main() -> anyhow::Result<()> {
 
     info!(behind_proxy = config.behind_proxy, "Running server - trusting X-Forwarded-For");
 
-    // GovernorLayer requires connect_info to extract peer IP — always use it.
+    // Use regular make_service since we handle connect_info through middleware
+    // Use the router directly as it implements Service for incoming connections
     axum::serve(
         listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
+        router,
     )
     .with_graceful_shutdown(async move {
         let _ = shutdown_rx_axum.changed().await;
