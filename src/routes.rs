@@ -13,7 +13,7 @@ use tower_http::{
 use metrics_exporter_prometheus::PrometheusHandle;
 use uuid::Uuid;
 
-use crate::{handlers, middleware, metrics};
+use crate::{config::{HealthState, IndexerState}, handlers, middleware, metrics};
 
 #[derive(Clone, Default)]
 struct UuidMakeRequestId;
@@ -37,16 +37,16 @@ pub fn create_router(
     allowed_origins: &[String],
     rate_limit_per_minute: u32,
     health_state: Arc<HealthState>,
+    indexer_state: Arc<IndexerState>,
     prometheus_handle: PrometheusHandle,
 ) -> Router {
     let cors = build_cors(allowed_origins);
     let auth_state = Arc::new(middleware::AuthState { api_key });
-    let app_state = AppState { pool, prometheus_handle };
 
-    // Create app state that combines pool and health state
-    let app_state = AppState {
+    let app_state = handlers::AppState {
         pool,
         health_state,
+        indexer_state,
     };
 
     // Replenish one token every (60 / rate_limit_per_minute) seconds.
@@ -72,6 +72,7 @@ pub fn create_router(
 
     Router::new()
         .route("/health", get(handlers::health))
+        .route("/status", get(handlers::status))
         .route("/metrics", get(handlers::metrics))
         .merge(api)
         .layer(axum::middleware::from_fn_with_state(

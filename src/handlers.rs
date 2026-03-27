@@ -7,13 +7,15 @@ use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use metrics_exporter_prometheus::PrometheusHandle;
 
-use crate::{config::HealthState, error::AppError, models::PaginationParams};
+use std::sync::atomic::Ordering;
+use crate::{config::{HealthState, IndexerState}, error::AppError, models::PaginationParams};
 
 /// State type for the application that includes both DB pool and health state
 #[derive(Clone)]
 pub struct AppState {
     pub pool: sqlx::PgPool,
     pub health_state: Arc<HealthState>,
+    pub indexer_state: Arc<IndexerState>,
 }
 
 /// State type for health check endpoint - same as AppState
@@ -103,6 +105,34 @@ pub async fn health(State(state): State<HealthCheckState>) -> (axum::http::Statu
         });
         (axum::http::StatusCode::OK, Json(response))
     }
+}
+
+pub async fn status(State(state): State<AppState>) -> Json<Value> {
+    let current_ledger = state.indexer_state.current_ledger.load(Ordering::Relaxed);
+    let latest_ledger = state.indexer_state.latest_ledger.load(Ordering::Relaxed);
+    let lag_ledgers = latest_ledger.saturating_sub(current_ledger);
+    let uptime_secs = state.indexer_state.uptime_secs();
+
+    let indexer_status = if state.health_state.is_indexer_stalled().is_some() {
+        "stalled"
+    } else {
+        "running"
+    };
+
+    let total_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(0);
+
+    Json(json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptime_secs": uptime_secs,
+        "current_ledger": current_ledger,
+        "latest_ledger": latest_ledger,
+        "lag_ledgers": lag_ledgers,
+        "total_events": total_events,
+        "indexer_status": indexer_status,
+    }))
 }
 
 pub async fn metrics(State(state): State<crate::routes::AppState>) -> impl IntoResponse {
