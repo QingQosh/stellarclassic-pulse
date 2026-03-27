@@ -1,12 +1,15 @@
 use axum::{extract::{Path, Query, State}, Json, response::IntoResponse};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use futures::stream::{self, Stream};
 use serde_json::{json, Value};
 use sqlx::Row;
+use std::convert::Infallible;
 use std::time::Duration;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
 use std::sync::atomic::Ordering;
-use crate::{error::AppError, models::PaginationParams, routes::AppState};
+use crate::{error::AppError, models::{PaginationParams, StreamParams}, routes::AppState};
 
 fn validate_contract_id(contract_id: &str) -> Result<(), AppError> {
     if contract_id.len() != 56 {
@@ -32,6 +35,15 @@ fn validate_tx_hash(tx_hash: &str) -> Result<(), AppError> {
 }
 
 /// Health check endpoint that verifies DB connectivity and indexer status
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "system",
+    responses(
+        (status = 200, description = "Service is healthy"),
+        (status = 503, description = "Service is degraded"),
+    )
+)]
 pub async fn health(State(state): State<AppState>) -> (axum::http::StatusCode, Json<Value>) {
     let mut db_ok = true;
     let mut db_reachable = true;
@@ -94,6 +106,14 @@ pub async fn health(State(state): State<AppState>) -> (axum::http::StatusCode, J
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/status",
+    tag = "system",
+    responses(
+        (status = 200, description = "Indexer operational status"),
+    )
+)]
 pub async fn status(State(state): State<AppState>) -> Json<Value> {
     let current_ledger = state.indexer_state.current_ledger.load(Ordering::Relaxed);
     let latest_ledger = state.indexer_state.latest_ledger.load(Ordering::Relaxed);
@@ -125,6 +145,74 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
 pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     state.prometheus_handle.render()
 }
+
+/// Serve the raw OpenAPI JSON spec.
+pub async fn openapi_json() -> impl IntoResponse {
+    use crate::routes::ApiDoc;
+    use utoipa::OpenApi;
+    Json(ApiDoc::openapi())
+}
+
+/// Stream new events in real time via Server-Sent Events.
+#[utoipa::path(
+    get,
+    path = "/v1/events/stream",
+    tag = "events",
+    params(
+        ("contract_id" = Option<String>, Query, description = "Filter by contract ID"),
+    ),
+    responses(
+        (status = 200, description = "SSE stream of new events (text/event-stream)"),
+    )
+)]
+pub async fn stream_events(
+    State(state): State<AppState>,
+    Query(params): Query<StreamParams>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let mut rx = state.event_tx.subscribe();
+    let contract_filter = params.contract_id;
+
+    let s = stream::unfold(rx, move |mut rx| {
+        let filter = contract_filter.clone();
+        async move {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        if let Some(ref cid) = filter {
+                            if &event.contract_id != cid {
+                                continue;
+                            }
+                        }
+                        let data = serde_json::to_string(&event).unwrap_or_default();
+                        return Some((Ok(Event::default().data(data)), rx));
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                }
+            }
+        }
+    });
+
+    Sse::new(s).keep_alive(KeepAlive::default())
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/events",
+    tag = "events",
+    params(
+        ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
+        ("limit" = Option<i64>, Query, description = "Results per page, 1–100 (default: 20)"),
+        ("exact_count" = Option<bool>, Query, description = "Use exact COUNT(*) instead of approximate"),
+        ("event_type" = Option<String>, Query, description = "Filter by event type: contract, diagnostic, system"),
+        ("from_ledger" = Option<i64>, Query, description = "Return events at or after this ledger"),
+        ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
+    ),
+    responses(
+        (status = 200, description = "Paginated list of events"),
+        (status = 400, description = "Invalid query parameters"),
+    )
+)]
 
 pub async fn get_events(
     State(state): State<AppState>,
@@ -246,6 +334,19 @@ pub async fn get_events(
     })))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/events/contract/{contract_id}",
+    tag = "events",
+    params(
+        ("contract_id" = String, Path, description = "Stellar contract ID (56-char, starts with C)"),
+    ),
+    responses(
+        (status = 200, description = "Events for the given contract"),
+        (status = 400, description = "Invalid contract_id format"),
+        (status = 404, description = "No events found for contract"),
+    )
+)]
 pub async fn get_events_by_contract(
     State(state): State<AppState>,
     Path(contract_id): Path<String>,
@@ -295,6 +396,18 @@ pub async fn get_events_by_contract(
     Ok(Json(json!({ "data": events, "contract_id": contract_id })))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/events/tx/{tx_hash}",
+    tag = "events",
+    params(
+        ("tx_hash" = String, Path, description = "Transaction hash (64 lowercase hex chars)"),
+    ),
+    responses(
+        (status = 200, description = "Events for the given transaction (empty array if none)"),
+        (status = 400, description = "Invalid tx_hash format"),
+    )
+)]
 pub async fn get_events_by_tx(
     State(state): State<AppState>,
     Path(tx_hash): Path<String>,
@@ -346,7 +459,7 @@ mod tests {
     use tower::ServiceExt;
     use crate::config::{HealthState, IndexerState};
 
-    fn create_test_router(pool: PgPool) -> impl axum::extract::InferRouteService<AppState> {
+    fn create_test_router(pool: PgPool) -> axum::Router {
         let health_state = Arc::new(HealthState::new(60));
         let indexer_state = Arc::new(IndexerState::new());
         let prometheus_handle = crate::metrics::init_metrics();
@@ -360,7 +473,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/events/tx/unknown_tx_hash_no_events_deadbeef")
+                    .uri("/v1/events/tx/unknown_tx_hash_no_events_deadbeef")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -380,7 +493,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/events/contract/unknown_contract_no_events_deadbeef")
+                    .uri("/v1/events/contract/unknown_contract_no_events_deadbeef")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -418,7 +531,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/events/tx/{tx_hash}"))
+                    .uri(format!("/v1/events/tx/{tx_hash}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -440,7 +553,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/events?limit=invalid")
+                    .uri("/v1/events?limit=invalid")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -469,7 +582,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/events/{}", long_id))
+                    .uri(format!("/v1/events/{}", long_id))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -489,7 +602,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/events/GABC123456789012345678901234567890123456789012345678")
+                    .uri("/v1/events/GABC123456789012345678901234567890123456789012345678")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -509,7 +622,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/events/tx/abc123")
+                    .uri("/v1/events/tx/abc123")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -530,7 +643,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/events/tx/{}", invalid_hex))
+                    .uri(format!("/v1/events/tx/{}", invalid_hex))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -551,7 +664,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/events/tx/{}", uppercase_hex))
+                    .uri(format!("/v1/events/tx/{}", uppercase_hex))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -571,7 +684,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/events")
+                    .uri("/v1/events")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -592,7 +705,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/events?exact_count=true")
+                    .uri("/v1/events?exact_count=true")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -629,7 +742,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/events?fields=id,ledger")
+                    .uri("/v1/events?fields=id,ledger")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -653,7 +766,7 @@ mod tests {
 
         // 1. Empty set
         let response = app.clone()
-            .oneshot(Request::builder().uri("/events").body(Body::empty()).unwrap())
+            .oneshot(Request::builder().uri("/v1/events").body(Body::empty()).unwrap())
             .await.unwrap();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
@@ -673,7 +786,7 @@ mod tests {
         }
 
         let response = app.clone()
-            .oneshot(Request::builder().uri("/events?limit=20").body(Body::empty()).unwrap())
+            .oneshot(Request::builder().uri("/v1/events?limit=20").body(Body::empty()).unwrap())
             .await.unwrap();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
@@ -683,7 +796,7 @@ mod tests {
 
         // 3. Multi-page (limit 2, total 3)
         let response = app.clone()
-            .oneshot(Request::builder().uri("/events?limit=2&page=1").body(Body::empty()).unwrap())
+            .oneshot(Request::builder().uri("/v1/events?limit=2&page=1").body(Body::empty()).unwrap())
             .await.unwrap();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
@@ -691,7 +804,7 @@ mod tests {
         assert_eq!(v["data"].as_array().unwrap().len(), 2);
 
         let response = app
-            .oneshot(Request::builder().uri("/events?limit=2&page=2").body(Body::empty()).unwrap())
+            .oneshot(Request::builder().uri("/v1/events?limit=2&page=2").body(Body::empty()).unwrap())
             .await.unwrap();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();

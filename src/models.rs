@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Event {
     pub id: Uuid,
     pub contract_id: String,
@@ -18,7 +18,7 @@ pub struct Event {
     pub total_count: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PaginationParams {
     pub page: Option<i64>,
     pub limit: Option<i64>,
@@ -27,6 +27,11 @@ pub struct PaginationParams {
     pub event_type: Option<String>,
     pub from_ledger: Option<i64>,
     pub to_ledger: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StreamParams {
+    pub contract_id: Option<String>,
 }
 
 impl PaginationParams {
@@ -90,7 +95,7 @@ pub struct GetEventsResult {
     pub rpc_cursor: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SorobanEvent {
     #[serde(rename = "contractId")]
     pub contract_id: String,
