@@ -1,13 +1,29 @@
-use axum::{routing::get, Router};
-use axum::http::{HeaderValue, Method};
+use axum::{body::Body, routing::get, Router};
+use axum::http::{HeaderValue, Method, Request};
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Instant;
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
-use tower_http::{cors::CorsLayer, trace::TraceLayer, compression::CompressionLayer};
+use tower_http::{
+    compression::CompressionLayer,
+    cors::CorsLayer,
+    request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
+    trace::TraceLayer,
+};
 use metrics_exporter_prometheus::PrometheusHandle;
+use uuid::Uuid;
 
 use crate::{handlers, middleware, metrics};
+
+#[derive(Clone, Default)]
+struct UuidMakeRequestId;
+
+impl MakeRequestId for UuidMakeRequestId {
+    fn make_request_id<B>(&mut self, _request: &Request<B>) -> Option<RequestId> {
+        let id = Uuid::new_v4().to_string().parse().ok()?;
+        Some(RequestId::new(id))
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -73,8 +89,25 @@ pub fn create_router(
             response
         }))
         .layer(cors)
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &Request<Body>| {
+                let request_id = request
+                    .headers()
+                    .get("x-request-id")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("unknown")
+                    .to_owned();
+                tracing::info_span!(
+                    "request",
+                    method = %request.method(),
+                    uri = %request.uri(),
+                    request_id = %request_id,
+                )
+            }),
+        )
+        .layer(PropagateRequestIdLayer::x_request_id())
         .layer(CompressionLayer::new())
+        .layer(SetRequestIdLayer::x_request_id(UuidMakeRequestId))
         .with_state(app_state)
 }
 

@@ -20,7 +20,7 @@ opentelemetry = { version = "0.21", optional = true }
 opentelemetry-otlp = { version = "0.14", optional = true }
 dotenvy = "0.15"
 thiserror = "1"
-tower-http = { version = "0.5", features = ["trace", "cors", "compression-full", "metrics"] }
+tower-http = { version = "0.5", features = ["trace", "cors", "compression-full", "metrics", "request-id"] }
 axum-extra = { version = "0.9", features = ["typed-header"] }
 anyhow = "1.0.102"
 url = "2"
