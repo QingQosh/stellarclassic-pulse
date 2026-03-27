@@ -8,7 +8,7 @@ use tokio::time::sleep;
 use tracing::{error, info, warn, instrument, span, Level};
 
 use crate::{
-    config::{Config, HealthState},
+    config::{Config, HealthState, IndexerState},
     metrics,
     models::{GetEventsResult, LatestLedgerResult, RpcResponse, SorobanEvent},
 };
@@ -38,6 +38,7 @@ pub struct Indexer {
     config: Config,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     health_state: Option<Arc<HealthState>>,
+    indexer_state: Option<Arc<IndexerState>>,
 }
 
 impl Indexer {
@@ -50,12 +51,18 @@ impl Indexer {
             config,
             shutdown_rx,
             health_state: None,
+            indexer_state: None,
         }
     }
 
     /// Set the health state for updating the last poll timestamp
     pub fn set_health_state(&mut self, health_state: Arc<HealthState>) {
         self.health_state = Some(health_state);
+    }
+
+    /// Set the indexer state for exposing operational metrics to the /status endpoint
+    pub fn set_indexer_state(&mut self, indexer_state: Arc<IndexerState>) {
+        self.indexer_state = Some(indexer_state);
     }
 
     pub async fn run(&self) {
@@ -70,6 +77,9 @@ impl Indexer {
                         current_ledger = ledger;
                         info!(ledger = current_ledger, "Starting from latest ledger");
                         metrics::update_current_ledger(current_ledger);
+                        if let Some(ref s) = self.indexer_state {
+                            s.current_ledger.store(current_ledger, std::sync::atomic::Ordering::Relaxed);
+                        }
                         break;
                     }
                     Err(e) => {
@@ -107,10 +117,16 @@ impl Indexer {
                     if latest > current_ledger {
                         current_ledger = latest;
                         metrics::update_current_ledger(current_ledger);
-                        
+                        if let Some(ref s) = self.indexer_state {
+                            s.current_ledger.store(current_ledger, std::sync::atomic::Ordering::Relaxed);
+                        }
+
                         // Calculate and update lag
                         let latest_ledger = self.get_latest_ledger().await.unwrap_or(0);
                         if latest_ledger > current_ledger {
+                            if let Some(ref s) = self.indexer_state {
+                                s.latest_ledger.store(latest_ledger, std::sync::atomic::Ordering::Relaxed);
+                            }
                             let lag = latest_ledger - current_ledger;
                             metrics::update_indexer_lag(lag);
                             

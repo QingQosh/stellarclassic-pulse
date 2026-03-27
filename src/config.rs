@@ -1,7 +1,37 @@
 use std::env;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
+
+/// Shared operational state updated by the indexer and read by the /status handler.
+pub struct IndexerState {
+    pub current_ledger: AtomicU64,
+    pub latest_ledger: AtomicU64,
+    started_at: u64,
+}
+
+impl IndexerState {
+    pub fn new() -> Self {
+        let started_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        Self {
+            current_ledger: AtomicU64::new(0),
+            latest_ledger: AtomicU64::new(0),
+            started_at,
+        }
+    }
+
+    pub fn uptime_secs(&self) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .saturating_sub(self.started_at)
+    }
+}
 
 /// Deployment environment — controls strictness of defaults.
 #[derive(Clone, Debug, PartialEq, Eq)]

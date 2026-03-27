@@ -113,12 +113,16 @@ async fn main() -> anyhow::Result<()> {
     // Create shared health state for indexer and HTTP handlers
     let health_state = Arc::new(config::HealthState::new(config.indexer_stall_timeout_secs));
 
+    // Create shared indexer state for /status endpoint
+    let indexer_state = Arc::new(config::IndexerState::new());
+
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let mut shutdown_rx_axum = shutdown_rx.clone();
 
     // Spawn background indexer with health state
     let mut indexer = indexer::Indexer::new(pool.clone(), config.clone(), shutdown_rx);
     indexer.set_health_state(health_state.clone());
+    indexer.set_indexer_state(indexer_state.clone());
     let indexer_handle = tokio::spawn(async move {
         indexer.run().await;
     });
@@ -143,14 +147,7 @@ async fn main() -> anyhow::Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     info!(origins = ?config.allowed_origins, "Allowed CORS origins");
     info!(rate_limit = config.rate_limit_per_minute, "Rate limit per IP");
-    let router = routes::create_router(
-        pool,
-        config.api_key,
-        &config.allowed_origins,
-        config.rate_limit_per_minute,
-        health_state,
-        prometheus_handle,
-    );
+    let router = routes::create_router(pool, config.api_key, &config.allowed_origins, config.rate_limit_per_minute, health_state, indexer_state, prometheus_handle);
 
     info!(addr = %addr, "Soroban Pulse listening");
 

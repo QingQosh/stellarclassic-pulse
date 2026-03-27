@@ -5,6 +5,7 @@ use std::time::Duration;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
+use std::sync::atomic::Ordering;
 use crate::{error::AppError, models::PaginationParams, routes::AppState};
 
 fn validate_contract_id(contract_id: &str) -> Result<(), AppError> {
@@ -91,6 +92,34 @@ pub async fn health(State(state): State<AppState>) -> (axum::http::StatusCode, J
         });
         (axum::http::StatusCode::OK, Json(response))
     }
+}
+
+pub async fn status(State(state): State<AppState>) -> Json<Value> {
+    let current_ledger = state.indexer_state.current_ledger.load(Ordering::Relaxed);
+    let latest_ledger = state.indexer_state.latest_ledger.load(Ordering::Relaxed);
+    let lag_ledgers = latest_ledger.saturating_sub(current_ledger);
+    let uptime_secs = state.indexer_state.uptime_secs();
+
+    let indexer_status = if state.health_state.is_indexer_stalled().is_some() {
+        "stalled"
+    } else {
+        "running"
+    };
+
+    let total_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(0);
+
+    Json(json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptime_secs": uptime_secs,
+        "current_ledger": current_ledger,
+        "latest_ledger": latest_ledger,
+        "lag_ledgers": lag_ledgers,
+        "total_events": total_events,
+        "indexer_status": indexer_status,
+    }))
 }
 
 pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
@@ -315,12 +344,13 @@ mod tests {
     use sqlx::PgPool;
     use std::sync::Arc;
     use tower::ServiceExt;
-    use crate::config::HealthState;
+    use crate::config::{HealthState, IndexerState};
 
     fn create_test_router(pool: PgPool) -> impl axum::extract::InferRouteService<AppState> {
         let health_state = Arc::new(HealthState::new(60));
+        let indexer_state = Arc::new(IndexerState::new());
         let prometheus_handle = crate::metrics::init_metrics();
-        crate::routes::create_router(pool, None, &[], 60, health_state, prometheus_handle)
+        crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle)
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -675,7 +705,8 @@ mod tests {
         let pool = PgPool::connect_lazy("postgres://invalid-host:5432/invalid_db").unwrap();
         let health_state = Arc::new(HealthState::new(60));
         let prometheus_handle = crate::metrics::init_metrics();
-        let app = crate::routes::create_router(pool, None, &[], 60, health_state, prometheus_handle);
+        let indexer_state = Arc::new(IndexerState::new());
+        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle);
 
         let response = app
             .oneshot(

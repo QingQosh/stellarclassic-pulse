@@ -3,11 +3,16 @@ use axum::http::{HeaderValue, Method, Request};
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Instant;
-use tower_http::{cors::CorsLayer, trace::TraceLayer, compression::CompressionLayer};
+use tower_http::{
+    compression::CompressionLayer,
+    cors::CorsLayer,
+    request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
+    trace::TraceLayer,
+};
 use metrics_exporter_prometheus::PrometheusHandle;
 use uuid::Uuid;
 
-use crate::{config::HealthState, handlers, middleware, metrics};
+use crate::{config::{HealthState, IndexerState}, handlers, middleware, metrics};
 
 #[derive(Clone, Default)]
 struct UuidMakeRequestId;
@@ -23,6 +28,7 @@ impl MakeRequestId for UuidMakeRequestId {
 pub struct AppState {
     pub pool: PgPool,
     pub health_state: Arc<HealthState>,
+    pub indexer_state: Arc<IndexerState>,
     pub prometheus_handle: PrometheusHandle,
 }
 
@@ -32,17 +38,19 @@ pub fn create_router(
     allowed_origins: &[String],
     rate_limit_per_minute: u32,
     health_state: Arc<HealthState>,
+    indexer_state: Arc<IndexerState>,
     prometheus_handle: PrometheusHandle,
 ) -> Router {
     let cors = build_cors(allowed_origins);
     let auth_state = Arc::new(middleware::AuthState { api_key });
-    let app_state = AppState { pool, health_state, prometheus_handle };
+    let app_state = AppState { pool, health_state, indexer_state, prometheus_handle };
 
     // Replenish one token every (60 / rate_limit_per_minute) seconds.
     let _period_secs = 60u64.div_ceil(u64::from(rate_limit_per_minute));
 
     Router::new()
         .route("/health", get(handlers::health))
+        .route("/status", get(handlers::status))
         .route("/metrics", get(handlers::metrics))
         .route("/events", get(handlers::get_events))
         .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
@@ -51,7 +59,7 @@ pub fn create_router(
             auth_state,
             middleware::auth_middleware,
         ))
-        .layer(axum::middleware::from_fn(|req, next| async {
+        .layer(axum::middleware::from_fn(|req: axum::http::Request<Body>, next: axum::middleware::Next| async move {
             let method = req.method().as_str().to_string();
             let route = req.uri().path().to_string();
             let start = Instant::now();
