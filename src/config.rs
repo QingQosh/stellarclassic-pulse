@@ -179,6 +179,17 @@ fn resolve_database_url() -> String {
 }
 
 impl Config {
+    /// Returns the DATABASE_URL with credentials stripped — safe to log.
+    pub fn safe_db_url(&self) -> String {
+        Url::parse(&self.database_url)
+            .map(|mut u| {
+                let _ = u.set_username("");
+                let _ = u.set_password(None);
+                u.to_string()
+            })
+            .unwrap_or_else(|_| "<unparseable>".to_string())
+    }
+
     pub fn from_env() -> Self {
         let environment = Environment::from_str(
             &env::var("ENVIRONMENT").unwrap_or_else(|_| "development".to_string()),
