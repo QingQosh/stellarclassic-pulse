@@ -1,89 +1,54 @@
 # Contributing to Soroban Pulse
 
-Thanks for your interest in contributing! This document covers everything you need to get started.
+## Getting Started
 
-## Development Setup
+1. Fork the repo and create a branch from `main`.
+2. Copy `.env.example` to `.env` and fill in your values. **Never commit `.env` or any `.env.*` file.**
+3. Run `make docker-up` to start the full stack, or `make run` for the dev server only.
 
-### Prerequisites
+## Common Tasks
 
-- Rust (stable) — install via [rustup](https://rustup.rs/)
-- PostgreSQL 14+
-- Docker + Docker Compose (optional, easiest path)
+Run `make help` to see all available targets:
 
-### Local setup
+```
+make build       # Compile the project
+make test        # Run the full test suite (requires DATABASE_URL)
+make lint        # Run clippy with warnings as errors
+make fmt         # Format source code
+make run         # Start the development server
+make docker-up   # Start the full stack via Docker Compose
+make docker-down # Tear down the Docker Compose stack
+make migrate     # Run pending database migrations
+make clean       # Remove build artifacts
+```
+
+## Pre-commit Hooks
+
+This project uses [lefthook](https://github.com/evilmartians/lefthook) to run `cargo check`, `cargo fmt --check`, and `cargo clippy` before every commit.
+
+Install lefthook and register the hooks once:
 
 ```bash
-git clone https://github.com/Soroban-Pulse/SorobanPulse.git
-cd SorobanPulse
-cp .env.example .env
-# Edit .env and fill in your DATABASE_URL and other values
-cargo build
+# macOS
+brew install lefthook
+
+# Linux / other (via cargo)
+cargo install lefthook
+
+# Register hooks in your local clone
+lefthook install
 ```
 
-### Run with Docker Compose
-
-```bash
-docker-compose up --build
-```
-
-This starts PostgreSQL and the service together. Migrations run automatically on startup.
-
-### Run locally (without Docker)
-
-```bash
-# Start a local PostgreSQL instance, then:
-cargo run
-```
-
-## Running Tests
-
-```bash
-cargo test
-```
-
-Integration tests use `sqlx::test` and spin up a real PostgreSQL instance. Make sure `DATABASE_URL` is set in your environment or `.env`.
-
-## Branch Naming
-
-| Prefix    | When to use                              |
-|-----------|------------------------------------------|
-| `feat/`   | New features                             |
-| `fix/`    | Bug fixes                                |
-| `chore/`  | Maintenance, dependency updates, tooling |
-| `docs/`   | Documentation-only changes               |
-| `refactor/` | Code changes with no behaviour change  |
-
-Examples: `feat/ledger-range-filter`, `fix/pagination-offset`, `docs/update-readme`
-
-## Commit Message Format
-
-Follow [Conventional Commits](https://www.conventionalcommits.org/):
-
-```
-<type>(<optional scope>): <short description> (#<issue>)
-
-[optional body]
-```
-
-Types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `perf`
-
-Examples:
-```
-feat(api): add event_type filter to GET /events (#81)
-fix(indexer): handle empty ledger range gracefully (#77)
-docs: add RUST_LOG troubleshooting note (#79)
-```
-
-## Pull Request Process
-
-1. Fork the repo and create your branch from `main`.
-2. Make your changes with focused, atomic commits.
-3. Ensure `cargo test` passes and `cargo clippy` reports no warnings.
-4. Open a PR against `main` — the PR template will guide you through the required fields.
-5. A maintainer will review and merge once approved.
+Hooks typically complete in under 30 seconds on a typical change. If a hook fails, fix the reported issue and re-commit.
 
 ## Code Style
 
-- Run `cargo fmt` before committing.
-- Address all `cargo clippy` warnings.
-- Keep functions small and focused; avoid unnecessary abstractions.
+- Formatting is enforced by `rustfmt` using the project's `rustfmt.toml` (`max_width = 100`, `edition = "2021"`).
+- Run `make fmt` before pushing, or let the pre-commit hook handle it.
+- CI will reject any PR where `cargo fmt --check` fails.
+
+## Pull Requests
+
+- Keep PRs focused — one logical change per PR.
+- Ensure `make test` and `make lint` pass locally before opening a PR.
+- Write a clear PR description referencing the relevant issue (e.g. `Closes #75`).

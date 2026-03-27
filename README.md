@@ -62,17 +62,29 @@ Open the newly created `.env` file in your editor and fill in your own real valu
 ### 3. Run with Docker Compose (easiest)
 
 ```bash
-docker-compose up --build
+make docker-up
 ```
 
 ### 4. Run locally
 
 ```bash
 # Start PostgreSQL, then:
-cargo run
+make run
 ```
 
 Migrations run automatically on startup.
+
+### 5. Common tasks
+
+```bash
+make help   # list all available targets with descriptions
+make build  # compile
+make test   # run the full test suite
+make lint   # clippy with warnings as errors
+make fmt    # format source code
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full developer workflow.
 
 ## API
 
