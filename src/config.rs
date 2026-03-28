@@ -122,6 +122,7 @@ pub struct Config {
     pub rate_limit_per_minute: u32,
     pub indexer_lag_warn_threshold: u64,
     pub indexer_stall_timeout_secs: u64,
+    pub db_statement_timeout_ms: u64,
     pub environment: Environment,
 }
 
@@ -135,7 +136,7 @@ impl Default for Config {
             port: 3000,
             api_key: None,
             db_max_connections: 10,
-            db_min_connections: 1,
+            db_min_connections: 2,
             behind_proxy: false,
             rpc_connect_timeout_secs: 5,
             rpc_request_timeout_secs: 30,
@@ -143,6 +144,7 @@ impl Default for Config {
             rate_limit_per_minute: 60,
             indexer_lag_warn_threshold: 100,
             indexer_stall_timeout_secs: 60,
+            db_statement_timeout_ms: 5000,
             environment: Environment::Development,
         }
     }
@@ -277,7 +279,7 @@ impl Config {
                 .parse()
                 .expect("DB_MAX_CONNECTIONS must be a number"),
             db_min_connections: env::var("DB_MIN_CONNECTIONS")
-                .unwrap_or_else(|_| "1".to_string())
+                .unwrap_or_else(|_| "2".to_string())
                 .parse()
                 .expect("DB_MIN_CONNECTIONS must be a number"),
             behind_proxy,
@@ -302,6 +304,10 @@ impl Config {
                 .unwrap_or_else(|_| "60".to_string())
                 .parse()
                 .expect("INDEXER_STALL_TIMEOUT_SECS must be a number"),
+            db_statement_timeout_ms: env::var("DB_STATEMENT_TIMEOUT_MS")
+                .unwrap_or_else(|_| "5000".to_string())
+                .parse()
+                .expect("DB_STATEMENT_TIMEOUT_MS must be a number"),
             environment,
         }
     }

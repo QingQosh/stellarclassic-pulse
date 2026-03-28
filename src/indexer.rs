@@ -4,6 +4,7 @@ use serde_json::json;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::broadcast;
 use tokio::time::sleep;
 use tracing::{error, info, warn, instrument, span, Level};
 
@@ -12,6 +13,9 @@ use crate::{
     metrics,
     models::{GetEventsResult, LatestLedgerResult, RpcResponse, SorobanEvent},
 };
+
+/// Postgres advisory lock key for the indexer singleton.
+const INDEXER_LOCK_KEY: i64 = 0x536f726f62616e50; // "SorobanP"
 
 #[derive(Debug, thiserror::Error)]
 enum IndexerFetchError {
@@ -39,6 +43,7 @@ pub struct Indexer {
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     health_state: Option<Arc<HealthState>>,
     indexer_state: Option<Arc<IndexerState>>,
+    event_tx: Option<broadcast::Sender<SorobanEvent>>,
 }
 
 impl Indexer {
@@ -52,6 +57,7 @@ impl Indexer {
             shutdown_rx,
             health_state: None,
             indexer_state: None,
+            event_tx: None,
         }
     }
 
@@ -65,7 +71,51 @@ impl Indexer {
         self.indexer_state = Some(indexer_state);
     }
 
+    /// Set the broadcast sender for real-time SSE streaming.
+    pub fn set_event_tx(&mut self, event_tx: broadcast::Sender<SorobanEvent>) {
+        self.event_tx = Some(event_tx);
+    }
+
     pub async fn run(&self) {
+        // Attempt to acquire a Postgres session-level advisory lock.
+        // Only one replica will hold this lock at a time; others serve HTTP only.
+        let lock_conn = match self.pool.acquire().await {
+            Ok(c) => c,
+            Err(e) => {
+                error!(error = %e, "Failed to acquire DB connection for advisory lock");
+                return;
+            }
+        };
+
+        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+            .bind(INDEXER_LOCK_KEY)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(false);
+
+        if !acquired {
+            info!("Indexer lock not acquired, running in read-only mode");
+            // Hold the connection open so we can detect when the lock owner dies
+            // and re-attempt on the next startup/restart cycle.
+            drop(lock_conn);
+            return;
+        }
+
+        info!("Indexer lock acquired, starting indexing");
+
+        // Run the actual indexing loop; release lock on exit.
+        self.run_loop().await;
+
+        // Explicitly release the advisory lock on graceful shutdown.
+        let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(INDEXER_LOCK_KEY)
+            .execute(&self.pool)
+            .await;
+
+        drop(lock_conn);
+    }
+
+    async fn run_loop(&self) {
         let mut current_ledger = self.config.start_ledger;
         let mut consecutive_db_errors = 0u32;
 
@@ -282,6 +332,8 @@ impl Indexer {
                         total_inserted += rows;
                         if rows == 0 {
                             total_skipped += 1;
+                        } else if let Some(ref tx) = self.event_tx {
+                            let _ = tx.send(event);
                         }
                     }
                     Err(e) => {

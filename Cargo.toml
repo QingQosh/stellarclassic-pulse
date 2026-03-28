@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Re-enable axum "ws" when implementing SSE/WebSocket (tracked in issue #83).
-axum = "0.8"
+axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
 sqlx = { version = "0.7", features = ["postgres", "runtime-tokio-rustls", "chrono", "uuid", "json"] }
 serde = { version = "1", features = ["derive"] }

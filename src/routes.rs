@@ -3,6 +3,7 @@ use axum::http::{HeaderValue, Method, Request};
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::broadcast;
 use tower_http::{
     compression::CompressionLayer,
     cors::CorsLayer,
@@ -11,8 +12,10 @@ use tower_http::{
 };
 use metrics_exporter_prometheus::PrometheusHandle;
 use uuid::Uuid;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
-use crate::{config::{HealthState, IndexerState}, handlers, middleware, metrics};
+use crate::{config::{HealthState, IndexerState}, handlers, middleware, metrics, models::SorobanEvent};
 
 #[derive(Clone, Default)]
 struct UuidMakeRequestId;
@@ -30,7 +33,35 @@ pub struct AppState {
     pub health_state: Arc<HealthState>,
     pub indexer_state: Arc<IndexerState>,
     pub prometheus_handle: PrometheusHandle,
+    pub event_tx: broadcast::Sender<SorobanEvent>,
 }
+
+/// OpenAPI spec — all paths are documented via #[utoipa::path] on handlers.
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "Soroban Pulse API",
+        version = "1.0.0",
+        description = "Indexes Soroban smart contract events on the Stellar network."
+    ),
+    paths(
+        handlers::health,
+        handlers::status,
+        handlers::get_events,
+        handlers::get_events_by_contract,
+        handlers::get_events_by_tx,
+        handlers::stream_events,
+    ),
+    components(schemas(
+        crate::models::Event,
+        crate::models::PaginationParams,
+    )),
+    tags(
+        (name = "events", description = "Event indexing endpoints"),
+        (name = "system", description = "Health and observability endpoints"),
+    )
+)]
+pub struct ApiDoc;
 
 pub fn create_router(
     pool: PgPool,
@@ -41,20 +72,61 @@ pub fn create_router(
     indexer_state: Arc<IndexerState>,
     prometheus_handle: PrometheusHandle,
 ) -> Router {
+    create_router_with_tx(pool, api_key, allowed_origins, rate_limit_per_minute, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0)
+}
+
+pub fn create_router_with_tx(
+    pool: PgPool,
+    api_key: Option<String>,
+    allowed_origins: &[String],
+    rate_limit_per_minute: u32,
+    health_state: Arc<HealthState>,
+    indexer_state: Arc<IndexerState>,
+    prometheus_handle: PrometheusHandle,
+    event_tx: broadcast::Sender<SorobanEvent>,
+) -> Router {
     let cors = build_cors(allowed_origins);
     let auth_state = Arc::new(middleware::AuthState { api_key });
-    let app_state = AppState { pool, health_state, indexer_state, prometheus_handle };
+    let app_state = AppState { pool, health_state, indexer_state, prometheus_handle, event_tx };
 
-    // Replenish one token every (60 / rate_limit_per_minute) seconds.
     let _period_secs = 60u64.div_ceil(u64::from(rate_limit_per_minute));
+
+    // Versioned v1 routes
+    let v1 = Router::new()
+        .route("/events", get(handlers::get_events))
+        .route("/events/stream", get(handlers::stream_events))
+        .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
+        .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx));
+
+    // Unversioned deprecated aliases (same handlers, add Deprecation header via middleware)
+    let deprecated = Router::new()
+        .route("/events", get(handlers::get_events))
+        .route("/events/stream", get(handlers::stream_events))
+        .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
+        .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx))
+        .layer(axum::middleware::from_fn(|req: Request<Body>, next: axum::middleware::Next| async move {
+            let mut resp = next.run(req).await;
+            resp.headers_mut().insert(
+                "Deprecation",
+                HeaderValue::from_static("true"),
+            );
+            resp.headers_mut().insert(
+                "Link",
+                HeaderValue::from_static("</v1/events>; rel=\"successor-version\""),
+            );
+            resp
+        }));
+
+    let swagger: Router<AppState> = SwaggerUi::new("/docs").url("/openapi.json", ApiDoc::openapi()).into();
 
     Router::new()
         .route("/health", get(handlers::health))
         .route("/status", get(handlers::status))
         .route("/metrics", get(handlers::metrics))
-        .route("/events", get(handlers::get_events))
-        .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
-        .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx))
+        .route("/openapi.json", get(handlers::openapi_json))
+        .merge(swagger)
+        .nest("/v1", v1)
+        .merge(deprecated)
         .layer(axum::middleware::from_fn_with_state(
             auth_state,
             middleware::auth_middleware,

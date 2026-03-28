@@ -88,6 +88,7 @@ async fn main() -> anyhow::Result<()> {
                 &config.database_url,
                 config.db_max_connections,
                 config.db_min_connections,
+                config.db_statement_timeout_ms,
             )
             .await
             {
@@ -119,10 +120,14 @@ async fn main() -> anyhow::Result<()> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let mut shutdown_rx_axum = shutdown_rx.clone();
 
+    // Broadcast channel for real-time SSE streaming (capacity 256 events)
+    let (event_tx, _) = tokio::sync::broadcast::channel::<models::SorobanEvent>(256);
+
     // Spawn background indexer with health state
     let mut indexer = indexer::Indexer::new(pool.clone(), config.clone(), shutdown_rx);
     indexer.set_health_state(health_state.clone());
     indexer.set_indexer_state(indexer_state.clone());
+    indexer.set_event_tx(event_tx.clone());
     let indexer_handle = tokio::spawn(async move {
         indexer.run().await;
     });
@@ -147,7 +152,7 @@ async fn main() -> anyhow::Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     info!(origins = ?config.allowed_origins, "Allowed CORS origins");
     info!(rate_limit = config.rate_limit_per_minute, "Rate limit per IP");
-    let router = routes::create_router(pool, config.api_key, &config.allowed_origins, config.rate_limit_per_minute, health_state, indexer_state, prometheus_handle);
+    let router = routes::create_router_with_tx(pool, config.api_key, &config.allowed_origins, config.rate_limit_per_minute, health_state, indexer_state, prometheus_handle, event_tx);
 
     info!(addr = %addr, "Soroban Pulse listening");
 
