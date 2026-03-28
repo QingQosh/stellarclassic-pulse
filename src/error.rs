@@ -30,6 +30,9 @@ impl IntoResponse for AppError {
             AppError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
             AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             AppError::Database(e) => {
+                if is_query_timeout(e) {
+                    return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "query timeout" }))).into_response();
+                }
                 tracing::error!(
                     correlation_id = %correlation_id,
                     error = %e,
@@ -57,4 +60,12 @@ impl IntoResponse for AppError {
         
         (status, Json(json!({ "error": message }))).into_response()
     }
+}
+
+fn is_query_timeout(e: &sqlx::Error) -> bool {
+    // Postgres error code 57014 = query_canceled (covers statement_timeout)
+    if let sqlx::Error::Database(db_err) = e {
+        return db_err.code().as_deref() == Some("57014");
+    }
+    false
 }
