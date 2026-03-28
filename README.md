@@ -35,32 +35,56 @@ migrations/
 
 ### 2. Configure environment
 
+Copy the provided `.env.example` template to a new file named `.env`:
+
 ```bash
 cp .env.example .env
-# Edit .env with your values
 ```
+
+Open the newly created `.env` file in your editor and fill in your own real values. Be sure to replace the placeholder credentials (e.g., `<USER>`, `<PASSWORD>`) with your actual database and network details.
 
 | Variable          | Description                          | Default                                  |
 |-------------------|--------------------------------------|------------------------------------------|
 | `DATABASE_URL`    | PostgreSQL connection string         | required                                 |
 | `STELLAR_RPC_URL` | Soroban RPC endpoint                 | `https://soroban-testnet.stellar.org`    |
+| `DB_MAX_CONNECTIONS` | Max number of connections in the Postgres pool | `10` |
+| `DB_MIN_CONNECTIONS` | Min number of connections in the Postgres pool | `1` |
 | `START_LEDGER`    | Ledger to start indexing from (0 = latest) | `0`                               |
 | `PORT`            | HTTP server port                     | `3000`                                   |
+| `RUST_LOG`        | Log verbosity level (`trace`, `debug`, `info`, `warn`, `error`) | `info` |
+| `API_KEY`         | Optional key for API authentication  | (disabled)                               |
+| `RUST_LOG_FORMAT` | Log output format (`text` or `json`) | `text`                                   |
+| `INDEXER_LAG_WARN_THRESHOLD` | Indexer lag warning threshold (ledgers) | `100`                                   |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry OTLP collector endpoint (when built with `otel` feature) | `http://localhost:4317` |
+
+> **Note on Authentication:** You can enable optional API key authentication by setting the `API_KEY` environment variable. When set, all requests (except `/health` and `/healthz/*` endpoints) will require either an `Authorization: Bearer <API_KEY>` or an `X-Api-Key: <API_KEY>` header. If `API_KEY` is unset or omitted from your configuration, authentication is bypassed and all requests pass through.
 
 ### 3. Run with Docker Compose (easiest)
 
 ```bash
-docker-compose up --build
+make docker-up
 ```
 
 ### 4. Run locally
 
 ```bash
 # Start PostgreSQL, then:
-cargo run
+make run
 ```
 
 Migrations run automatically on startup.
+
+### 5. Common tasks
+
+```bash
+make help   # list all available targets with descriptions
+make build  # compile
+make test   # run the full test suite
+make lint   # clippy with warnings as errors
+make fmt    # format source code
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full developer workflow.
 
 ## API
 
@@ -69,8 +93,14 @@ Migrations run automatically on startup.
 { "status": "ok" }
 ```
 
-### `GET /events?page=1&limit=20`
+### `GET /events?page=1&limit=20&exact_count=false`
 Returns paginated events across all contracts.
+
+- **`exact_count`**: (Optional) Use `true` for a precise `COUNT(*)` result on a large dataset. Default is `false`, which provides an approximate count via PostgreSQL statistics for low-latency responses.
+- **`event_type`**: (Optional) Filter by event type. Accepted values: `contract`, `diagnostic`, `system`. Returns `400` for unknown values.
+- **`from_ledger`**: (Optional) Return only events at or after this ledger sequence number.
+- **`to_ledger`**: (Optional) Return only events at or before this ledger sequence number. Returns `400` if `from_ledger > to_ledger`.
+
 ```json
 {
   "data": [
@@ -87,7 +117,8 @@ Returns paginated events across all contracts.
   ],
   "total": 100,
   "page": 1,
-  "limit": 20
+  "limit": 20,
+  "approximate": true
 }
 ```
 
@@ -95,7 +126,7 @@ Returns paginated events across all contracts.
 Returns all events for a specific contract.
 
 ### `GET /events/tx/{tx_hash}`
-Returns all events from a specific transaction.
+Returns all events from a specific transaction. If nothing has been indexed for that hash yet (including valid on-chain transactions that emitted no Soroban events), the response is **200 OK** with an empty `"data"` array — not **404**.
 
 ## How It Works
 
@@ -110,6 +141,61 @@ Returns all events from a specific transaction.
 - `START_LEDGER=0` automatically starts from the latest ledger at boot time.
 - All endpoints return JSON. Errors include an `"error"` field with a description.
 
+## Observability
+
+### Metrics
+
+The service exposes Prometheus-compatible metrics at `GET /metrics`:
+
+- `soroban_pulse_events_indexed_total` - Total number of events indexed
+- `soroban_pulse_indexer_current_ledger` - Current ledger being processed
+- `soroban_pulse_indexer_latest_ledger` - Latest ledger from RPC
+- `soroban_pulse_indexer_lag_ledgers` - Lag between latest and current ledger
+- `soroban_pulse_rpc_errors_total` - Total RPC errors
+- `soroban_pulse_http_request_duration_seconds` - HTTP request duration by route, method, and status
+
+### Distributed Tracing
+
+When built with the `otel` feature, the service supports OpenTelemetry distributed tracing:
+
+```bash
+# Build with OpenTelemetry support
+cargo build --features otel
+
+# Configure the OTLP exporter endpoint
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+
+# Run the service
+cargo run --features otel
+```
+
+Each indexer poll cycle produces a root span with child spans for RPC and DB operations, allowing you to trace latency through the system in tools like Jaeger or Honeycomb.
+
+### Structured Logging
+
+Set `RUST_LOG_FORMAT=json` to output logs in JSON format for easier parsing by log aggregation tools:
+
+```bash
+export RUST_LOG_FORMAT=json
+cargo run
+```
+
 ## Deployment
 
 See [docs/deployment.md](docs/deployment.md) for TLS termination options (nginx, Caddy, AWS ALB) and production security guidance.
+
+## Troubleshooting
+
+**No log output after `cargo run`**
+The service uses `RUST_LOG` to control log verbosity. If this variable is not set, you will see no output and may think the service is broken — it is not. Set it in your `.env` file or shell:
+
+```bash
+export RUST_LOG=info
+cargo run
+```
+
+The service defaults to `info` level internally, but the environment variable must be present for the tracing subscriber to emit output. The `.env.example` file includes `RUST_LOG=info` — make sure you copied it to `.env`.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, branch naming, commit conventions, and the PR process.
