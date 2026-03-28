@@ -60,3 +60,42 @@ pub struct SorobanEvent {
     pub value: Value,
     pub topic: Option<Vec<Value>>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params(page: Option<i64>, limit: Option<i64>) -> PaginationParams {
+        PaginationParams { page, limit }
+    }
+
+    #[test]
+    fn page_zero_offset_is_zero() {
+        assert_eq!(params(Some(0), None).offset(), 0);
+    }
+
+    #[test]
+    fn page_none_offset_is_zero() {
+        assert_eq!(params(None, None).offset(), 0);
+    }
+
+    #[test]
+    fn limit_zero_clamps_to_one() {
+        assert_eq!(params(None, Some(0)).limit(), 1);
+    }
+
+    #[test]
+    fn limit_over_max_clamps_to_hundred() {
+        assert_eq!(params(None, Some(200)).limit(), 100);
+    }
+
+    #[test]
+    fn limit_none_defaults_to_twenty() {
+        assert_eq!(params(None, None).limit(), 20);
+    }
+
+    #[test]
+    fn page_3_limit_10_offset_is_20() {
+        assert_eq!(params(Some(3), Some(10)).offset(), 20);
+    }
+}

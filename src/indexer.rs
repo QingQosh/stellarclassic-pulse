@@ -177,4 +177,50 @@ mod tests {
     fn ledger_overflow_returns_err() {
         assert!(i64::try_from(make_event(u64::MAX).ledger).is_err());
     }
+
+    fn indexer(pool: PgPool) -> Indexer {
+        Indexer {
+            pool,
+            client: Client::new(),
+            config: Config {
+                database_url: String::new(),
+                stellar_rpc_url: String::new(),
+                start_ledger: 0,
+                port: 3000,
+                behind_proxy: false,
+            },
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn duplicate_insert_yields_one_row(pool: PgPool) {
+        let indexer = indexer(pool.clone());
+        let event = make_event(1);
+
+        indexer.store_event(&event).await.unwrap();
+        indexer.store_event(&event).await.unwrap(); // must not error
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn same_tx_hash_different_event_type_both_stored(pool: PgPool) {
+        let indexer = indexer(pool.clone());
+        let mut e1 = make_event(1);
+        let mut e2 = make_event(1);
+        e2.event_type = "system".into();
+
+        indexer.store_event(&e1).await.unwrap();
+        indexer.store_event(&e2).await.unwrap();
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 2);
+    }
 }
