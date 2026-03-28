@@ -1,6 +1,48 @@
 # Deployment Guide
 
-## Environment Configuration
+## Horizontal Scaling
+
+Soroban Pulse supports running multiple replicas safely. Only one replica will run the indexer loop at a time; all others serve HTTP traffic in read-only mode.
+
+### How it works
+
+On startup, each replica attempts to acquire a **Postgres session-level advisory lock** (`pg_try_advisory_lock`). The first replica to acquire the lock becomes the active indexer and logs:
+
+```
+Indexer lock acquired, starting indexing
+```
+
+All other replicas fail to acquire the lock and log:
+
+```
+Indexer lock not acquired, running in read-only mode
+```
+
+They continue to serve all HTTP endpoints (`/v1/events`, `/health`, `/metrics`, etc.) against the shared database.
+
+### Failover
+
+The advisory lock is **session-scoped**: if the indexer replica crashes or its database connection is dropped, Postgres automatically releases the lock. The next replica to restart (or any replica that reconnects) will acquire the lock within one poll cycle and resume indexing.
+
+On graceful shutdown (`SIGTERM` / `Ctrl-C`), the active indexer explicitly releases the lock via `pg_advisory_unlock` before exiting, allowing another replica to take over immediately.
+
+### Example: 3-replica Docker Compose
+
+```yaml
+services:
+  app:
+    image: soroban-pulse:latest
+    deploy:
+      replicas: 3
+    environment:
+      DATABASE_URL: postgres://user:pass@db:5432/soroban_pulse
+```
+
+With 3 replicas running, exactly one will hold the advisory lock and index events. The other two serve HTTP only. If the indexer replica is killed, one of the remaining two will acquire the lock on its next startup.
+
+---
+
+
 
 Soroban Pulse ships three `.env.*.example` templates:
 

@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Re-enable axum "ws" when implementing SSE/WebSocket (tracked in issue #83).
-axum = "0.8"
+axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
 sqlx = { version = "0.7", features = ["postgres", "runtime-tokio-rustls", "chrono", "uuid", "json"] }
 serde = { version = "1", features = ["derive"] }
@@ -27,6 +26,9 @@ url = "2"
 tower_governor = { version = "0.8.0", features = ["axum"] }
 metrics = "0.21"
 metrics-exporter-prometheus = "0.12"
+futures = "0.3"
+utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 [dev-dependencies]
 mockito = "1.7.2"
