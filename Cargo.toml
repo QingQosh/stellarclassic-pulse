@@ -25,3 +25,4 @@ async-trait = "0.1"
 
 [dev-dependencies]
 sqlx = { version = "0.7", features = ["postgres", "runtime-tokio-rustls", "chrono", "uuid", "json", "migrate"] }
+async-trait = "0.1"
