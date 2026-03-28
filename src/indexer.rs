@@ -14,6 +14,12 @@ use crate::{
     models::{GetEventsResult, LatestLedgerResult, RpcResponse, SorobanEvent},
 };
 
+#[async_trait::async_trait]
+pub trait RpcClient: Send + Sync {
+    async fn get_latest_ledger(&self, rpc_url: &str) -> Result<u64, String>;
+    async fn get_events(&self, rpc_url: &str, start_ledger: u64, cursor: Option<String>) -> Result<GetEventsResult, String>;
+}
+
 /// Postgres advisory lock key for the indexer singleton.
 const INDEXER_LOCK_KEY: i64 = 0x536f726f62616e50; // "SorobanP"
 
@@ -36,9 +42,119 @@ fn build_rpc_client(config: &Config) -> Client {
         .expect("Failed to build HTTP client")
 }
 
-pub struct Indexer {
-    pool: PgPool,
+pub struct SorobanRpcClient {
     client: Client,
+}
+
+impl SorobanRpcClient {
+    pub fn new(config: &Config) -> Self {
+        let client = build_rpc_client(config);
+        Self { client }
+    }
+}
+
+#[async_trait::async_trait]
+impl RpcClient for SorobanRpcClient {
+    async fn get_latest_ledger(&self, rpc_url: &str) -> Result<u64, String> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getLatestLedger"
+        });
+
+        let span = span!(Level::INFO, "rpc_get_latest_ledger", url = %rpc_url);
+        let _enter = span.enter();
+
+        let resp: RpcResponse<LatestLedgerResult> = self
+            .client
+            .post(rpc_url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    warn!(
+                        "RPC request timeout"
+                    );
+                }
+                metrics::record_rpc_error();
+                e.to_string()
+            })?
+            .json()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        match resp.result {
+            Some(r) => {
+                metrics::update_latest_ledger(r.sequence);
+                Ok(r.sequence)
+            }
+            None => {
+                if let Some(err) = resp.error {
+                    warn!(code = err.code, message = %err.message, "RPC error");
+                    metrics::record_rpc_error();
+                }
+                Err("RPC returned no result".to_string())
+            }
+        }
+    }
+
+    async fn get_events(&self, rpc_url: &str, start_ledger: u64, cursor: Option<String>) -> Result<GetEventsResult, String> {
+        let mut params = json!({
+            "filters": [],
+            "pagination": { "limit": 100 }
+        });
+
+        if let Some(c) = &cursor {
+            params["pagination"]["cursor"] = json!(c);
+        } else {
+            params["startLedger"] = json!(start_ledger);
+        }
+
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getEvents",
+            "params": params
+        });
+
+        let resp: RpcResponse<GetEventsResult> = self
+            .client
+            .post(rpc_url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    warn!(
+                        "RPC request timeout"
+                    );
+                }
+                metrics::record_rpc_error();
+                e.to_string()
+            })?
+            .json()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        match resp.result {
+            Some(r) => Ok(r),
+            None => {
+                if let Some(err) = resp.error {
+                    warn!(code = err.code, message = %err.message, "RPC error");
+                    metrics::record_rpc_error();
+                    Err(err.message)
+                } else {
+                    Err("RPC returned no result".to_string())
+                }
+            }
+        }
+    }
+}
+
+pub struct Indexer<R: RpcClient> {
+    pool: PgPool,
+    rpc_client: R,
     config: Config,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     health_state: Option<Arc<HealthState>>,
@@ -46,13 +162,11 @@ pub struct Indexer {
     event_tx: Option<broadcast::Sender<SorobanEvent>>,
 }
 
-impl Indexer {
-    pub fn new(pool: PgPool, config: Config, shutdown_rx: tokio::sync::watch::Receiver<bool>) -> Self {
-        let client = build_rpc_client(&config);
-
+impl<R: RpcClient> Indexer<R> {
+    pub fn new(pool: PgPool, config: Config, shutdown_rx: tokio::sync::watch::Receiver<bool>, rpc_client: R) -> Self {
         Self {
             pool,
-            client,
+            rpc_client,
             config,
             shutdown_rx,
             health_state: None,
@@ -122,7 +236,7 @@ impl Indexer {
         if current_ledger == 0 {
             let mut retries = 0;
             loop {
-                match self.get_latest_ledger().await {
+                match self.rpc_client.get_latest_ledger(&self.config.stellar_rpc_url).await {
                     Ok(ledger) => {
                         current_ledger = ledger;
                         info!(ledger = current_ledger, "Starting from latest ledger");
@@ -172,7 +286,7 @@ impl Indexer {
                         }
 
                         // Calculate and update lag
-                        let latest_ledger = self.get_latest_ledger().await.unwrap_or(0);
+                        let latest_ledger = self.rpc_client.get_latest_ledger(&self.config.stellar_rpc_url).await.unwrap_or(0);
                         if latest_ledger > current_ledger {
                             if let Some(ref s) = self.indexer_state {
                                 s.latest_ledger.store(latest_ledger, std::sync::atomic::Ordering::Relaxed);
@@ -219,48 +333,7 @@ impl Indexer {
     }
 
     async fn get_latest_ledger(&self) -> Result<u64, String> {
-        let body = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "getLatestLedger"
-        });
-
-        let span = span!(Level::INFO, "rpc_get_latest_ledger", url = %self.config.stellar_rpc_url);
-        let _enter = span.enter();
-
-        let resp: RpcResponse<LatestLedgerResult> = self
-            .client
-            .post(&self.config.stellar_rpc_url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    warn!(
-                        timeout_secs = self.config.rpc_request_timeout_secs,
-                        "RPC request timeout"
-                    );
-                }
-                metrics::record_rpc_error();
-                e.to_string()
-            })?
-            .json()
-            .await
-            .map_err(|e| e.to_string())?;
-
-        match resp.result {
-            Some(r) => {
-                metrics::update_latest_ledger(r.sequence);
-                Ok(r.sequence)
-            }
-            None => {
-                if let Some(err) = resp.error {
-                    warn!(code = err.code, message = %err.message, "RPC error");
-                    metrics::record_rpc_error();
-                }
-                Err("RPC returned no result".to_string())
-            }
-        }
+        self.rpc_client.get_latest_ledger(&self.config.stellar_rpc_url).await
     }
 
     #[instrument(skip(self), fields(start_ledger = start_ledger))]
@@ -290,35 +363,12 @@ impl Indexer {
                 "params": params
             });
 
-            let resp: RpcResponse<GetEventsResult> = self
-                .client
-                .post(&self.config.stellar_rpc_url)
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| {
-                    if e.is_timeout() {
-                        warn!(
-                            timeout_secs = self.config.rpc_request_timeout_secs,
-                            "RPC request timeout"
-                        );
-                    }
+            let result = match self.rpc_client.get_events(&self.config.stellar_rpc_url, start_ledger, cursor).await {
+                Ok(r) => r,
+                Err(msg) => {
+                    warn!(message = %msg, "RPC error");
                     metrics::record_rpc_error();
-                    IndexerFetchError::Rpc(e.to_string())
-                })?
-                .json()
-                .await
-                .map_err(|e| IndexerFetchError::Rpc(e.to_string()))?;
-
-            let result = match resp.result {
-                Some(r) => r,
-                None => {
-                    if let Some(err) = resp.error {
-                        warn!(code = err.code, message = %err.message, "RPC error");
-                        metrics::record_rpc_error();
-                        return Err(IndexerFetchError::Rpc(err.message));
-                    }
-                    break;
+                    return Err(IndexerFetchError::Rpc(msg));
                 }
             };
 
@@ -429,6 +479,69 @@ impl Indexer {
 mod tests {
     use super::*;
     use serde_json::Value;
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::watch;
+
+    #[derive(Debug, Clone)]
+    pub struct MockRpcClient {
+        latest_ledger_responses: Arc<Mutex<VecDeque<Result<u64, String>>>>,
+        get_events_responses: Arc<Mutex<VecDeque<Result<GetEventsResult, String>>>>,
+    }
+
+    impl MockRpcClient {
+        pub fn new() -> Self {
+            Self {
+                latest_ledger_responses: Arc::new(Mutex::new(VecDeque::new())),
+                get_events_responses: Arc::new(Mutex::new(VecDeque::new())),
+            }
+        }
+
+        pub fn with_latest_ledger_responses(responses: Vec<Result<u64, String>>) -> Self {
+            Self {
+                latest_ledger_responses: Arc::new(Mutex::new(VecDeque::from(responses))),
+                get_events_responses: Arc::new(Mutex::new(VecDeque::new())),
+            }
+        }
+
+        pub fn with_get_events_responses(responses: Vec<Result<GetEventsResult, String>>) -> Self {
+            Self {
+                latest_ledger_responses: Arc::new(Mutex::new(VecDeque::new())),
+                get_events_responses: Arc::new(Mutex::new(VecDeque::from(responses))),
+            }
+        }
+
+        pub fn add_latest_ledger_response(&self, response: Result<u64, String>) {
+            self.latest_ledger_responses.lock().unwrap().push_back(response);
+        }
+
+        pub fn add_get_events_response(&self, response: Result<GetEventsResult, String>) {
+            self.get_events_responses.lock().unwrap().push_back(response);
+        }
+    }
+
+    impl Default for MockRpcClient {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RpcClient for MockRpcClient {
+        async fn get_latest_ledger(&self, _rpc_url: &str) -> Result<u64, String> {
+            let mut responses = self.latest_ledger_responses.lock().unwrap();
+            responses.pop_front().unwrap_or(Ok(100))
+        }
+
+        async fn get_events(&self, _rpc_url: &str, _start_ledger: u64, _cursor: Option<String>) -> Result<GetEventsResult, String> {
+            let mut responses = self.get_events_responses.lock().unwrap();
+            responses.pop_front().unwrap_or(Ok(GetEventsResult {
+                events: vec![],
+                latest_ledger: 100,
+                rpc_cursor: None,
+            }))
+        }
+    }
 
     fn make_event(ledger: u64) -> SorobanEvent {
         SorobanEvent {
@@ -447,18 +560,32 @@ mod tests {
         assert!(i64::try_from(make_event(u64::MAX).ledger).is_err());
     }
 
-    fn indexer(pool: PgPool) -> Indexer {
-        Indexer {
+    fn indexer(pool: PgPool) -> Indexer<MockRpcClient> {
+        let (_, shutdown_rx) = watch::channel(false);
+        Indexer::new(
             pool,
-            client: Client::new(),
-            config: Config {
+            Config {
                 database_url: String::new(),
                 stellar_rpc_url: String::new(),
                 start_ledger: 0,
                 port: 3000,
                 behind_proxy: false,
+                start_ledger_fallback: true,
+                indexer_lag_warn_threshold: 1000,
+                rpc_connect_timeout_secs: 30,
+                rpc_request_timeout_secs: 60,
+                api_key: None,
+                db_max_connections: 10,
+                db_min_connections: 2,
+                allowed_origins: vec!["*".to_string()],
+                rate_limit_per_minute: 60,
+                indexer_stall_timeout_secs: 60,
+                db_statement_timeout_ms: 5000,
+                environment: crate::config::Environment::Development,
             },
-        }
+            shutdown_rx,
+            MockRpcClient::new(),
+        )
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -491,5 +618,81 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn mock_rpc_client_returns_configured_responses() {
+        let mock_client = MockRpcClient::with_latest_ledger_responses(vec![
+            Ok(42),
+            Err("RPC error".to_string()),
+            Ok(100),
+        ]);
+
+        assert_eq!(mock_client.get_latest_ledger("http://test").await.unwrap(), 42);
+        assert!(mock_client.get_latest_ledger("http://test").await.is_err());
+        assert_eq!(mock_client.get_latest_ledger("http://test").await.unwrap(), 100);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn mock_rpc_client_get_events_returns_configured_responses() {
+        let test_event = make_event(1);
+        let mock_client = MockRpcClient::with_get_events_responses(vec![
+            Ok(GetEventsResult {
+                events: vec![test_event.clone()],
+                latest_ledger: 50,
+                rpc_cursor: None,
+            }),
+            Err("Network error".to_string()),
+        ]);
+
+        let result1 = mock_client.get_events("http://test", 1, None).await.unwrap();
+        assert_eq!(result1.events.len(), 1);
+        assert_eq!(result1.latest_ledger, 50);
+
+        let result2 = mock_client.get_events("http://test", 2, None).await;
+        assert!(result2.is_err());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn indexer_uses_mock_rpc_client(pool: PgPool) {
+        let mock_client = MockRpcClient::new();
+        mock_client.add_latest_ledger_response(Ok(100));
+        
+        let test_event = make_event(100);
+        mock_client.add_get_events_response(Ok(GetEventsResult {
+            events: vec![test_event],
+            latest_ledger: 100,
+            rpc_cursor: None,
+        }));
+
+        let (_, shutdown_rx) = watch::channel(false);
+        let indexer = Indexer::new(
+            pool,
+            Config {
+                database_url: String::new(),
+                stellar_rpc_url: String::new(),
+                start_ledger: 100,
+                port: 3000,
+                behind_proxy: false,
+                start_ledger_fallback: true,
+                indexer_lag_warn_threshold: 1000,
+                rpc_connect_timeout_secs: 30,
+                rpc_request_timeout_secs: 60,
+                api_key: None,
+                db_max_connections: 10,
+                db_min_connections: 2,
+                allowed_origins: vec!["*".to_string()],
+                rate_limit_per_minute: 60,
+                indexer_stall_timeout_secs: 60,
+                db_statement_timeout_ms: 5000,
+                environment: crate::config::Environment::Development,
+            },
+            shutdown_rx,
+            mock_client,
+        );
+
+        // Test that the indexer can use the mock client
+        let latest_ledger = indexer.get_latest_ledger().await.unwrap();
+        assert_eq!(latest_ledger, 100);
     }
 }
