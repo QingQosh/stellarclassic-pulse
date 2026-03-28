@@ -838,4 +838,42 @@ mod tests {
         assert_eq!(v["status"], "degraded");
         assert_eq!(v["db"], "unreachable");
     }
+
+    #[test]
+    fn test_validate_contract_id_valid() {
+        assert!(validate_contract_id("C123456789012345678901234567890123456789012345678901234567890").is_ok());
+    }
+
+    #[test]
+    fn test_validate_contract_id_invalid_length() {
+        assert!(validate_contract_id("C123").is_err());
+    }
+
+    #[test]
+    fn test_validate_contract_id_invalid_prefix() {
+        let invalid_id = "123456789012345678901234567890123456789012345678901234567890";
+        assert_eq!(invalid_id.len(), 56);
+        assert!(validate_contract_id(invalid_id).is_err());
+    }
+
+    #[test]
+    fn test_validate_contract_id_invalid_characters() {
+        assert!(validate_contract_id("C12345678901234567890123456789012345678901234567890123456789!").is_err());
+    }
+
+    #[test]
+    fn test_validate_tx_hash_valid() {
+        assert!(validate_tx_hash("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890").is_ok());
+    }
+
+    #[test]
+    fn test_validate_tx_hash_invalid_length() {
+        assert!(validate_tx_hash("abc123").is_err());
+    }
+
+    #[test]
+    fn test_validate_tx_hash_invalid_characters() {
+        assert!(validate_tx_hash("ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890").is_err());
+        assert!(validate_tx_hash("abcdef1234567890abcdef1234567890abcdef1234567890abcdef123456789g").is_err());
+    }
 }
