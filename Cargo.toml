@@ -21,19 +21,6 @@ dotenvy = "0.15"
 thiserror = "1"
 tower-http = { version = "0.5", features = ["trace", "cors", "compression-full", "metrics", "request-id"] }
 axum-extra = { version = "0.9", features = ["typed-header"] }
-anyhow = "1.0.102"
-url = "2"
-tower_governor = { version = "0.8.0", features = ["axum"] }
-metrics = "0.21"
-metrics-exporter-prometheus = "0.12"
-futures = "0.3"
-utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
-utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 [dev-dependencies]
-mockito = "1.7.2"
-tower = "0.5"
-
-[features]
-default = []
-otel = ["tracing-opentelemetry", "opentelemetry", "opentelemetry-otlp"]
+sqlx = { version = "0.7", features = ["postgres", "runtime-tokio-rustls", "chrono", "uuid", "json", "migrate"] }

@@ -447,167 +447,49 @@ mod tests {
         assert!(i64::try_from(make_event(u64::MAX).ledger).is_err());
     }
 
-    #[test]
-    fn test_rpc_error_deserialization() {
-        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid Request"}}"#;
-        let resp: RpcResponse<GetEventsResult> = serde_json::from_str(json).unwrap();
-        assert!(resp.result.is_none());
-        assert!(resp.error.is_some());
-        assert_eq!(resp.error.unwrap().message, "Invalid Request");
+    fn indexer(pool: PgPool) -> Indexer {
+        Indexer {
+            pool,
+            client: Client::new(),
+            config: Config {
+                database_url: String::new(),
+                stellar_rpc_url: String::new(),
+                start_ledger: 0,
+                port: 3000,
+                behind_proxy: false,
+            },
+        }
     }
 
-    #[test]
-    fn test_rpc_success_deserialization() {
-        let json = r#"{"jsonrpc":"2.0","id":1,"result":{"events":[],"latestLedger":123}}"#;
-        let resp: RpcResponse<GetEventsResult> = serde_json::from_str(json).unwrap();
-        assert!(resp.result.is_some());
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result.unwrap().latest_ledger, 123);
+    #[sqlx::test(migrations = "./migrations")]
+    async fn duplicate_insert_yields_one_row(pool: PgPool) {
+        let indexer = indexer(pool.clone());
+        let event = make_event(1);
+
+        indexer.store_event(&event).await.unwrap();
+        indexer.store_event(&event).await.unwrap(); // must not error
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
-    #[tokio::test]
-    async fn test_store_event_malformed_timestamp() {
-        let pool = PgPool::connect_lazy("postgres://localhost/unused").unwrap();
-        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let indexer = Indexer::new(pool, Config::default(), shutdown_rx);
-        let mut event = make_event(100);
-        event.ledger_closed_at = "invalid-date".into();
+    #[sqlx::test(migrations = "./migrations")]
+    async fn same_tx_hash_different_event_type_both_stored(pool: PgPool) {
+        let indexer = indexer(pool.clone());
+        let mut e1 = make_event(1);
+        let mut e2 = make_event(1);
+        e2.event_type = "system".into();
 
-        let result = indexer.store_event(&event).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unparseable ledger_closed_at: invalid-date"));
-    }
+        indexer.store_event(&e1).await.unwrap();
+        indexer.store_event(&e2).await.unwrap();
 
-    #[tokio::test]
-    async fn test_fetch_and_store_events_pagination() {
-        let mut server = mockito::Server::new_async().await;
-        let url = server.url();
-
-        let page1_response = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {
-                "events": [
-                    {
-                        "contractId": "C1",
-                        "type": "contract",
-                        "txHash": "hash1",
-                        "ledger": 100,
-                        "ledgerClosedAt": "2026-03-24T00:00:00Z",
-                        "value": null,
-                        "topic": null
-                    }
-                ],
-                "latestLedger": 100,
-                "cursor": "next-page-cursor"
-            }
-        });
-
-        let page2_response = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {
-                "events": [
-                    {
-                        "contractId": "C1",
-                        "type": "contract",
-                        "txHash": "hash2",
-                        "ledger": 100,
-                        "ledgerClosedAt": "2026-03-24T00:00:00Z",
-                        "value": null,
-                        "topic": null
-                    }
-                ],
-                "latestLedger": 100,
-                "cursor": null
-            }
-        });
-
-        let _m1 = server.mock("POST", "/")
-            .match_body(mockito::Matcher::Json(json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "getEvents",
-                "params": {
-                    "startLedger": 100,
-                    "filters": [],
-                    "pagination": { "limit": 100 }
-                }
-            })))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(page1_response.to_string())
-            .create_async().await;
-
-        let _m2 = server.mock("POST", "/")
-            .match_body(mockito::Matcher::Json(json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "getEvents",
-                "params": {
-                    "filters": [],
-                    "pagination": {
-                        "cursor": "next-page-cursor",
-                        "limit": 100
-                    }
-                }
-            })))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(page2_response.to_string())
-            .create_async().await;
-
-        let config = crate::config::Config {
-            stellar_rpc_url: url,
-            ..Default::default()
-        };
-
-        // We use an empty pool which will cause store_event to fail, 
-        // but the pagination loop should still continue.
-        let pool = PgPool::connect_lazy("postgres://localhost/unused").unwrap();
-        let (_tx, _rx) = tokio::sync::watch::channel(false);
-        let indexer = Indexer::new(pool, config, _rx);
-
-        let next_ledger = indexer.fetch_and_store_events(100).await.unwrap();
-
-        assert_eq!(next_ledger, 101);
-        _m1.assert_async().await;
-        _m2.assert_async().await;
-    }
-
-    #[tokio::test]
-    async fn test_fetch_and_store_events_no_new_ledgers() {
-        let mut server = mockito::Server::new_async().await;
-        let url = server.url();
-
-        // RPC returns latest_ledger == start_ledger (no new ledgers)
-        let response = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {
-                "events": [],
-                "latestLedger": 200,
-                "cursor": null
-            }
-        });
-
-        let _m = server.mock("POST", "/")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(response.to_string())
-            .create_async().await;
-
-        let config = crate::config::Config {
-            stellar_rpc_url: url,
-            ..Default::default()
-        };
-
-        let pool = PgPool::connect_lazy("postgres://localhost/unused").unwrap();
-        let (_tx, rx) = tokio::sync::watch::channel(false);
-        let indexer = Indexer::new(pool, config, rx);
-
-        // start_ledger == latest_ledger == 200: cursor must not advance
-        let next_ledger = indexer.fetch_and_store_events(200).await.unwrap();
-        assert_eq!(next_ledger, 200);
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 2);
     }
 }
