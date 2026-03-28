@@ -124,7 +124,8 @@ async fn main() -> anyhow::Result<()> {
     let (event_tx, _) = tokio::sync::broadcast::channel::<models::SorobanEvent>(256);
 
     // Spawn background indexer with health state
-    let mut indexer = indexer::Indexer::new(pool.clone(), config.clone(), shutdown_rx);
+    let rpc_client = indexer::SorobanRpcClient::new(&config);
+    let mut indexer = indexer::Indexer::new(pool.clone(), config.clone(), shutdown_rx, rpc_client);
     indexer.set_health_state(health_state.clone());
     indexer.set_indexer_state(indexer_state.clone());
     indexer.set_event_tx(event_tx.clone());
