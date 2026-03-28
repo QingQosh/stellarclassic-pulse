@@ -136,7 +136,7 @@ impl Default for Config {
             port: 3000,
             api_key: None,
             db_max_connections: 10,
-            db_min_connections: 1,
+            db_min_connections: 2,
             behind_proxy: false,
             rpc_connect_timeout_secs: 5,
             rpc_request_timeout_secs: 30,
@@ -279,7 +279,7 @@ impl Config {
                 .parse()
                 .expect("DB_MAX_CONNECTIONS must be a number"),
             db_min_connections: env::var("DB_MIN_CONNECTIONS")
-                .unwrap_or_else(|_| "1".to_string())
+                .unwrap_or_else(|_| "2".to_string())
                 .parse()
                 .expect("DB_MIN_CONNECTIONS must be a number"),
             behind_proxy,
