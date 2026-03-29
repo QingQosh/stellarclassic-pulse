@@ -1479,7 +1479,7 @@ mod tests {
         assert!(event.get("created_at").is_none());
 
         // Test fields filter with invalid fields (should be ignored)
-        let response = app
+        let response = app.clone()
             .oneshot(Request::builder().uri("/v1/events?fields=ledger,invalid_field,contract_id").body(Body::empty()).unwrap())
             .await.unwrap();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();

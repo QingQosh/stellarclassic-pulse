@@ -616,7 +616,7 @@ mod tests {
         assert_eq!(count, 2);
     }
 
-    #[sqlx::test(migrations = "./migrations")]
+    #[tokio::test]
     async fn mock_rpc_client_returns_configured_responses() {
         let mock_client = MockRpcClient::with_latest_ledger_responses(vec![
             Ok(42),
@@ -629,7 +629,7 @@ mod tests {
         assert_eq!(mock_client.get_latest_ledger("http://test").await.unwrap(), 100);
     }
 
-    #[sqlx::test(migrations = "./migrations")]
+    #[tokio::test]
     async fn mock_rpc_client_get_events_returns_configured_responses() {
         let test_event = make_event(1);
         let mock_client = MockRpcClient::with_get_events_responses(vec![
