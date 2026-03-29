@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help build test lint fmt run docker-up docker-down migrate clean
+.PHONY: help build test test-db lint fmt run docker-up docker-down migrate clean
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*##"}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -10,6 +10,13 @@ build: ## Compile the project
 
 test: ## Run the full test suite (requires DATABASE_URL)
 	cargo test
+
+test-db: ## Start a test Postgres container and run the full test suite
+	docker compose -f docker-compose.test.yml up -d --wait
+	DATABASE_URL=postgres://postgres:postgres@localhost/soroban_pulse_test cargo test; \
+	  EXIT=$$?; \
+	  docker compose -f docker-compose.test.yml down; \
+	  exit $$EXIT
 
 lint: ## Run clippy with warnings as errors
 	cargo clippy -- -D warnings

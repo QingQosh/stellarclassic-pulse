@@ -1,5 +1,30 @@
 # Contributing to Soroban Pulse
 
+## Running Integration Tests
+
+Integration tests require a live PostgreSQL instance. The easiest way is `make test-db`, which starts a throwaway container, runs the full suite, then tears it down:
+
+```bash
+make test-db   # only Docker required — no local Postgres needed
+```
+
+Under the hood this runs:
+
+```bash
+docker compose -f docker-compose.test.yml up -d --wait
+DATABASE_URL=postgres://postgres:postgres@localhost/soroban_pulse_test cargo test
+docker compose -f docker-compose.test.yml down
+```
+
+If you already have a Postgres instance running, set `DATABASE_URL` directly:
+
+```bash
+export DATABASE_URL=postgres://<user>:<password>@localhost/<dbname>
+cargo test
+```
+
+`sqlx::test`-annotated tests create and tear down their own isolated database automatically — no manual schema setup needed.
+
 ## Getting Started
 
 1. Fork the repo and create a branch from `main`.
