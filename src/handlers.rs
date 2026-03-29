@@ -153,7 +153,7 @@ pub async fn openapi_json() -> impl IntoResponse {
     Json(ApiDoc::openapi())
 }
 
-/// Serve a minimal Swagger UI page backed by the CDN bundle.
+/// Serve a minimal Swagger UI HTML page.
 pub async fn swagger_ui() -> impl IntoResponse {
     axum::response::Html(
         "<!DOCTYPE html><html><head><title>Soroban Pulse API</title>\
