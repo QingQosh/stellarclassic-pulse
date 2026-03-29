@@ -95,9 +95,27 @@ All canonical routes are versioned under `/v1/`. The unversioned paths (`/events
 - **Swagger UI**: `GET /docs` — interactive API explorer
 - **OpenAPI JSON**: `GET /openapi.json` — machine-readable OpenAPI 3.0 spec
 
-### `GET /health`
+### `GET /health` (backward-compatible alias)
+`/health` is kept as a compatibility path and mirrors `/healthz/ready` semantics.
+
+- `200 OK`: DB reachable and indexer not stalled
+- `503 Service Unavailable`: DB unreachable or indexer stalled
+
+### `GET /healthz/live`
+
+- `200 OK`: process is running (no external checks)
+
 ```json
-{ "status": "ok" }
+{ "status": "alive" }
+```
+
+### `GET /healthz/ready`
+
+- `200 OK`: DB reachable and indexer not stalled
+- `503 Service Unavailable`: DB unreachable or indexer stalled
+
+```json
+{ "status": "ok", "db": "ok", "indexer": "ok" }
 ```
 
 ### `GET /v1/events?page=1&limit=20&exact_count=false`

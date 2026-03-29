@@ -134,7 +134,7 @@ async fn main() -> anyhow::Result<()> {
         indexer.run().await;
     });
 
-    tokio::spawn(async move {
+    async fn shutdown_signal() {
         #[cfg(unix)]
         {
             let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
@@ -143,11 +143,23 @@ async fn main() -> anyhow::Result<()> {
                 _ = sigterm.recv() => {},
             }
         }
+
         #[cfg(not(unix))]
         {
             tokio::signal::ctrl_c().await.ok();
         }
-        tracing::info!("Shutdown signal received");
+
+        tracing::info!("Graceful shutdown initiated, draining requests...");
+
+        tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            tracing::info!("Graceful shutdown timeout reached (30s), forcing exit");
+            std::process::exit(0);
+        });
+    }
+
+    tokio::spawn(async move {
+        shutdown_signal().await;
         let _ = shutdown_tx.send(true);
     });
 

@@ -118,6 +118,8 @@ pub fn create_router_with_tx(
 
     Router::new()
         .route("/health", get(handlers::health))
+        .route("/healthz/live", get(handlers::health_live))
+        .route("/healthz/ready", get(handlers::health_ready))
         .route("/status", get(handlers::status))
         .route("/metrics", get(handlers::metrics))
         .route("/openapi.json", get(handlers::openapi_json))

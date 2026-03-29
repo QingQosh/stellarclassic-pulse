@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: soroban-pulse
+  labels:
+    app: soroban-pulse
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: soroban-pulse
+  template:
+    metadata:
+      labels:
+        app: soroban-pulse
+    spec:
+      containers:
+        - name: soroban-pulse
+          image: soroban-pulse:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          envFrom:
+            - configMapRef:
+                name: soroban-pulse-config
+            - secretRef:
+                name: soroban-pulse-secrets
+          livenessProbe:
+            httpGet:
+              path: /healthz/live
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3

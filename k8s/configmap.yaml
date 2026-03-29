@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: soroban-pulse-config
+data:
+  PORT: "3000"
+  STELLAR_RPC_URL: "https://soroban-testnet.stellar.org"
+  INDEXER_LAG_WARN_THRESHOLD: "100"
+  INDEXER_STALL_TIMEOUT_SECS: "60"
+  DB_MAX_CONNECTIONS: "10"
+  DB_MIN_CONNECTIONS: "2"
+  ALLOWED_ORIGINS: "*"
+  RATE_LIMIT_PER_MINUTE: "60"
+  ENVIRONMENT: "production"
+  BEHIND_PROXY: "false"

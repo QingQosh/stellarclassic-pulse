@@ -1,4 +1,4 @@
-use axum::{extract::{Path, Query, State}, Json, response::IntoResponse};
+use axum::{extract::{Path, Query, State}, Json, response::IntoResponse, http::StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::stream::{self, Stream};
 use serde_json::{json, Value};
@@ -34,17 +34,7 @@ fn validate_tx_hash(tx_hash: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Health check endpoint that verifies DB connectivity and indexer status
-#[utoipa::path(
-    get,
-    path = "/health",
-    tag = "system",
-    responses(
-        (status = 200, description = "Service is healthy"),
-        (status = 503, description = "Service is degraded"),
-    )
-)]
-pub async fn health(State(state): State<AppState>) -> (axum::http::StatusCode, Json<Value>) {
+async fn build_health_response(state: &AppState) -> (StatusCode, Value) {
     let mut db_ok = true;
     let mut db_reachable = true;
 
@@ -53,9 +43,10 @@ pub async fn health(State(state): State<AppState>) -> (axum::http::StatusCode, J
         Duration::from_secs(2),
         sqlx::query("SELECT 1")
             .fetch_one(&state.pool)
-    );
+    )
+    .await;
 
-    match db_check.await {
+    match db_check {
         Ok(Ok(_)) => {
             // DB is reachable
         }
@@ -95,15 +86,55 @@ pub async fn health(State(state): State<AppState>) -> (axum::http::StatusCode, J
                 map.extend(indexer_map);
             }
         }
-        (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(obj))
+        (StatusCode::SERVICE_UNAVAILABLE, obj)
     } else {
         let response = json!({
             "status": "ok",
             "db": "ok",
             "indexer": "ok"
         });
-        (axum::http::StatusCode::OK, Json(response))
+        (StatusCode::OK, response)
     }
+}
+
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "system",
+    responses(
+        (status = 200, description = "Service is healthy"),
+        (status = 503, description = "Service is degraded"),
+    )
+)]
+pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
+    let (status, body) = build_health_response(&state).await;
+    (status, Json(body))
+}
+
+#[utoipa::path(
+    get,
+    path = "/healthz/live",
+    tag = "system",
+    responses(
+        (status = 200, description = "Process is alive"),
+    )
+)]
+pub async fn health_live() -> (StatusCode, Json<Value>) {
+    (StatusCode::OK, Json(json!({ "status": "alive" })))
+}
+
+#[utoipa::path(
+    get,
+    path = "/healthz/ready",
+    tag = "system",
+    responses(
+        (status = 200, description = "Service is ready"),
+        (status = 503, description = "Service is not ready"),
+    )
+)]
+pub async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
+    let (status, body) = build_health_response(&state).await;
+    (status, Json(body))
 }
 
 #[utoipa::path(
@@ -873,6 +904,76 @@ mod tests {
         assert_eq!(v["status"], "ok");
         assert_eq!(v["db"], "ok");
         assert_eq!(v["indexer"], "ok");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn healthz_live_returns_200(pool: PgPool) {
+        let app = create_test_router(pool);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz/live")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["status"], "alive");
+    }
+
+    #[tokio::test]
+    async fn healthz_ready_unreachable_db_returns_503() {
+        let pool = PgPool::connect_lazy("postgres://invalid-host:5432/invalid_db").unwrap();
+        let health_state = Arc::new(HealthState::new(60));
+        let prometheus_handle = crate::metrics::init_metrics();
+        let indexer_state = Arc::new(IndexerState::new());
+        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["status"], "degraded");
+        assert_eq!(v["db"], "unreachable");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn healthz_ready_indexer_stalled_returns_503(pool: PgPool) {
+        let health_state = Arc::new(HealthState::new(1));
+        // never updated, treated as stalled
+        let prometheus_handle = crate::metrics::init_metrics();
+        let indexer_state = Arc::new(IndexerState::new());
+        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["status"], "degraded");
+        assert_eq!(v["indexer"], "stalled");
     }
 
     // Status endpoint tests
