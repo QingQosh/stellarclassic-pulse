@@ -2281,6 +2281,7 @@ dependencies = [
 name = "soroban-pulse"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum 0.8.8",
  "axum-extra",
  "chrono",
@@ -2293,7 +2294,6 @@ dependencies = [
  "sqlx",
  "thiserror",
  "tokio",
- "tokio-test",
  "tower-http",
  "tracing",
  "tracing-opentelemetry",
