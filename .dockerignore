@@ -1,0 +1,8 @@
+target/
+.git/
+.env
+*.md
+tests/
+docs/
+**/__pycache__/
+**/*.rs.bk
