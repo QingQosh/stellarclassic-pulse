@@ -2,14 +2,11 @@ use axum::{extract::{Path, Query, State}, Json, response::IntoResponse, http::St
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::stream::{self, Stream};
 use serde_json::{json, Value};
-use sqlx::Row;
 use std::convert::Infallible;
 use std::time::Duration;
-use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 use std::sync::atomic::Ordering;
-use crate::{error::AppError, models::{PaginationParams, StreamParams}, routes::AppState};
+use crate::{error::AppError, models::{self, EventType, PaginationParams, StreamParams}, routes::AppState};
 
 fn validate_contract_id(contract_id: &str) -> Result<(), AppError> {
     if contract_id.len() != 56 {
@@ -36,28 +33,32 @@ fn validate_tx_hash(tx_hash: &str) -> Result<(), AppError> {
 
 async fn build_health_response(state: &AppState) -> (StatusCode, Value) {
     let mut db_ok = true;
-    let mut db_reachable = true;
+    let db_status: &str;
 
-    // Check DB connectivity with 2-second timeout
+    let timeout = Duration::from_millis(state.health_check_timeout_ms);
+
     let db_check = tokio::time::timeout(
-        Duration::from_secs(2),
-        sqlx::query("SELECT 1")
-            .fetch_one(&state.pool)
+        timeout,
+        sqlx::query("SELECT 1").fetch_one(&state.pool),
     )
     .await;
 
     match db_check {
         Ok(Ok(_)) => {
-            // DB is reachable
+            db_status = "ok";
+        }
+        Ok(Err(sqlx::Error::PoolTimedOut)) => {
+            db_ok = false;
+            db_status = "pool_exhausted";
         }
         Ok(Err(_)) => {
             db_ok = false;
-            db_reachable = false;
+            db_status = "unreachable";
         }
         Err(_) => {
-            // Timeout
+            // tokio timeout elapsed
             db_ok = false;
-            db_reachable = false;
+            db_status = "unreachable";
         }
     }
 
@@ -77,7 +78,7 @@ async fn build_health_response(state: &AppState) -> (StatusCode, Value) {
     if is_degraded {
         let response = json!({
             "status": "degraded",
-            "db": if db_reachable { "ok" } else { "unreachable" }
+            "db": db_status,
         });
         // Merge indexer status
         let mut obj = serde_json::to_value(response).unwrap();
@@ -240,6 +241,25 @@ pub async fn stream_events(
     Sse::new(s).keep_alive(KeepAlive::default())
 }
 
+/// Converts an `Event` to a JSON object containing only the requested fields.
+fn filter_fields(event: &models::Event, columns: &[&str]) -> Value {
+    let mut map = serde_json::Map::new();
+    for &col in columns {
+        match col {
+            "id"          => { map.insert(col.to_string(), json!(event.id)); }
+            "contract_id" => { map.insert(col.to_string(), json!(event.contract_id)); }
+            "event_type"  => { map.insert(col.to_string(), json!(event.event_type)); }
+            "tx_hash"     => { map.insert(col.to_string(), json!(event.tx_hash)); }
+            "ledger"      => { map.insert(col.to_string(), json!(event.ledger)); }
+            "timestamp"   => { map.insert(col.to_string(), json!(event.timestamp)); }
+            "event_data"  => { map.insert(col.to_string(), event.event_data.clone()); }
+            "created_at"  => { map.insert(col.to_string(), json!(event.created_at)); }
+            _ => {}
+        }
+    }
+    Value::Object(map)
+}
+
 #[utoipa::path(
     get,
     path = "/v1/events",
@@ -248,7 +268,7 @@ pub async fn stream_events(
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
         ("limit" = Option<i64>, Query, description = "Results per page, 1–100 (default: 20)"),
         ("exact_count" = Option<bool>, Query, description = "Use exact COUNT(*) instead of approximate"),
-        ("event_type" = Option<String>, Query, description = "Filter by event type: contract, diagnostic, system"),
+        ("event_type" = Option<EventType>, Query, description = "Filter by event type: contract, diagnostic, system"),
         ("from_ledger" = Option<i64>, Query, description = "Return events at or after this ledger"),
         ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
     ),
@@ -262,15 +282,6 @@ pub async fn get_events(
     State(state): State<AppState>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Value>, AppError> {
-    // Validate event_type
-    if let Some(ref et) = params.event_type {
-        if !["contract", "diagnostic", "system"].contains(&et.as_str()) {
-            return Err(AppError::Validation(
-                "event_type must be one of: contract, diagnostic, system".to_string(),
-            ));
-        }
-    }
-
     // Validate ledger range
     if let (Some(from), Some(to)) = (params.from_ledger, params.to_ledger) {
         if from > to {
@@ -285,88 +296,171 @@ pub async fn get_events(
     let exact = params.exact_count.unwrap_or(false);
     let columns = params.columns();
 
-    // Build WHERE clause dynamically
-    let mut conditions: Vec<String> = Vec::new();
-    let mut bind_idx: i32 = 1;
-
-    if params.event_type.is_some() {
-        conditions.push(format!("event_type = ${bind_idx}"));
-        bind_idx += 1;
-    }
-    if params.from_ledger.is_some() {
-        conditions.push(format!("ledger >= ${bind_idx}"));
-        bind_idx += 1;
-    }
-    if params.to_ledger.is_some() {
-        conditions.push(format!("ledger <= ${bind_idx}"));
-        bind_idx += 1;
-    }
-
-    let where_clause = if conditions.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", conditions.join(" AND "))
+    // Fetch full rows; field filtering happens in Rust after fetch
+    let rows: Vec<models::Event> = match (&params.event_type, params.from_ledger, params.to_ledger) {
+        (None, None, None) => {
+            sqlx::query_as::<_, models::Event>(
+                "SELECT * FROM events ORDER BY ledger DESC LIMIT $1 OFFSET $2",
+            )
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&state.pool)
+            .await?
+        }
+        (Some(et), None, None) => {
+            sqlx::query_as::<_, models::Event>(
+                "SELECT * FROM events WHERE event_type = $1 ORDER BY ledger DESC LIMIT $2 OFFSET $3",
+            )
+            .bind(et)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&state.pool)
+            .await?
+        }
+        (None, Some(fl), None) => {
+            sqlx::query_as::<_, models::Event>(
+                "SELECT * FROM events WHERE ledger >= $1 ORDER BY ledger DESC LIMIT $2 OFFSET $3",
+            )
+            .bind(fl)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&state.pool)
+            .await?
+        }
+        (None, None, Some(tl)) => {
+            sqlx::query_as::<_, models::Event>(
+                "SELECT * FROM events WHERE ledger <= $1 ORDER BY ledger DESC LIMIT $2 OFFSET $3",
+            )
+            .bind(tl)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&state.pool)
+            .await?
+        }
+        (Some(et), Some(fl), None) => {
+            sqlx::query_as::<_, models::Event>(
+                "SELECT * FROM events WHERE event_type = $1 AND ledger >= $2 ORDER BY ledger DESC LIMIT $3 OFFSET $4",
+            )
+            .bind(et)
+            .bind(fl)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&state.pool)
+            .await?
+        }
+        (Some(et), None, Some(tl)) => {
+            sqlx::query_as::<_, models::Event>(
+                "SELECT * FROM events WHERE event_type = $1 AND ledger <= $2 ORDER BY ledger DESC LIMIT $3 OFFSET $4",
+            )
+            .bind(et)
+            .bind(tl)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&state.pool)
+            .await?
+        }
+        (None, Some(fl), Some(tl)) => {
+            sqlx::query_as::<_, models::Event>(
+                "SELECT * FROM events WHERE ledger >= $1 AND ledger <= $2 ORDER BY ledger DESC LIMIT $3 OFFSET $4",
+            )
+            .bind(fl)
+            .bind(tl)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&state.pool)
+            .await?
+        }
+        (Some(et), Some(fl), Some(tl)) => {
+            sqlx::query_as::<_, models::Event>(
+                "SELECT * FROM events WHERE event_type = $1 AND ledger >= $2 AND ledger <= $3 ORDER BY ledger DESC LIMIT $4 OFFSET $5",
+            )
+            .bind(et)
+            .bind(fl)
+            .bind(tl)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&state.pool)
+            .await?
+        }
     };
 
-    let query_str = format!(
-        "SELECT {} FROM events {} ORDER BY ledger DESC LIMIT ${} OFFSET ${}",
-        columns.join(", "),
-        where_clause,
-        bind_idx,
-        bind_idx + 1,
-    );
+    let events: Vec<Value> = rows.iter().map(|e| filter_fields(e, &columns)).collect();
 
-    let mut q = sqlx::query(&query_str);
-    if let Some(ref et) = params.event_type { q = q.bind(et); }
-    if let Some(fl) = params.from_ledger { q = q.bind(fl); }
-    if let Some(tl) = params.to_ledger { q = q.bind(tl); }
-    q = q.bind(limit).bind(offset);
+    let has_filters = params.event_type.is_some()
+        || params.from_ledger.is_some()
+        || params.to_ledger.is_some();
 
-    let rows = q.fetch_all(&state.pool).await?;
-
-    let mut events = Vec::new();
-    for row in rows {
-        let mut event = serde_json::Map::new();
-        for &col in &columns {
-            match col {
-                "id" => { event.insert(col.to_string(), json!(row.try_get::<Uuid, _>(col)?)); }
-                "contract_id" => { event.insert(col.to_string(), json!(row.try_get::<String, _>(col)?)); }
-                "event_type" => { event.insert(col.to_string(), json!(row.try_get::<String, _>(col)?)); }
-                "tx_hash" => { event.insert(col.to_string(), json!(row.try_get::<String, _>(col)?)); }
-                "ledger" => { event.insert(col.to_string(), json!(row.try_get::<i64, _>(col)?)); }
-                "timestamp" => { event.insert(col.to_string(), json!(row.try_get::<DateTime<Utc>, _>(col)?)); }
-                "event_data" => { event.insert(col.to_string(), row.try_get::<Value, _>(col)?); }
-                "created_at" => { event.insert(col.to_string(), json!(row.try_get::<DateTime<Utc>, _>(col)?)); }
-                _ => {}
+    let (total, approximate): (i64, bool) = if exact || has_filters {
+        let count: i64 = match (&params.event_type, params.from_ledger, params.to_ledger) {
+            (None, None, None) => {
+                sqlx::query_scalar("SELECT COUNT(*) FROM events")
+                    .fetch_one(&state.pool)
+                    .await?
             }
-        }
-        events.push(Value::Object(event));
-    }
-
-    let (total, approximate): (i64, bool) = if exact {
-        let count_str = format!("SELECT COUNT(*) FROM events {}", where_clause);
-        let mut cq = sqlx::query_scalar::<_, i64>(&count_str);
-        if let Some(ref et) = params.event_type { cq = cq.bind(et); }
-        if let Some(fl) = params.from_ledger { cq = cq.bind(fl); }
-        if let Some(tl) = params.to_ledger { cq = cq.bind(tl); }
-        let count = cq.fetch_one(&state.pool).await?;
+            (Some(et), None, None) => {
+                sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE event_type = $1")
+                    .bind(et)
+                    .fetch_one(&state.pool)
+                    .await?
+            }
+            (None, Some(fl), None) => {
+                sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE ledger >= $1")
+                    .bind(fl)
+                    .fetch_one(&state.pool)
+                    .await?
+            }
+            (None, None, Some(tl)) => {
+                sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE ledger <= $1")
+                    .bind(tl)
+                    .fetch_one(&state.pool)
+                    .await?
+            }
+            (Some(et), Some(fl), None) => {
+                sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM events WHERE event_type = $1 AND ledger >= $2",
+                )
+                .bind(et)
+                .bind(fl)
+                .fetch_one(&state.pool)
+                .await?
+            }
+            (Some(et), None, Some(tl)) => {
+                sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM events WHERE event_type = $1 AND ledger <= $2",
+                )
+                .bind(et)
+                .bind(tl)
+                .fetch_one(&state.pool)
+                .await?
+            }
+            (None, Some(fl), Some(tl)) => {
+                sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM events WHERE ledger >= $1 AND ledger <= $2",
+                )
+                .bind(fl)
+                .bind(tl)
+                .fetch_one(&state.pool)
+                .await?
+            }
+            (Some(et), Some(fl), Some(tl)) => {
+                sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM events WHERE event_type = $1 AND ledger >= $2 AND ledger <= $3",
+                )
+                .bind(et)
+                .bind(fl)
+                .bind(tl)
+                .fetch_one(&state.pool)
+                .await?
+            }
+        };
         (count, false)
-    } else if where_clause.is_empty() {
+    } else {
         let count: i64 = sqlx::query_scalar(
             "SELECT reltuples::bigint FROM pg_class WHERE relname = 'events'",
         )
         .fetch_one(&state.pool)
         .await?;
         (count, true)
-    } else {
-        // Filtered queries always use exact count — approximate stats don't apply to subsets
-        let count_str = format!("SELECT COUNT(*) FROM events {}", where_clause);
-        let mut cq = sqlx::query_scalar::<_, i64>(&count_str);
-        if let Some(ref et) = params.event_type { cq = cq.bind(et); }
-        if let Some(fl) = params.from_ledger { cq = cq.bind(fl); }
-        if let Some(tl) = params.to_ledger { cq = cq.bind(tl); }
-        let count = cq.fetch_one(&state.pool).await?;
-        (count, false)
     };
 
     Ok(Json(json!({
@@ -397,45 +491,25 @@ pub async fn get_events_by_contract(
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Value>, AppError> {
     validate_contract_id(&contract_id)?;
-    
+
     let limit = params.limit();
     let offset = params.offset();
     let columns = params.columns();
 
-    let query_str = format!(
-        "SELECT {} FROM events WHERE contract_id = $1 ORDER BY ledger DESC LIMIT $2 OFFSET $3",
-        columns.join(", ")
-    );
-
-    let rows = sqlx::query(&query_str)
-        .bind(&contract_id)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&state.pool)
-        .await?;
+    let rows: Vec<models::Event> = sqlx::query_as::<_, models::Event>(
+        "SELECT * FROM events WHERE contract_id = $1 ORDER BY ledger DESC LIMIT $2 OFFSET $3",
+    )
+    .bind(&contract_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.pool)
+    .await?;
 
     if rows.is_empty() {
         return Err(AppError::NotFound);
     }
 
-    let mut events = Vec::new();
-    for row in rows {
-        let mut event = serde_json::Map::new();
-        for &col in &columns {
-            match col {
-                "id" => { event.insert(col.to_string(), json!(row.try_get::<Uuid, _>(col)?)); }
-                "contract_id" => { event.insert(col.to_string(), json!(row.try_get::<String, _>(col)?)); }
-                "event_type" => { event.insert(col.to_string(), json!(row.try_get::<String, _>(col)?)); }
-                "tx_hash" => { event.insert(col.to_string(), json!(row.try_get::<String, _>(col)?)); }
-                "ledger" => { event.insert(col.to_string(), json!(row.try_get::<i64, _>(col)?)); }
-                "timestamp" => { event.insert(col.to_string(), json!(row.try_get::<DateTime<Utc>, _>(col)?)); }
-                "event_data" => { event.insert(col.to_string(), row.try_get::<Value, _>(col)?); }
-                "created_at" => { event.insert(col.to_string(), json!(row.try_get::<DateTime<Utc>, _>(col)?)); }
-                _ => {}
-            }
-        }
-        events.push(Value::Object(event));
-    }
+    let events: Vec<Value> = rows.iter().map(|e| filter_fields(e, &columns)).collect();
 
     Ok(Json(json!({ "data": events, "contract_id": contract_id })))
 }
@@ -458,38 +532,362 @@ pub async fn get_events_by_tx(
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Value>, AppError> {
     validate_tx_hash(&tx_hash)?;
-    
+
     let columns = params.columns();
-    let query_str = format!(
-        "SELECT {} FROM events WHERE tx_hash = $1 ORDER BY ledger DESC",
-        columns.join(", ")
-    );
 
-    let rows = sqlx::query(&query_str)
-        .bind(&tx_hash)
-        .fetch_all(&state.pool)
-        .await?;
+    let rows: Vec<models::Event> = sqlx::query_as::<_, models::Event>(
+        "SELECT * FROM events WHERE tx_hash = $1 ORDER BY ledger DESC",
+    )
+    .bind(&tx_hash)
+    .fetch_all(&state.pool)
+    .await?;
 
-    let mut events = Vec::new();
-    for row in rows {
-        let mut event = serde_json::Map::new();
-        for &col in &columns {
-            match col {
-                "id" => { event.insert(col.to_string(), json!(row.try_get::<Uuid, _>(col)?)); }
-                "contract_id" => { event.insert(col.to_string(), json!(row.try_get::<String, _>(col)?)); }
-                "event_type" => { event.insert(col.to_string(), json!(row.try_get::<String, _>(col)?)); }
-                "tx_hash" => { event.insert(col.to_string(), json!(row.try_get::<String, _>(col)?)); }
-                "ledger" => { event.insert(col.to_string(), json!(row.try_get::<i64, _>(col)?)); }
-                "timestamp" => { event.insert(col.to_string(), json!(row.try_get::<DateTime<Utc>, _>(col)?)); }
-                "event_data" => { event.insert(col.to_string(), row.try_get::<Value, _>(col)?); }
-                "created_at" => { event.insert(col.to_string(), json!(row.try_get::<DateTime<Utc>, _>(col)?)); }
-                _ => {}
-            }
-        }
-        events.push(Value::Object(event));
-    }
+    let events: Vec<Value> = rows.iter().map(|e| filter_fields(e, &columns)).collect();
 
     Ok(Json(json!({ "data": events, "tx_hash": tx_hash })))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/events/search",
+    tag = "events",
+    request_body = models::SearchParams,
+    responses(
+        (status = 200, description = "Paginated search results"),
+        (status = 400, description = "Invalid search parameters"),
+    )
+)]
+pub async fn search_events(
+    State(state): State<AppState>,
+    Json(params): Json<models::SearchParams>,
+) -> Result<Json<Value>, AppError> {
+    if let (Some(from), Some(to)) = (params.from_ledger, params.to_ledger) {
+        if from > to {
+            return Err(AppError::Validation(
+                "from_ledger must be <= to_ledger".to_string(),
+            ));
+        }
+    }
+
+    let limit = params.limit();
+    let offset = params.offset();
+    let contract_ids = params.contract_ids.as_deref().unwrap_or(&[]);
+
+    // Each filter arm is a static string; contract_ids uses = ANY($n) to avoid
+    // dynamic placeholder generation.
+    let rows: Vec<models::Event> = match (
+        contract_ids.is_empty(),
+        &params.event_type,
+        params.from_ledger,
+        params.to_ledger,
+        &params.topic_filter,
+    ) {
+        (true, None, None, None, None) => sqlx::query_as(
+            "SELECT * FROM events ORDER BY ledger DESC LIMIT $1 OFFSET $2",
+        )
+        .bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (false, None, None, None, None) => sqlx::query_as(
+            "SELECT * FROM events WHERE contract_id = ANY($1) ORDER BY ledger DESC LIMIT $2 OFFSET $3",
+        )
+        .bind(contract_ids).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (true, Some(et), None, None, None) => sqlx::query_as(
+            "SELECT * FROM events WHERE event_type = $1 ORDER BY ledger DESC LIMIT $2 OFFSET $3",
+        )
+        .bind(et).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (false, Some(et), None, None, None) => sqlx::query_as(
+            "SELECT * FROM events WHERE contract_id = ANY($1) AND event_type = $2 ORDER BY ledger DESC LIMIT $3 OFFSET $4",
+        )
+        .bind(contract_ids).bind(et).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (true, None, Some(fl), None, None) => sqlx::query_as(
+            "SELECT * FROM events WHERE ledger >= $1 ORDER BY ledger DESC LIMIT $2 OFFSET $3",
+        )
+        .bind(fl).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (false, None, Some(fl), None, None) => sqlx::query_as(
+            "SELECT * FROM events WHERE contract_id = ANY($1) AND ledger >= $2 ORDER BY ledger DESC LIMIT $3 OFFSET $4",
+        )
+        .bind(contract_ids).bind(fl).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (true, None, None, Some(tl), None) => sqlx::query_as(
+            "SELECT * FROM events WHERE ledger <= $1 ORDER BY ledger DESC LIMIT $2 OFFSET $3",
+        )
+        .bind(tl).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (false, None, None, Some(tl), None) => sqlx::query_as(
+            "SELECT * FROM events WHERE contract_id = ANY($1) AND ledger <= $2 ORDER BY ledger DESC LIMIT $3 OFFSET $4",
+        )
+        .bind(contract_ids).bind(tl).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (true, Some(et), Some(fl), None, None) => sqlx::query_as(
+            "SELECT * FROM events WHERE event_type = $1 AND ledger >= $2 ORDER BY ledger DESC LIMIT $3 OFFSET $4",
+        )
+        .bind(et).bind(fl).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (false, Some(et), Some(fl), None, None) => sqlx::query_as(
+            "SELECT * FROM events WHERE contract_id = ANY($1) AND event_type = $2 AND ledger >= $3 ORDER BY ledger DESC LIMIT $4 OFFSET $5",
+        )
+        .bind(contract_ids).bind(et).bind(fl).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (true, Some(et), None, Some(tl), None) => sqlx::query_as(
+            "SELECT * FROM events WHERE event_type = $1 AND ledger <= $2 ORDER BY ledger DESC LIMIT $3 OFFSET $4",
+        )
+        .bind(et).bind(tl).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (false, Some(et), None, Some(tl), None) => sqlx::query_as(
+            "SELECT * FROM events WHERE contract_id = ANY($1) AND event_type = $2 AND ledger <= $3 ORDER BY ledger DESC LIMIT $4 OFFSET $5",
+        )
+        .bind(contract_ids).bind(et).bind(tl).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (true, None, Some(fl), Some(tl), None) => sqlx::query_as(
+            "SELECT * FROM events WHERE ledger >= $1 AND ledger <= $2 ORDER BY ledger DESC LIMIT $3 OFFSET $4",
+        )
+        .bind(fl).bind(tl).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (false, None, Some(fl), Some(tl), None) => sqlx::query_as(
+            "SELECT * FROM events WHERE contract_id = ANY($1) AND ledger >= $2 AND ledger <= $3 ORDER BY ledger DESC LIMIT $4 OFFSET $5",
+        )
+        .bind(contract_ids).bind(fl).bind(tl).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (true, Some(et), Some(fl), Some(tl), None) => sqlx::query_as(
+            "SELECT * FROM events WHERE event_type = $1 AND ledger >= $2 AND ledger <= $3 ORDER BY ledger DESC LIMIT $4 OFFSET $5",
+        )
+        .bind(et).bind(fl).bind(tl).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (false, Some(et), Some(fl), Some(tl), None) => sqlx::query_as(
+            "SELECT * FROM events WHERE contract_id = ANY($1) AND event_type = $2 AND ledger >= $3 AND ledger <= $4 ORDER BY ledger DESC LIMIT $5 OFFSET $6",
+        )
+        .bind(contract_ids).bind(et).bind(fl).bind(tl).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (true, None, None, None, Some(tf)) => sqlx::query_as(
+            "SELECT * FROM events WHERE event_data @> $1 ORDER BY ledger DESC LIMIT $2 OFFSET $3",
+        )
+        .bind(tf).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (false, None, None, None, Some(tf)) => sqlx::query_as(
+            "SELECT * FROM events WHERE contract_id = ANY($1) AND event_data @> $2 ORDER BY ledger DESC LIMIT $3 OFFSET $4",
+        )
+        .bind(contract_ids).bind(tf).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (true, Some(et), None, None, Some(tf)) => sqlx::query_as(
+            "SELECT * FROM events WHERE event_type = $1 AND event_data @> $2 ORDER BY ledger DESC LIMIT $3 OFFSET $4",
+        )
+        .bind(et).bind(tf).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (false, Some(et), None, None, Some(tf)) => sqlx::query_as(
+            "SELECT * FROM events WHERE contract_id = ANY($1) AND event_type = $2 AND event_data @> $3 ORDER BY ledger DESC LIMIT $4 OFFSET $5",
+        )
+        .bind(contract_ids).bind(et).bind(tf).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (true, None, Some(fl), None, Some(tf)) => sqlx::query_as(
+            "SELECT * FROM events WHERE ledger >= $1 AND event_data @> $2 ORDER BY ledger DESC LIMIT $3 OFFSET $4",
+        )
+        .bind(fl).bind(tf).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (false, None, Some(fl), None, Some(tf)) => sqlx::query_as(
+            "SELECT * FROM events WHERE contract_id = ANY($1) AND ledger >= $2 AND event_data @> $3 ORDER BY ledger DESC LIMIT $4 OFFSET $5",
+        )
+        .bind(contract_ids).bind(fl).bind(tf).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (true, None, None, Some(tl), Some(tf)) => sqlx::query_as(
+            "SELECT * FROM events WHERE ledger <= $1 AND event_data @> $2 ORDER BY ledger DESC LIMIT $3 OFFSET $4",
+        )
+        .bind(tl).bind(tf).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (false, None, None, Some(tl), Some(tf)) => sqlx::query_as(
+            "SELECT * FROM events WHERE contract_id = ANY($1) AND ledger <= $2 AND event_data @> $3 ORDER BY ledger DESC LIMIT $4 OFFSET $5",
+        )
+        .bind(contract_ids).bind(tl).bind(tf).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (true, Some(et), Some(fl), None, Some(tf)) => sqlx::query_as(
+            "SELECT * FROM events WHERE event_type = $1 AND ledger >= $2 AND event_data @> $3 ORDER BY ledger DESC LIMIT $4 OFFSET $5",
+        )
+        .bind(et).bind(fl).bind(tf).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (false, Some(et), Some(fl), None, Some(tf)) => sqlx::query_as(
+            "SELECT * FROM events WHERE contract_id = ANY($1) AND event_type = $2 AND ledger >= $3 AND event_data @> $4 ORDER BY ledger DESC LIMIT $5 OFFSET $6",
+        )
+        .bind(contract_ids).bind(et).bind(fl).bind(tf).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (true, Some(et), None, Some(tl), Some(tf)) => sqlx::query_as(
+            "SELECT * FROM events WHERE event_type = $1 AND ledger <= $2 AND event_data @> $3 ORDER BY ledger DESC LIMIT $4 OFFSET $5",
+        )
+        .bind(et).bind(tl).bind(tf).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (false, Some(et), None, Some(tl), Some(tf)) => sqlx::query_as(
+            "SELECT * FROM events WHERE contract_id = ANY($1) AND event_type = $2 AND ledger <= $3 AND event_data @> $4 ORDER BY ledger DESC LIMIT $5 OFFSET $6",
+        )
+        .bind(contract_ids).bind(et).bind(tl).bind(tf).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (true, None, Some(fl), Some(tl), Some(tf)) => sqlx::query_as(
+            "SELECT * FROM events WHERE ledger >= $1 AND ledger <= $2 AND event_data @> $3 ORDER BY ledger DESC LIMIT $4 OFFSET $5",
+        )
+        .bind(fl).bind(tl).bind(tf).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (false, None, Some(fl), Some(tl), Some(tf)) => sqlx::query_as(
+            "SELECT * FROM events WHERE contract_id = ANY($1) AND ledger >= $2 AND ledger <= $3 AND event_data @> $4 ORDER BY ledger DESC LIMIT $5 OFFSET $6",
+        )
+        .bind(contract_ids).bind(fl).bind(tl).bind(tf).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (true, Some(et), Some(fl), Some(tl), Some(tf)) => sqlx::query_as(
+            "SELECT * FROM events WHERE event_type = $1 AND ledger >= $2 AND ledger <= $3 AND event_data @> $4 ORDER BY ledger DESC LIMIT $5 OFFSET $6",
+        )
+        .bind(et).bind(fl).bind(tl).bind(tf).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+
+        (false, Some(et), Some(fl), Some(tl), Some(tf)) => sqlx::query_as(
+            "SELECT * FROM events WHERE contract_id = ANY($1) AND event_type = $2 AND ledger >= $3 AND ledger <= $4 AND event_data @> $5 ORDER BY ledger DESC LIMIT $6 OFFSET $7",
+        )
+        .bind(contract_ids).bind(et).bind(fl).bind(tl).bind(tf).bind(limit).bind(offset).fetch_all(&state.pool).await?,
+    };
+
+    let events: Vec<Value> = rows.iter().map(|e| filter_fields(e, models::PaginationParams::ALLOWED_FIELDS)).collect();
+
+    let total: i64 = match (
+        contract_ids.is_empty(),
+        &params.event_type,
+        params.from_ledger,
+        params.to_ledger,
+        &params.topic_filter,
+    ) {
+        (true, None, None, None, None) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events",
+        ).fetch_one(&state.pool).await?,
+
+        (false, None, None, None, None) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE contract_id = ANY($1)",
+        ).bind(contract_ids).fetch_one(&state.pool).await?,
+
+        (true, Some(et), None, None, None) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE event_type = $1",
+        ).bind(et).fetch_one(&state.pool).await?,
+
+        (false, Some(et), None, None, None) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE contract_id = ANY($1) AND event_type = $2",
+        ).bind(contract_ids).bind(et).fetch_one(&state.pool).await?,
+
+        (true, None, Some(fl), None, None) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE ledger >= $1",
+        ).bind(fl).fetch_one(&state.pool).await?,
+
+        (false, None, Some(fl), None, None) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE contract_id = ANY($1) AND ledger >= $2",
+        ).bind(contract_ids).bind(fl).fetch_one(&state.pool).await?,
+
+        (true, None, None, Some(tl), None) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE ledger <= $1",
+        ).bind(tl).fetch_one(&state.pool).await?,
+
+        (false, None, None, Some(tl), None) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE contract_id = ANY($1) AND ledger <= $2",
+        ).bind(contract_ids).bind(tl).fetch_one(&state.pool).await?,
+
+        (true, Some(et), Some(fl), None, None) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE event_type = $1 AND ledger >= $2",
+        ).bind(et).bind(fl).fetch_one(&state.pool).await?,
+
+        (false, Some(et), Some(fl), None, None) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE contract_id = ANY($1) AND event_type = $2 AND ledger >= $3",
+        ).bind(contract_ids).bind(et).bind(fl).fetch_one(&state.pool).await?,
+
+        (true, Some(et), None, Some(tl), None) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE event_type = $1 AND ledger <= $2",
+        ).bind(et).bind(tl).fetch_one(&state.pool).await?,
+
+        (false, Some(et), None, Some(tl), None) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE contract_id = ANY($1) AND event_type = $2 AND ledger <= $3",
+        ).bind(contract_ids).bind(et).bind(tl).fetch_one(&state.pool).await?,
+
+        (true, None, Some(fl), Some(tl), None) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE ledger >= $1 AND ledger <= $2",
+        ).bind(fl).bind(tl).fetch_one(&state.pool).await?,
+
+        (false, None, Some(fl), Some(tl), None) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE contract_id = ANY($1) AND ledger >= $2 AND ledger <= $3",
+        ).bind(contract_ids).bind(fl).bind(tl).fetch_one(&state.pool).await?,
+
+        (true, Some(et), Some(fl), Some(tl), None) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE event_type = $1 AND ledger >= $2 AND ledger <= $3",
+        ).bind(et).bind(fl).bind(tl).fetch_one(&state.pool).await?,
+
+        (false, Some(et), Some(fl), Some(tl), None) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE contract_id = ANY($1) AND event_type = $2 AND ledger >= $3 AND ledger <= $4",
+        ).bind(contract_ids).bind(et).bind(fl).bind(tl).fetch_one(&state.pool).await?,
+
+        (true, None, None, None, Some(tf)) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE event_data @> $1",
+        ).bind(tf).fetch_one(&state.pool).await?,
+
+        (false, None, None, None, Some(tf)) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE contract_id = ANY($1) AND event_data @> $2",
+        ).bind(contract_ids).bind(tf).fetch_one(&state.pool).await?,
+
+        (true, Some(et), None, None, Some(tf)) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE event_type = $1 AND event_data @> $2",
+        ).bind(et).bind(tf).fetch_one(&state.pool).await?,
+
+        (false, Some(et), None, None, Some(tf)) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE contract_id = ANY($1) AND event_type = $2 AND event_data @> $3",
+        ).bind(contract_ids).bind(et).bind(tf).fetch_one(&state.pool).await?,
+
+        (true, None, Some(fl), None, Some(tf)) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE ledger >= $1 AND event_data @> $2",
+        ).bind(fl).bind(tf).fetch_one(&state.pool).await?,
+
+        (false, None, Some(fl), None, Some(tf)) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE contract_id = ANY($1) AND ledger >= $2 AND event_data @> $3",
+        ).bind(contract_ids).bind(fl).bind(tf).fetch_one(&state.pool).await?,
+
+        (true, None, None, Some(tl), Some(tf)) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE ledger <= $1 AND event_data @> $2",
+        ).bind(tl).bind(tf).fetch_one(&state.pool).await?,
+
+        (false, None, None, Some(tl), Some(tf)) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE contract_id = ANY($1) AND ledger <= $2 AND event_data @> $3",
+        ).bind(contract_ids).bind(tl).bind(tf).fetch_one(&state.pool).await?,
+
+        (true, Some(et), Some(fl), None, Some(tf)) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE event_type = $1 AND ledger >= $2 AND event_data @> $3",
+        ).bind(et).bind(fl).bind(tf).fetch_one(&state.pool).await?,
+
+        (false, Some(et), Some(fl), None, Some(tf)) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE contract_id = ANY($1) AND event_type = $2 AND ledger >= $3 AND event_data @> $4",
+        ).bind(contract_ids).bind(et).bind(fl).bind(tf).fetch_one(&state.pool).await?,
+
+        (true, Some(et), None, Some(tl), Some(tf)) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE event_type = $1 AND ledger <= $2 AND event_data @> $3",
+        ).bind(et).bind(tl).bind(tf).fetch_one(&state.pool).await?,
+
+        (false, Some(et), None, Some(tl), Some(tf)) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE contract_id = ANY($1) AND event_type = $2 AND ledger <= $3 AND event_data @> $4",
+        ).bind(contract_ids).bind(et).bind(tl).bind(tf).fetch_one(&state.pool).await?,
+
+        (true, None, Some(fl), Some(tl), Some(tf)) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE ledger >= $1 AND ledger <= $2 AND event_data @> $3",
+        ).bind(fl).bind(tl).bind(tf).fetch_one(&state.pool).await?,
+
+        (false, None, Some(fl), Some(tl), Some(tf)) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE contract_id = ANY($1) AND ledger >= $2 AND ledger <= $3 AND event_data @> $4",
+        ).bind(contract_ids).bind(fl).bind(tl).bind(tf).fetch_one(&state.pool).await?,
+
+        (true, Some(et), Some(fl), Some(tl), Some(tf)) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE event_type = $1 AND ledger >= $2 AND ledger <= $3 AND event_data @> $4",
+        ).bind(et).bind(fl).bind(tl).bind(tf).fetch_one(&state.pool).await?,
+
+        (false, Some(et), Some(fl), Some(tl), Some(tf)) => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE contract_id = ANY($1) AND event_type = $2 AND ledger >= $3 AND ledger <= $4 AND event_data @> $5",
+        ).bind(contract_ids).bind(et).bind(fl).bind(tl).bind(tf).fetch_one(&state.pool).await?,
+    };
+
+    Ok(Json(json!({
+        "data": events,
+        "total": total,
+        "page": params.page.unwrap_or(1),
+        "limit": limit,
+        "approximate": false,
+    })))
 }
 
 #[cfg(test)]
@@ -507,7 +905,7 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let indexer_state = Arc::new(IndexerState::new());
         let prometheus_handle = crate::metrics::init_metrics();
-        crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle)
+        crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000)
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -863,7 +1261,7 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let prometheus_handle = crate::metrics::init_metrics();
         let indexer_state = Arc::new(IndexerState::new());
-        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle);
+        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000);
 
         let response = app
             .oneshot(
@@ -880,7 +1278,7 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["status"], "degraded");
-        assert_eq!(v["db"], "unreachable");
+        assert!(matches!(v["db"].as_str(), Some("unreachable") | Some("pool_exhausted")));
     }
 
     // Health endpoint tests
@@ -932,7 +1330,7 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let prometheus_handle = crate::metrics::init_metrics();
         let indexer_state = Arc::new(IndexerState::new());
-        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle);
+        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000);
 
         let response = app
             .oneshot(
@@ -948,7 +1346,7 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["status"], "degraded");
-        assert_eq!(v["db"], "unreachable");
+        assert!(matches!(v["db"].as_str(), Some("unreachable") | Some("pool_exhausted")));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -957,7 +1355,7 @@ mod tests {
         // never updated, treated as stalled
         let prometheus_handle = crate::metrics::init_metrics();
         let indexer_state = Arc::new(IndexerState::new());
-        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle);
+        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000);
 
         let response = app
             .oneshot(
@@ -1604,5 +2002,139 @@ mod tests {
         assert!(event.get("timestamp").is_some());
         assert!(event.get("event_data").is_some());
         assert!(event.get("created_at").is_some());
+    }
+
+    // search_events tests
+
+    fn insert_event_sql() -> &'static str {
+        "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data) VALUES ($1, $2, $3, $4, $5, $6)"
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn search_events_single_contract_id(pool: PgPool) {
+        let contract_id = "C1234567890123456789012345678901234567890123456789012345";
+        sqlx::query(insert_event_sql())
+            .bind(contract_id).bind("contract").bind("a".repeat(64))
+            .bind(1_i64).bind(Utc::now()).bind(json!({"topic": "transfer"}))
+            .execute(&pool).await.unwrap();
+        // Insert a second contract that should NOT appear
+        sqlx::query(insert_event_sql())
+            .bind("C9999999999999999999999999999999999999999999999999999999")
+            .bind("contract").bind("b".repeat(64))
+            .bind(2_i64).bind(Utc::now()).bind(json!({}))
+            .execute(&pool).await.unwrap();
+
+        let app = create_test_router(pool);
+        let body = json!({ "contract_ids": [contract_id] });
+        let response = app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/events/search")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        ).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["total"], 1);
+        assert_eq!(v["data"][0]["contract_id"], contract_id);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn search_events_multiple_contract_ids(pool: PgPool) {
+        let cid1 = "C1234567890123456789012345678901234567890123456789012345";
+        let cid2 = "C9999999999999999999999999999999999999999999999999999999";
+        for (cid, tx) in [(cid1, "a".repeat(64)), (cid2, "b".repeat(64))] {
+            sqlx::query(insert_event_sql())
+                .bind(cid).bind("contract").bind(tx)
+                .bind(1_i64).bind(Utc::now()).bind(json!({}))
+                .execute(&pool).await.unwrap();
+        }
+        // Third contract excluded
+        sqlx::query(insert_event_sql())
+            .bind("CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+            .bind("contract").bind("c".repeat(64))
+            .bind(1_i64).bind(Utc::now()).bind(json!({}))
+            .execute(&pool).await.unwrap();
+
+        let app = create_test_router(pool);
+        let body = json!({ "contract_ids": [cid1, cid2] });
+        let response = app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/events/search")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        ).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["total"], 2);
+        assert_eq!(v["approximate"], false);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn search_events_topic_filter(pool: PgPool) {
+        sqlx::query(insert_event_sql())
+            .bind("C1234567890123456789012345678901234567890123456789012345")
+            .bind("contract").bind("a".repeat(64))
+            .bind(1_i64).bind(Utc::now()).bind(json!({"topic": "transfer", "amount": 100}))
+            .execute(&pool).await.unwrap();
+        sqlx::query(insert_event_sql())
+            .bind("C9999999999999999999999999999999999999999999999999999999")
+            .bind("contract").bind("b".repeat(64))
+            .bind(2_i64).bind(Utc::now()).bind(json!({"topic": "mint"}))
+            .execute(&pool).await.unwrap();
+
+        let app = create_test_router(pool);
+        let body = json!({ "topic_filter": {"topic": "transfer"} });
+        let response = app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/events/search")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        ).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["total"], 1);
+        assert_eq!(v["data"][0]["event_data"]["topic"], "transfer");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn search_events_invalid_event_type_returns_400(pool: PgPool) {
+        let app = create_test_router(pool);
+        let body = json!({ "event_type": "unknown" });
+        let response = app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/events/search")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn search_events_invalid_ledger_range_returns_400(pool: PgPool) {
+        let app = create_test_router(pool);
+        let body = json!({ "from_ledger": 100, "to_ledger": 50 });
+        let response = app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/events/search")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

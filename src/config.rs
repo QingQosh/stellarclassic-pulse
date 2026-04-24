@@ -123,6 +123,7 @@ pub struct Config {
     pub indexer_lag_warn_threshold: u64,
     pub indexer_stall_timeout_secs: u64,
     pub db_statement_timeout_ms: u64,
+    pub health_check_timeout_ms: u64,
     pub environment: Environment,
 }
 
@@ -145,6 +146,7 @@ impl Default for Config {
             indexer_lag_warn_threshold: 100,
             indexer_stall_timeout_secs: 60,
             db_statement_timeout_ms: 5000,
+            health_check_timeout_ms: 2000,
             environment: Environment::Development,
         }
     }
@@ -308,6 +310,10 @@ impl Config {
                 .unwrap_or_else(|_| "5000".to_string())
                 .parse()
                 .expect("DB_STATEMENT_TIMEOUT_MS must be a number"),
+            health_check_timeout_ms: env::var("HEALTH_CHECK_TIMEOUT_MS")
+                .unwrap_or_else(|_| "2000".to_string())
+                .parse()
+                .expect("HEALTH_CHECK_TIMEOUT_MS must be a number"),
             environment,
         }
     }
@@ -387,6 +393,7 @@ mod tests {
         assert_eq!(config.port, 3000);
         assert_eq!(config.start_ledger, 0);
         assert!(!config.start_ledger_fallback);
+        assert_eq!(config.health_check_timeout_ms, 2000);
         assert_eq!(config.environment, Environment::Development);
     }
 
