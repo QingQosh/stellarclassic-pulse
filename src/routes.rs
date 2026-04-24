@@ -1,5 +1,6 @@
 use axum::{body::Body, routing::get, Router};
 use axum::http::{HeaderValue, Method, Request};
+use axum::extract::MatchedPath;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Instant;
@@ -132,7 +133,10 @@ pub fn create_router_with_tx(
         ))
         .layer(axum::middleware::from_fn(|req: axum::http::Request<Body>, next: axum::middleware::Next| async move {
             let method = req.method().as_str().to_string();
-            let route = req.uri().path().to_string();
+            let route = req.extensions()
+                .get::<MatchedPath>()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_else(|| "<unknown>".to_string());
             let start = Instant::now();
             let response = next.run(req).await;
             let duration = start.elapsed();
