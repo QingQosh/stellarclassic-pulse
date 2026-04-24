@@ -637,6 +637,8 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["error"], "invalid contract_id format");
+        assert_eq!(v["code"], "VALIDATION_ERROR");
+        assert!(v["correlation_id"].as_str().is_some());
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -657,6 +659,8 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["error"], "invalid contract_id format");
+        assert_eq!(v["code"], "VALIDATION_ERROR");
+        assert!(v["correlation_id"].as_str().is_some());
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -677,6 +681,8 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["error"], "invalid tx_hash format");
+        assert_eq!(v["code"], "VALIDATION_ERROR");
+        assert!(v["correlation_id"].as_str().is_some());
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -698,6 +704,8 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["error"], "invalid tx_hash format");
+        assert_eq!(v["code"], "VALIDATION_ERROR");
+        assert!(v["correlation_id"].as_str().is_some());
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -719,6 +727,8 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["error"], "invalid tx_hash format");
+        assert_eq!(v["code"], "VALIDATION_ERROR");
+        assert!(v["correlation_id"].as_str().is_some());
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1119,6 +1129,8 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert!(v["error"].as_str().unwrap().contains("event_type must be one of"));
+        assert_eq!(v["code"], "VALIDATION_ERROR");
+        assert!(v["correlation_id"].as_str().is_some());
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1139,6 +1151,8 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert!(v["error"].as_str().unwrap().contains("from_ledger must be <= to_ledger"));
+        assert_eq!(v["code"], "VALIDATION_ERROR");
+        assert!(v["correlation_id"].as_str().is_some());
     }
 
     // Events by contract tests - Happy path
