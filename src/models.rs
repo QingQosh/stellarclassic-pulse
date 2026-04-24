@@ -34,6 +34,13 @@ pub struct StreamParams {
     pub contract_id: Option<String>,
 }
 
+#[derive(Debug, Serialize, sqlx::FromRow, utoipa::ToSchema)]
+pub struct ContractSummary {
+    pub contract_id: String,
+    pub event_count: i64,
+    pub latest_ledger: i64,
+}
+
 impl PaginationParams {
     pub const ALLOWED_FIELDS: &'static [&'static str] = &[
         "id",

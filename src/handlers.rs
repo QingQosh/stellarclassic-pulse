@@ -5,11 +5,25 @@ use serde_json::{json, Value};
 use sqlx::Row;
 use std::convert::Infallible;
 use std::time::Duration;
+use std::sync::OnceLock;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
 use std::sync::atomic::Ordering;
-use crate::{error::AppError, models::{PaginationParams, StreamParams}, routes::AppState};
+use crate::{error::AppError, models::{ContractSummary, PaginationParams, StreamParams}, routes::AppState};
+
+/// Simple in-process cache entry for the contracts list.
+struct CacheEntry {
+    data: Value,
+    expires_at: std::time::Instant,
+}
+
+static CONTRACTS_CACHE: OnceLock<Mutex<Option<CacheEntry>>> = OnceLock::new();
+
+fn contracts_cache() -> &'static Mutex<Option<CacheEntry>> {
+    CONTRACTS_CACHE.get_or_init(|| Mutex::new(None))
+}
 
 fn validate_contract_id(contract_id: &str) -> Result<(), AppError> {
     if contract_id.len() != 56 {
@@ -212,13 +226,56 @@ pub async fn swagger_ui() -> impl IntoResponse {
 pub async fn stream_events(
     State(state): State<AppState>,
     Query(params): Query<StreamParams>,
+    headers: axum::http::HeaderMap,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let mut rx = state.event_tx.subscribe();
+    let keepalive_ms = state.sse_keepalive_interval_ms;
     let contract_filter = params.contract_id;
 
-    let s = stream::unfold(rx, move |mut rx| {
-        let filter = contract_filter.clone();
-        async move {
+    // Replay missed events if the client sends Last-Event-ID (a UUID).
+    let last_event_id = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| Uuid::parse_str(s).ok());
+
+    let replay: Vec<crate::models::Event> = if let Some(last_id) = last_event_id {
+        let q = if let Some(ref cid) = contract_filter {
+            sqlx::query_as::<_, crate::models::Event>(
+                "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at, 0::bigint AS total_count \
+                 FROM events WHERE created_at > (SELECT created_at FROM events WHERE id = $1) \
+                 AND contract_id = $2 ORDER BY created_at ASC",
+            )
+            .bind(last_id)
+            .bind(cid)
+            .fetch_all(&state.pool)
+            .await
+        } else {
+            sqlx::query_as::<_, crate::models::Event>(
+                "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at, 0::bigint AS total_count \
+                 FROM events WHERE created_at > (SELECT created_at FROM events WHERE id = $1) \
+                 ORDER BY created_at ASC",
+            )
+            .bind(last_id)
+            .fetch_all(&state.pool)
+            .await
+        };
+        q.unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    let rx = state.event_tx.subscribe();
+
+    let replay_stream = stream::iter(replay.into_iter().map(|ev| {
+        let data = serde_json::to_string(&ev).unwrap_or_default();
+        Ok(Event::default()
+            .id(ev.id.to_string())
+            .retry(Duration::from_millis(keepalive_ms))
+            .data(data))
+    }));
+
+    let live_stream = stream::unfold(
+        (rx, contract_filter, keepalive_ms),
+        move |(mut rx, filter, ka)| async move {
             loop {
                 match rx.recv().await {
                     Ok(event) => {
@@ -228,16 +285,26 @@ pub async fn stream_events(
                             }
                         }
                         let data = serde_json::to_string(&event).unwrap_or_default();
-                        return Some((Ok(Event::default().data(data)), rx));
+                        let sse = Event::default()
+                            .id(format!("{}-{}", event.tx_hash, event.ledger))
+                            .retry(Duration::from_millis(ka))
+                            .data(data);
+                        return Some((Ok(sse), (rx, filter, ka)));
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
                 }
             }
-        }
-    });
+        },
+    );
 
-    Sse::new(s).keep_alive(KeepAlive::default())
+    let combined = replay_stream.chain(live_stream);
+
+    Sse::new(combined).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_millis(keepalive_ms))
+            .text("ping"),
+    )
 }
 
 #[utoipa::path(
@@ -490,6 +557,68 @@ pub async fn get_events_by_tx(
     }
 
     Ok(Json(json!({ "data": events, "tx_hash": tx_hash })))
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/contracts",
+    tag = "events",
+    params(
+        ("page" = Option<i64>, Query, description = "Page number (default 1)"),
+        ("limit" = Option<i64>, Query, description = "Items per page (1-100, default 20)"),
+    ),
+    responses(
+        (status = 200, description = "Paginated list of indexed contract IDs"),
+    )
+)]
+pub async fn get_contracts(
+    State(state): State<AppState>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<Value>, AppError> {
+    let limit = params.limit();
+    let offset = params.offset();
+
+    // Check cache
+    {
+        let cache = contracts_cache().lock().await;
+        if let Some(ref entry) = *cache {
+            if entry.expires_at > std::time::Instant::now() {
+                return Ok(Json(entry.data.clone()));
+            }
+        }
+    }
+
+    let rows = sqlx::query_as::<_, ContractSummary>(
+        "SELECT contract_id, COUNT(*) AS event_count, MAX(ledger) AS latest_ledger \
+         FROM events GROUP BY contract_id ORDER BY latest_ledger DESC \
+         LIMIT $1 OFFSET $2",
+    )
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let total: i64 = sqlx::query_scalar("SELECT COUNT(DISTINCT contract_id) FROM events")
+        .fetch_one(&state.pool)
+        .await?;
+
+    let result = json!({
+        "data": rows,
+        "total": total,
+        "page": params.page.unwrap_or(1),
+        "limit": limit,
+    });
+
+    // Store in cache with 30-second TTL
+    {
+        let mut cache = contracts_cache().lock().await;
+        *cache = Some(CacheEntry {
+            data: result.clone(),
+            expires_at: std::time::Instant::now() + Duration::from_secs(30),
+        });
+    }
+
+    Ok(Json(result))
 }
 
 #[cfg(test)]
@@ -1604,5 +1733,116 @@ mod tests {
         assert!(event.get("timestamp").is_some());
         assert!(event.get("event_data").is_some());
         assert!(event.get("created_at").is_some());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_contracts_empty_returns_empty_data(pool: PgPool) {
+        let app = create_test_router(pool);
+        let response = app
+            .oneshot(Request::builder().uri("/v1/contracts").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["data"], json!([]));
+        assert_eq!(v["total"], 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_contracts_returns_aggregated_data(pool: PgPool) {
+        let contract_a = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
+        let contract_b = "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+
+        for (contract, ledger) in [(contract_a, 10_i64), (contract_a, 20_i64), (contract_b, 5_i64)] {
+            sqlx::query(
+                "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data) \
+                 VALUES ($1, 'contract', $2, $3, $4, '{}'::jsonb)",
+            )
+            .bind(contract)
+            .bind("a".repeat(64))
+            .bind(ledger)
+            .bind(Utc::now())
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let app = create_test_router(pool);
+        let response = app
+            .oneshot(Request::builder().uri("/v1/contracts").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(v["total"], 2);
+        let data = v["data"].as_array().unwrap();
+        assert_eq!(data.len(), 2);
+        // Ordered by latest_ledger DESC — contract_a (ledger 20) first
+        assert_eq!(data[0]["contract_id"], contract_a);
+        assert_eq!(data[0]["event_count"], 2);
+        assert_eq!(data[0]["latest_ledger"], 20);
+        assert_eq!(data[1]["contract_id"], contract_b);
+        assert_eq!(data[1]["event_count"], 1);
+        assert_eq!(data[1]["latest_ledger"], 5);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_contracts_deprecated_alias_has_deprecation_header(pool: PgPool) {
+        let app = create_test_router(pool);
+        let response = app
+            .oneshot(Request::builder().uri("/contracts").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("Deprecation").unwrap(), "true");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn sse_keepalive_comment_sent_within_interval(pool: PgPool) {
+        use http_body_util::BodyExt;
+        use tokio::time::{timeout, Duration};
+
+        let health_state = Arc::new(crate::config::HealthState::new(60));
+        let indexer_state = Arc::new(crate::config::IndexerState::new());
+        let prometheus_handle = crate::metrics::init_metrics();
+        let (event_tx, _) = tokio::sync::broadcast::channel(16);
+        // Use a 200 ms keep-alive so the test completes quickly.
+        let app = crate::routes::create_router_with_tx(
+            pool, None, &[], 60,
+            health_state, indexer_state, prometheus_handle,
+            event_tx, 200,
+        );
+
+        let response = app
+            .oneshot(Request::builder().uri("/v1/events/stream").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("content-type").unwrap(), "text/event-stream");
+
+        // Read frames for up to 600 ms and look for the ": ping" keep-alive comment.
+        let mut body = response.into_body();
+        let mut buf = Vec::new();
+        let found = timeout(Duration::from_millis(600), async {
+            while let Some(frame) = body.frame().await {
+                if let Ok(f) = frame {
+                    if let Ok(data) = f.into_data() {
+                        buf.extend_from_slice(&data);
+                        if buf.windows(6).any(|w| w == b": ping") {
+                            return true;
+                        }
+                    }
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false);
+
+        assert!(found, "expected SSE keep-alive comment within 600 ms");
     }
 }

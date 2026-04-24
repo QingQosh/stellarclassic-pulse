@@ -300,7 +300,7 @@ impl<R: RpcClient> Indexer<R> {
                             }
                         }
                     } else {
-                        sleep(Duration::from_secs(5)).await;
+                        sleep(Duration::from_millis(self.config.indexer_poll_interval_ms)).await;
                     }
                 }
                 Err(IndexerFetchError::DbConnection(e)) => {
@@ -322,7 +322,7 @@ impl<R: RpcClient> Indexer<R> {
                 }
                 Err(IndexerFetchError::Rpc(msg)) => {
                     error!(error = %msg, "Indexer error");
-                    sleep(Duration::from_secs(10)).await;
+                    sleep(Duration::from_millis(self.config.indexer_error_backoff_ms)).await;
                 }
             }
         }
@@ -577,6 +577,8 @@ mod tests {
                 rate_limit_per_minute: 60,
                 indexer_stall_timeout_secs: 60,
                 db_statement_timeout_ms: 5000,
+                indexer_poll_interval_ms: 5000,
+                indexer_error_backoff_ms: 10000,
                 environment: crate::config::Environment::Development,
             },
             shutdown_rx,
@@ -681,6 +683,8 @@ mod tests {
                 rate_limit_per_minute: 60,
                 indexer_stall_timeout_secs: 60,
                 db_statement_timeout_ms: 5000,
+                indexer_poll_interval_ms: 5000,
+                indexer_error_backoff_ms: 10000,
                 environment: crate::config::Environment::Development,
             },
             shutdown_rx,
