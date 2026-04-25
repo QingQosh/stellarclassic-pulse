@@ -206,6 +206,9 @@ The service exposes Prometheus-compatible metrics at `GET /metrics`:
 - `soroban_pulse_indexer_lag_ledgers` - Lag between latest and current ledger
 - `soroban_pulse_rpc_errors_total` - Total RPC errors
 - `soroban_pulse_http_request_duration_seconds` - HTTP request duration by route, method, and status
+- `soroban_pulse_db_pool_size` - Current number of open database connections
+- `soroban_pulse_db_pool_idle` - Number of idle database connections
+- `soroban_pulse_db_pool_max` - Configured maximum database connections
 
 ### Distributed Tracing
 

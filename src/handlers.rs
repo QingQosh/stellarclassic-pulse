@@ -238,6 +238,7 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
 }
 
 pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
+    crate::metrics::update_db_pool_metrics(&state.pool);
     state.prometheus_handle.render()
 }
 

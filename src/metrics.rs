@@ -1,4 +1,5 @@
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use sqlx::PgPool;
 
 // The local module is also named `metrics`, which shadows the external crate
 // of the same name. Use an explicit extern-crate alias to disambiguate.
@@ -39,6 +40,17 @@ pub fn record_rpc_error() {
 /// Record HTTP request duration
 pub fn record_http_request_duration(duration: std::time::Duration, method: &str, route: &str, status: &str) {
     m::histogram!("soroban_pulse_http_request_duration_seconds", duration.as_secs_f64(), "method" => method.to_string(), "route" => route.to_string(), "status" => status.to_string());
+}
+
+/// Update database pool metrics
+pub fn update_db_pool_metrics(pool: &PgPool) {
+    let num_connections = pool.num_connections();
+    let num_idle = pool.num_idle();
+    let max_connections = pool.options().get_max_connections();
+
+    m::gauge!("soroban_pulse_db_pool_size", num_connections as f64);
+    m::gauge!("soroban_pulse_db_pool_idle", num_idle as f64);
+    m::gauge!("soroban_pulse_db_pool_max", max_connections as f64);
 }
 
 #[cfg(test)]
@@ -99,6 +111,19 @@ mod tests {
         let duration = Duration::from_millis(150);
         record_http_request_duration(duration, "GET", "/events", "200");
         record_http_request_duration(Duration::ZERO, "POST", "/health", "500");
+        assert!(true);
+    }
+
+    #[tokio::test]
+    async fn test_update_db_pool_metrics() {
+        // Create a test pool
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(5)
+            .min_connections(1)
+            .connect_lazy("postgres://localhost/test");
+        
+        // This should not panic
+        update_db_pool_metrics(&pool);
         assert!(true);
     }
 }
