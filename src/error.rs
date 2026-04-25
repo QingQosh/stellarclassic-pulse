@@ -1,7 +1,15 @@
 use thiserror::Error;
 use axum::{http::StatusCode, response::{IntoResponse, Response}, Json};
-use serde_json::json;
+use serde::Serialize;
 use uuid::Uuid;
+
+/// Machine-readable error response body.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ErrorResponse {
+    pub error: String,
+    pub code: &'static str,
+    pub correlation_id: String,
+}
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -25,20 +33,25 @@ pub enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let correlation_id = Uuid::new_v4().to_string();
-        
-        let (status, message) = match &self {
-            AppError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
-            AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+
+        let (status, message, code) = match &self {
+            AppError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string(), "NOT_FOUND"),
+            AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone(), "VALIDATION_ERROR"),
             AppError::Database(e) => {
                 if is_query_timeout(e) {
-                    return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "query timeout" }))).into_response();
+                    let body = ErrorResponse {
+                        error: "query timeout".to_string(),
+                        code: "DATABASE_ERROR",
+                        correlation_id,
+                    };
+                    return (StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response();
                 }
                 tracing::error!(
                     correlation_id = %correlation_id,
                     error = %e,
                     "Database error"
                 );
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal server error".to_string())
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal server error".to_string(), "DATABASE_ERROR")
             }
             AppError::Http(e) => {
                 tracing::error!(
@@ -46,7 +59,7 @@ impl IntoResponse for AppError {
                     error = %e,
                     "HTTP error"
                 );
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal server error".to_string())
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal server error".to_string(), "INTERNAL_ERROR")
             }
             AppError::Internal(msg) => {
                 tracing::error!(
@@ -54,11 +67,12 @@ impl IntoResponse for AppError {
                     error = %msg,
                     "Internal error"
                 );
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal server error".to_string())
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal server error".to_string(), "INTERNAL_ERROR")
             }
         };
-        
-        (status, Json(json!({ "error": message }))).into_response()
+
+        let body = ErrorResponse { error: message, code, correlation_id };
+        (status, Json(body)).into_response()
     }
 }
 

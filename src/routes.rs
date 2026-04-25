@@ -8,6 +8,7 @@ use tokio::sync::broadcast;
 use tower_http::{
     compression::CompressionLayer,
     cors::CorsLayer,
+    limit::RequestBodyLimitLayer,
     request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::TraceLayer,
 };
@@ -227,6 +228,7 @@ pub fn create_router_with_tx(
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(CompressionLayer::new())
         .layer(SetRequestIdLayer::x_request_id(UuidMakeRequestId))
+        .layer(RequestBodyLimitLayer::new(max_body_size_bytes))
         .with_state(app_state)
 }
 

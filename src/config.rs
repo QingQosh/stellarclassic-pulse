@@ -127,6 +127,7 @@ pub struct Config {
     pub indexer_error_backoff_ms: u64,
     pub sse_keepalive_interval_ms: u64,
     pub environment: Environment,
+    pub max_body_size_bytes: usize,
 }
 
 impl Default for Config {
