@@ -1,14 +1,17 @@
-FROM rust:1.76-slim AS builder
-
+FROM rust:1.87-slim AS chef
+RUN cargo install cargo-chef --locked
 WORKDIR /app
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
-COPY Cargo.toml Cargo.lock ./
-# Cache dependencies
-RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release && rm -rf src
-
+FROM chef AS planner
 COPY . .
-RUN touch src/main.rs && cargo build --release
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+COPY . .
+RUN cargo build --release
 
 # debian:bookworm-slim — digest pinned 2025-07-14. Update via Dependabot or manually with:
 # docker inspect --format='{{index .RepoDigests 0}}' debian:bookworm-slim

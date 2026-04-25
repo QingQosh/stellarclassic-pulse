@@ -38,6 +38,7 @@ pub struct AppState {
     pub indexer_state: Arc<IndexerState>,
     pub prometheus_handle: PrometheusHandle,
     pub event_tx: broadcast::Sender<SorobanEvent>,
+    pub sse_keepalive_interval_ms: u64,
 }
 
 /// OpenAPI spec — all paths are documented via #[utoipa::path] on handlers.
@@ -55,10 +56,12 @@ pub struct AppState {
         handlers::get_events_by_contract,
         handlers::get_events_by_tx,
         handlers::stream_events,
+        handlers::get_contracts,
     ),
     components(schemas(
         crate::models::Event,
         crate::models::PaginationParams,
+        crate::models::ContractSummary,
     )),
     tags(
         (name = "events", description = "Event indexing endpoints"),
@@ -89,10 +92,11 @@ pub fn create_router_with_tx(
     indexer_state: Arc<IndexerState>,
     prometheus_handle: PrometheusHandle,
     event_tx: broadcast::Sender<SorobanEvent>,
+    sse_keepalive_interval_ms: u64,
 ) -> Router {
     let cors = build_cors(allowed_origins);
     let auth_state = Arc::new(middleware::AuthState { api_key });
-    let app_state = AppState { pool, health_state, indexer_state, prometheus_handle, event_tx };
+    let app_state = AppState { pool, health_state, indexer_state, prometheus_handle, event_tx, sse_keepalive_interval_ms };
 
     // Build governor config: burst = rate_limit_per_minute, replenish 1 token per (60/rate) seconds.
     // per_second(n) means n tokens replenished per second; we want rate_limit_per_minute / 60.
@@ -105,7 +109,8 @@ pub fn create_router_with_tx(
         .route("/events", get(handlers::get_events))
         .route("/events/stream", get(handlers::stream_events))
         .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
-        .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx));
+        .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx))
+        .route("/contracts", get(handlers::get_contracts));
 
     // Unversioned deprecated aliases (same handlers, add Deprecation header via middleware)
     let deprecated = Router::new()
@@ -113,6 +118,7 @@ pub fn create_router_with_tx(
         .route("/events/stream", get(handlers::stream_events))
         .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
         .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx))
+        .route("/contracts", get(handlers::get_contracts))
         .layer(axum::middleware::from_fn(|req: Request<Body>, next: axum::middleware::Next| async move {
             let mut resp = next.run(req).await;
             resp.headers_mut().insert(
