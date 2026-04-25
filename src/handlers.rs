@@ -271,15 +271,21 @@ pub async fn swagger_ui() -> impl IntoResponse {
     ),
     responses(
         (status = 200, description = "SSE stream of new events (text/event-stream)"),
+        (status = 400, description = "Invalid contract_id format"),
     )
 )]
 pub async fn stream_events(
     State(state): State<AppState>,
     Query(params): Query<StreamParams>,
     headers: axum::http::HeaderMap,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
     let keepalive_ms = state.sse_keepalive_interval_ms;
     let contract_filter = params.contract_id;
+
+    // Validate contract_id if provided
+    if let Some(ref cid) = contract_filter {
+        validate_contract_id(cid)?;
+    }
 
     // Replay missed events if the client sends Last-Event-ID (a UUID).
     let last_event_id = headers
@@ -350,11 +356,11 @@ pub async fn stream_events(
 
     let combined = replay_stream.chain(live_stream);
 
-    Sse::new(combined).keep_alive(
+    Ok(Sse::new(combined).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_millis(keepalive_ms))
             .text("ping"),
-    )
+    ))
 }
 
 /// Converts an `Event` to a JSON object containing only the requested fields.
@@ -1492,6 +1498,50 @@ mod tests {
             response.headers().get("content-type").unwrap(),
             "text/event-stream"
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn stream_events_invalid_contract_id_returns_400(pool: PgPool) {
+        let app = create_test_router(pool);
+
+        // Invalid: too short
+        let response = app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/stream?contract_id=CABC")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"], "invalid contract_id format");
+
+        // Invalid: doesn't start with C
+        let response = app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/stream?contract_id=A1234567890123456789012345678901234567890123456789012345")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        // Invalid: contains non-alphanumeric
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/stream?contract_id=C123456789012345678901234567890123456789012345678901234!")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     // Metrics endpoint tests
