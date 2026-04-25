@@ -126,6 +126,7 @@ pub struct Config {
     pub indexer_poll_interval_ms: u64,
     pub indexer_error_backoff_ms: u64,
     pub sse_keepalive_interval_ms: u64,
+    pub sse_max_connections: usize,
     pub environment: Environment,
     pub max_body_size_bytes: usize,
 }
@@ -152,6 +153,7 @@ impl Default for Config {
             indexer_poll_interval_ms: 5000,
             indexer_error_backoff_ms: 10000,
             sse_keepalive_interval_ms: 15000,
+            sse_max_connections: 1000,
             environment: Environment::Development,
         }
     }
@@ -353,6 +355,14 @@ impl Config {
                     .expect("SSE_KEEPALIVE_INTERVAL_MS must be a number");
                 assert!((1000..=60000).contains(&v),
                     "SSE_KEEPALIVE_INTERVAL_MS must be between 1000 and 60000 ms, got {v}");
+                v
+            },
+            sse_max_connections: {
+                let v: usize = env::var("SSE_MAX_CONNECTIONS")
+                    .unwrap_or_else(|_| "1000".to_string())
+                    .parse()
+                    .expect("SSE_MAX_CONNECTIONS must be a number");
+                assert!(v > 0, "SSE_MAX_CONNECTIONS must be greater than 0, got {v}");
                 v
             },
             environment,

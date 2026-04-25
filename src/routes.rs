@@ -3,6 +3,7 @@ use axum::http::{HeaderValue, Method, Request};
 use axum::extract::MatchedPath;
 use sqlx::PgPool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 use tokio::sync::broadcast;
 use tower_http::{
@@ -41,6 +42,8 @@ pub struct AppState {
     pub prometheus_handle: PrometheusHandle,
     pub event_tx: broadcast::Sender<SorobanEvent>,
     pub sse_keepalive_interval_ms: u64,
+    pub sse_connections: Arc<AtomicUsize>,
+    pub sse_max_connections: usize,
 }
 
 /// OpenAPI spec — all paths are documented via #[utoipa::path] on handlers.
@@ -97,6 +100,7 @@ pub fn create_router_with_tx(
     prometheus_handle: PrometheusHandle,
     event_tx: broadcast::Sender<SorobanEvent>,
     sse_keepalive_interval_ms: u64,
+    sse_max_connections: usize,
 ) -> Router {
     let cors = build_cors(allowed_origins);
     let auth_state = Arc::new(middleware::AuthState { api_keys });
@@ -191,6 +195,7 @@ pub fn create_router_with_tx(
     Router::new()
         .merge(health_routes)
         .merge(rate_limited_routes)
+        .layer(axum::middleware::from_fn(middleware::request_id_middleware))
         .layer(axum::middleware::from_fn_with_state(
             auth_state,
             middleware::auth_middleware,

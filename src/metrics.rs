@@ -46,6 +46,11 @@ pub fn record_http_request_duration(duration: std::time::Duration, method: &str,
     m::histogram!("soroban_pulse_http_request_duration_seconds", duration.as_secs_f64(), "method" => method.to_string(), "route" => route.to_string(), "status" => status.to_string());
 }
 
+/// Update the active SSE connections count
+pub fn update_sse_connections(count: usize) {
+    m::gauge!("soroban_pulse_sse_connections_active", count as f64);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
