@@ -10,6 +10,11 @@ use tower_http::{
     request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::TraceLayer,
 };
+use tower_governor::{
+    governor::GovernorConfigBuilder,
+    key_extractor::{PeerIpKeyExtractor, SmartIpKeyExtractor},
+    GovernorLayer,
+};
 use metrics_exporter_prometheus::PrometheusHandle;
 use uuid::Uuid;
 use utoipa::OpenApi;
@@ -33,6 +38,7 @@ pub struct AppState {
     pub indexer_state: Arc<IndexerState>,
     pub prometheus_handle: PrometheusHandle,
     pub event_tx: broadcast::Sender<SorobanEvent>,
+    pub sse_keepalive_interval_ms: u64,
 }
 
 /// OpenAPI spec — all paths are documented via #[utoipa::path] on handlers.
@@ -50,10 +56,12 @@ pub struct AppState {
         handlers::get_events_by_contract,
         handlers::get_events_by_tx,
         handlers::stream_events,
+        handlers::get_contracts,
     ),
     components(schemas(
         crate::models::Event,
         crate::models::PaginationParams,
+        crate::models::ContractSummary,
     )),
     tags(
         (name = "events", description = "Event indexing endpoints"),
@@ -71,7 +79,7 @@ pub fn create_router(
     indexer_state: Arc<IndexerState>,
     prometheus_handle: PrometheusHandle,
 ) -> Router {
-    create_router_with_tx(pool, api_key, allowed_origins, rate_limit_per_minute, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0)
+    create_router_with_tx(pool, api_key, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0)
 }
 
 pub fn create_router_with_tx(
@@ -79,23 +87,30 @@ pub fn create_router_with_tx(
     api_key: Option<String>,
     allowed_origins: &[String],
     rate_limit_per_minute: u32,
+    behind_proxy: bool,
     health_state: Arc<HealthState>,
     indexer_state: Arc<IndexerState>,
     prometheus_handle: PrometheusHandle,
     event_tx: broadcast::Sender<SorobanEvent>,
+    sse_keepalive_interval_ms: u64,
 ) -> Router {
     let cors = build_cors(allowed_origins);
     let auth_state = Arc::new(middleware::AuthState { api_key });
-    let app_state = AppState { pool, health_state, indexer_state, prometheus_handle, event_tx };
+    let app_state = AppState { pool, health_state, indexer_state, prometheus_handle, event_tx, sse_keepalive_interval_ms };
 
-    let _period_secs = 60u64.div_ceil(u64::from(rate_limit_per_minute));
+    // Build governor config: burst = rate_limit_per_minute, replenish 1 token per (60/rate) seconds.
+    // per_second(n) means n tokens replenished per second; we want rate_limit_per_minute / 60.
+    // Use per_millisecond to avoid integer truncation: replenish 1 token every (60_000 / rate) ms.
+    let replenish_ms = 60_000u64 / u64::from(rate_limit_per_minute.max(1));
+    let burst = rate_limit_per_minute.max(1);
 
     // Versioned v1 routes
     let v1 = Router::new()
         .route("/events", get(handlers::get_events))
         .route("/events/stream", get(handlers::stream_events))
         .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
-        .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx));
+        .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx))
+        .route("/contracts", get(handlers::get_contracts));
 
     // Unversioned deprecated aliases (same handlers, add Deprecation header via middleware)
     let deprecated = Router::new()
@@ -103,6 +118,7 @@ pub fn create_router_with_tx(
         .route("/events/stream", get(handlers::stream_events))
         .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
         .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx))
+        .route("/contracts", get(handlers::get_contracts))
         .layer(axum::middleware::from_fn(|req: Request<Body>, next: axum::middleware::Next| async move {
             let mut resp = next.run(req).await;
             resp.headers_mut().insert(
@@ -116,16 +132,52 @@ pub fn create_router_with_tx(
             resp
         }));
 
-    Router::new()
+    // Health endpoints — exempt from rate limiting.
+    let health_routes = Router::new()
         .route("/health", get(handlers::health))
         .route("/healthz/live", get(handlers::health_live))
-        .route("/healthz/ready", get(handlers::health_ready))
-        .route("/status", get(handlers::status))
-        .route("/metrics", get(handlers::metrics))
-        .route("/openapi.json", get(handlers::openapi_json))
-        .route("/docs", get(handlers::swagger_ui))
-        .nest("/v1", v1)
-        .merge(deprecated)
+        .route("/healthz/ready", get(handlers::health_ready));
+
+    // All other routes — subject to rate limiting.
+    let rate_limited_routes = if behind_proxy {
+        let governor_conf = Arc::new(
+            GovernorConfigBuilder::default()
+                .per_millisecond(replenish_ms)
+                .burst_size(burst)
+                .key_extractor(SmartIpKeyExtractor)
+                .finish()
+                .expect("invalid governor config"),
+        );
+        Router::new()
+            .route("/status", get(handlers::status))
+            .route("/metrics", get(handlers::metrics))
+            .route("/openapi.json", get(handlers::openapi_json))
+            .route("/docs", get(handlers::swagger_ui))
+            .nest("/v1", v1)
+            .merge(deprecated)
+            .layer(GovernorLayer::new(governor_conf))
+    } else {
+        let governor_conf = Arc::new(
+            GovernorConfigBuilder::default()
+                .per_millisecond(replenish_ms)
+                .burst_size(burst)
+                .key_extractor(PeerIpKeyExtractor)
+                .finish()
+                .expect("invalid governor config"),
+        );
+        Router::new()
+            .route("/status", get(handlers::status))
+            .route("/metrics", get(handlers::metrics))
+            .route("/openapi.json", get(handlers::openapi_json))
+            .route("/docs", get(handlers::swagger_ui))
+            .nest("/v1", v1)
+            .merge(deprecated)
+            .layer(GovernorLayer::new(governor_conf))
+    };
+
+    Router::new()
+        .merge(health_routes)
+        .merge(rate_limited_routes)
         .layer(axum::middleware::from_fn_with_state(
             auth_state,
             middleware::auth_middleware,
@@ -186,7 +238,7 @@ fn build_cors(allowed_origins: &[String]) -> CorsLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::{header, Request};
+    use axum::http::{header, Request, StatusCode};
     use axum::body::Body;
     use tower::ServiceExt;
 
@@ -220,5 +272,99 @@ mod tests {
         ).await.unwrap();
 
         assert!(response.headers().get(header::CONTENT_ENCODING).is_none());
+    }
+
+    /// Build a minimal router with GovernorLayer using SmartIpKeyExtractor so tests
+    /// can inject a fake IP via X-Forwarded-For without a real TCP connection.
+    fn rate_limited_test_app(burst: u32) -> Router {
+        let governor_conf = Arc::new(
+            GovernorConfigBuilder::default()
+                .per_millisecond(60_000u64 / u64::from(burst.max(1)))
+                .burst_size(burst)
+                .key_extractor(SmartIpKeyExtractor)
+                .finish()
+                .expect("invalid governor config"),
+        );
+        Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(GovernorLayer::new(governor_conf))
+    }
+
+    #[tokio::test]
+    async fn rate_limit_returns_429_after_burst_exhausted() {
+        let app = rate_limited_test_app(2);
+
+        // First two requests (burst=2) should succeed.
+        for _ in 0..2 {
+            let resp = app.clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/test")
+                        .header("X-Forwarded-For", "1.2.3.4")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+
+        // Third request must be rate-limited.
+        let resp = app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("X-Forwarded-For", "1.2.3.4")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(resp.headers().contains_key("retry-after") || resp.headers().contains_key("x-ratelimit-after"));
+    }
+
+    #[tokio::test]
+    async fn rate_limit_different_ips_are_independent() {
+        let app = rate_limited_test_app(1);
+
+        // Exhaust the quota for IP A.
+        let resp = app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("X-Forwarded-For", "10.0.0.1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // IP A is now rate-limited.
+        let resp = app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("X-Forwarded-For", "10.0.0.1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        // IP B still has quota.
+        let resp = app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("X-Forwarded-For", "10.0.0.2")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

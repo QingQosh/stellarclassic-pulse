@@ -123,6 +123,9 @@ pub struct Config {
     pub indexer_lag_warn_threshold: u64,
     pub indexer_stall_timeout_secs: u64,
     pub db_statement_timeout_ms: u64,
+    pub indexer_poll_interval_ms: u64,
+    pub indexer_error_backoff_ms: u64,
+    pub sse_keepalive_interval_ms: u64,
     pub environment: Environment,
 }
 
@@ -145,6 +148,9 @@ impl Default for Config {
             indexer_lag_warn_threshold: 100,
             indexer_stall_timeout_secs: 60,
             db_statement_timeout_ms: 5000,
+            indexer_poll_interval_ms: 5000,
+            indexer_error_backoff_ms: 10000,
+            sse_keepalive_interval_ms: 15000,
             environment: Environment::Development,
         }
     }
@@ -308,6 +314,33 @@ impl Config {
                 .unwrap_or_else(|_| "5000".to_string())
                 .parse()
                 .expect("DB_STATEMENT_TIMEOUT_MS must be a number"),
+            indexer_poll_interval_ms: {
+                let v: u64 = env::var("INDEXER_POLL_INTERVAL_MS")
+                    .unwrap_or_else(|_| "5000".to_string())
+                    .parse()
+                    .expect("INDEXER_POLL_INTERVAL_MS must be a number");
+                assert!((100..=60000).contains(&v),
+                    "INDEXER_POLL_INTERVAL_MS must be between 100 and 60000 ms, got {v}");
+                v
+            },
+            indexer_error_backoff_ms: {
+                let v: u64 = env::var("INDEXER_ERROR_BACKOFF_MS")
+                    .unwrap_or_else(|_| "10000".to_string())
+                    .parse()
+                    .expect("INDEXER_ERROR_BACKOFF_MS must be a number");
+                assert!((100..=60000).contains(&v),
+                    "INDEXER_ERROR_BACKOFF_MS must be between 100 and 60000 ms, got {v}");
+                v
+            },
+            sse_keepalive_interval_ms: {
+                let v: u64 = env::var("SSE_KEEPALIVE_INTERVAL_MS")
+                    .unwrap_or_else(|_| "15000".to_string())
+                    .parse()
+                    .expect("SSE_KEEPALIVE_INTERVAL_MS must be a number");
+                assert!((1000..=60000).contains(&v),
+                    "SSE_KEEPALIVE_INTERVAL_MS must be between 1000 and 60000 ms, got {v}");
+                v
+            },
             environment,
         }
     }
