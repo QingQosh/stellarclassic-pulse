@@ -37,20 +37,19 @@ pub fn record_rpc_error() {
     m::counter!("soroban_pulse_rpc_errors_total", 1u64);
 }
 
+/// Record a validation failure
+pub fn record_validation_failure() {
+    m::counter!("soroban_pulse_events_validation_failed_total", 1u64);
+}
+
 /// Record HTTP request duration
 pub fn record_http_request_duration(duration: std::time::Duration, method: &str, route: &str, status: &str) {
     m::histogram!("soroban_pulse_http_request_duration_seconds", duration.as_secs_f64(), "method" => method.to_string(), "route" => route.to_string(), "status" => status.to_string());
 }
 
-/// Update database pool metrics
-pub fn update_db_pool_metrics(pool: &PgPool) {
-    let num_connections = pool.num_connections();
-    let num_idle = pool.num_idle();
-    let max_connections = pool.options().get_max_connections();
-
-    m::gauge!("soroban_pulse_db_pool_size", num_connections as f64);
-    m::gauge!("soroban_pulse_db_pool_idle", num_idle as f64);
-    m::gauge!("soroban_pulse_db_pool_max", max_connections as f64);
+/// Update the active SSE connections count
+pub fn update_sse_connections(count: usize) {
+    m::gauge!("soroban_pulse_sse_connections_active", count as f64);
 }
 
 #[cfg(test)]
@@ -102,6 +101,13 @@ mod tests {
     fn test_record_rpc_error() {
         // This should not panic
         record_rpc_error();
+        assert!(true);
+    }
+
+    #[test]
+    fn test_record_validation_failure() {
+        // This should not panic
+        record_validation_failure();
         assert!(true);
     }
 
