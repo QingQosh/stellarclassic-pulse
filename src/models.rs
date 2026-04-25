@@ -60,6 +60,7 @@ pub struct PaginationParams {
     pub event_type: Option<EventType>,
     pub from_ledger: Option<i64>,
     pub to_ledger: Option<i64>,
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -87,6 +88,13 @@ impl SearchParams {
 #[derive(Debug, Deserialize)]
 pub struct StreamParams {
     pub contract_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow, utoipa::ToSchema)]
+pub struct ContractSummary {
+    pub contract_id: String,
+    pub event_count: i64,
+    pub latest_ledger: i64,
 }
 
 impl PaginationParams {
@@ -178,6 +186,7 @@ mod tests {
             event_type: None,
             from_ledger: None,
             to_ledger: None,
+            cursor: None,
         }
     }
 
