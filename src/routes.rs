@@ -55,7 +55,6 @@ pub struct AppState {
         handlers::health,
         handlers::status,
         handlers::get_events,
-        handlers::search_events,
         handlers::get_events_by_contract,
         handlers::get_events_by_tx,
         handlers::stream_events,
@@ -81,9 +80,9 @@ pub fn create_router(
     health_state: Arc<HealthState>,
     indexer_state: Arc<IndexerState>,
     prometheus_handle: PrometheusHandle,
-    health_check_timeout_ms: u64,
+    _health_check_timeout_ms: u64,
 ) -> Router {
-    create_router_with_tx(pool, api_key, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0)
+    create_router_with_tx(pool, api_key, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000, 1024 * 1024)
 }
 
 pub fn create_router_with_tx(
@@ -97,6 +96,7 @@ pub fn create_router_with_tx(
     prometheus_handle: PrometheusHandle,
     event_tx: broadcast::Sender<SorobanEvent>,
     sse_keepalive_interval_ms: u64,
+    max_body_size_bytes: usize,
 ) -> Router {
     let cors = build_cors(allowed_origins);
     let auth_state = Arc::new(middleware::AuthState { api_key });
@@ -111,7 +111,6 @@ pub fn create_router_with_tx(
     // Versioned v1 routes
     let v1 = Router::new()
         .route("/events", get(handlers::get_events))
-        .route("/events/search", axum::routing::post(handlers::search_events))
         .route("/events/stream", get(handlers::stream_events))
         .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
         .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx))

@@ -378,6 +378,7 @@ impl<R: RpcClient> Indexer<R> {
                         total_inserted += rows;
                         if rows == 0 {
                             total_skipped += 1;
+                            metrics::record_duplicate_event();
                         } else if let Some(ref tx) = self.event_tx {
                             let _ = tx.send(event);
                         }
@@ -409,7 +410,15 @@ impl<R: RpcClient> Indexer<R> {
         );
         metrics::record_events_indexed(total_inserted as u64);
 
-        let _duplicate_events_skipped = total_skipped;
+        if total_fetched > 0 {
+            let duplicate_rate = (total_skipped as f64 / total_fetched as f64) * 100.0;
+            tracing::debug!(
+                duplicates = total_skipped,
+                total_fetched = total_fetched,
+                duplicate_rate = duplicate_rate,
+                "Event deduplication stats"
+            );
+        }
 
         if latest_ledger > start_ledger {
             Ok(latest_ledger + 1)
