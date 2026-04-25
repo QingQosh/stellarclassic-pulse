@@ -420,6 +420,7 @@ mod tests {
         assert_eq!(config.port, 3000);
         assert_eq!(config.start_ledger, 0);
         assert!(!config.start_ledger_fallback);
+        assert_eq!(config.health_check_timeout_ms, 2000);
         assert_eq!(config.environment, Environment::Development);
     }
 

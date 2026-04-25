@@ -54,6 +54,7 @@ pub struct AppState {
         handlers::health,
         handlers::status,
         handlers::get_events,
+        handlers::search_events,
         handlers::get_events_by_contract,
         handlers::get_events_by_tx,
         handlers::stream_events,
@@ -79,6 +80,7 @@ pub fn create_router(
     health_state: Arc<HealthState>,
     indexer_state: Arc<IndexerState>,
     prometheus_handle: PrometheusHandle,
+    health_check_timeout_ms: u64,
 ) -> Router {
     create_router_with_tx(pool, api_key, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0)
 }
@@ -108,6 +110,7 @@ pub fn create_router_with_tx(
     // Versioned v1 routes
     let v1 = Router::new()
         .route("/events", get(handlers::get_events))
+        .route("/events/search", axum::routing::post(handlers::search_events))
         .route("/events/stream", get(handlers::stream_events))
         .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
         .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx))
@@ -228,12 +231,14 @@ pub fn create_router_with_tx(
 }
 
 fn build_cors(allowed_origins: &[String]) -> CorsLayer {
-    let methods = [Method::GET];
+    let methods = [Method::GET, Method::POST];
+    let headers = [axum::http::header::CONTENT_TYPE, axum::http::header::AUTHORIZATION];
 
     if allowed_origins.iter().any(|o| o == "*") {
         return CorsLayer::new()
             .allow_origin(tower_http::cors::Any)
-            .allow_methods(methods);
+            .allow_methods(methods)
+            .allow_headers(headers);
     }
 
     let origins: Vec<HeaderValue> = allowed_origins
@@ -244,6 +249,7 @@ fn build_cors(allowed_origins: &[String]) -> CorsLayer {
     CorsLayer::new()
         .allow_origin(origins)
         .allow_methods(methods)
+        .allow_headers(headers)
         .vary([axum::http::header::ORIGIN])
 }
 
