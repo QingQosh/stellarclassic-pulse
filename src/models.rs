@@ -1,13 +1,46 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fmt;
+use std::str::FromStr;
 use uuid::Uuid;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema)]
+#[sqlx(type_name = "text", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum EventType {
+    Contract,
+    Diagnostic,
+    System,
+}
+
+impl fmt::Display for EventType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EventType::Contract   => write!(f, "contract"),
+            EventType::Diagnostic => write!(f, "diagnostic"),
+            EventType::System     => write!(f, "system"),
+        }
+    }
+}
+
+impl FromStr for EventType {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "contract"   => Ok(EventType::Contract),
+            "diagnostic" => Ok(EventType::Diagnostic),
+            "system"     => Ok(EventType::System),
+            other => Err(format!("unknown event type: {other}")),
+        }
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Event {
     pub id: Uuid,
     pub contract_id: String,
-    pub event_type: String,
+    pub event_type: EventType,
     pub tx_hash: String,
     pub ledger: i64,
     pub timestamp: DateTime<Utc>,
@@ -24,14 +57,44 @@ pub struct PaginationParams {
     pub limit: Option<i64>,
     pub exact_count: Option<bool>,
     pub fields: Option<String>,
-    pub event_type: Option<String>,
+    pub event_type: Option<EventType>,
     pub from_ledger: Option<i64>,
     pub to_ledger: Option<i64>,
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct SearchParams {
+    pub contract_ids: Option<Vec<String>>,
+    pub event_type: Option<EventType>,
+    pub from_ledger: Option<i64>,
+    pub to_ledger: Option<i64>,
+    pub topic_filter: Option<Value>,
+    pub page: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+impl SearchParams {
+    pub fn offset(&self) -> i64 {
+        let page = self.page.unwrap_or(1).max(1);
+        (page - 1) * self.limit()
+    }
+
+    pub fn limit(&self) -> i64 {
+        self.limit.unwrap_or(20).clamp(1, 100)
+    }
 }
 
 #[derive(Debug, Deserialize)]
 pub struct StreamParams {
     pub contract_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow, utoipa::ToSchema)]
+pub struct ContractSummary {
+    pub contract_id: String,
+    pub event_count: i64,
+    pub latest_ledger: i64,
 }
 
 impl PaginationParams {
@@ -123,6 +186,7 @@ mod tests {
             event_type: None,
             from_ledger: None,
             to_ledger: None,
+            cursor: None,
         }
     }
 
