@@ -120,14 +120,22 @@ pub fn create_router_with_tx(
         .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx))
         .route("/contracts", get(handlers::get_contracts))
         .layer(axum::middleware::from_fn(|req: Request<Body>, next: axum::middleware::Next| async move {
+            let path = req.uri().path().to_string();
             let mut resp = next.run(req).await;
             resp.headers_mut().insert(
                 "Deprecation",
                 HeaderValue::from_static("true"),
             );
             resp.headers_mut().insert(
+                "Sunset",
+                HeaderValue::from_static("Sat, 24 Oct 2026 00:00:00 GMT"),
+            );
+            // Map the deprecated path to its versioned equivalent
+            let versioned_path = format!("/v1{}", path);
+            let link_value = format!("<{}>; rel=\"successor-version\"", versioned_path);
+            resp.headers_mut().insert(
                 "Link",
-                HeaderValue::from_static("</v1/events>; rel=\"successor-version\""),
+                HeaderValue::from_str(&link_value).unwrap_or_else(|_| HeaderValue::from_static("</v1/events>; rel=\"successor-version\"")),
             );
             resp
         }));
