@@ -25,7 +25,7 @@ pub async fn request_id_middleware(
 
 #[derive(Clone)]
 pub struct AuthState {
-    pub api_key: Option<String>,
+    pub api_keys: Vec<String>,
 }
 
 pub async fn auth_middleware(
@@ -40,7 +40,7 @@ pub async fn auth_middleware(
         return Ok(next.run(req).await);
     }
     
-    if let Some(expected_key) = &state.api_key {
+    if !state.api_keys.is_empty() {
         let auth_header = req.headers().get("Authorization")
             .and_then(|h| h.to_str().ok())
             .and_then(|s| s.strip_prefix("Bearer "));
@@ -50,7 +50,7 @@ pub async fn auth_middleware(
             
         let provided_key = auth_header.or(api_key_header);
         
-        if provided_key != Some(expected_key.as_str()) {
+        if !provided_key.map_or(false, |key| state.api_keys.contains(&key.to_string())) {
             return Err((
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({ "error": "unauthorized" }))
@@ -70,8 +70,8 @@ mod tests {
     use axum::body::Body;
     use axum::response::Response;
 
-    async fn setup_app(api_key: Option<String>) -> Router {
-        let auth_state = Arc::new(AuthState { api_key });
+    async fn setup_app(api_keys: Vec<String>) -> Router {
+        let auth_state = Arc::new(AuthState { api_keys });
         Router::new()
             .route("/test", get(|| async { "OK" }))
             .route("/health", get(|| async { "OK" }))
@@ -81,7 +81,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_bypassed_when_no_key_configured() {
-        let app = setup_app(None).await;
+        let app = setup_app(vec![]).await;
         
         let response: Response = app
             .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
@@ -93,7 +93,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_success_with_bearer_token() {
-        let app = setup_app(Some("secret123".to_string())).await;
+        let app = setup_app(vec!["secret123".to_string()]).await;
         
         let response: Response = app
             .oneshot(
@@ -111,7 +111,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_success_with_x_api_key() {
-        let app = setup_app(Some("secret123".to_string())).await;
+        let app = setup_app(vec!["secret123".to_string()]).await;
         
         let response: Response = app
             .oneshot(
@@ -129,7 +129,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_failure_with_invalid_key() {
-        let app = setup_app(Some("secret123".to_string())).await;
+        let app = setup_app(vec!["secret123".to_string()]).await;
         
         let response: Response = app
             .oneshot(
@@ -147,7 +147,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_failure_with_missing_key() {
-        let app = setup_app(Some("secret123".to_string())).await;
+        let app = setup_app(vec!["secret123".to_string()]).await;
         
         let response: Response = app
             .oneshot(
@@ -163,8 +163,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_auth_success_with_secondary_key() {
+        let app = setup_app(vec!["primary".to_string(), "secondary".to_string()]).await;
+        
+        let response: Response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("Authorization", "Bearer secondary")
+                    .body(Body::empty())
+                    .unwrap()
+            )
+            .await
+            .unwrap();
+            
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn test_health_endpoints_bypass_auth() {
-        let app = setup_app(Some("secret123".to_string())).await;
+        let app = setup_app(vec!["secret123".to_string()]).await;
         
         let response: Response = app.clone()
             .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())

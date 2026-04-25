@@ -36,6 +36,11 @@ pub fn record_rpc_error() {
     m::counter!("soroban_pulse_rpc_errors_total", 1u64);
 }
 
+/// Record a validation failure
+pub fn record_validation_failure() {
+    m::counter!("soroban_pulse_events_validation_failed_total", 1u64);
+}
+
 /// Record HTTP request duration
 pub fn record_http_request_duration(duration: std::time::Duration, method: &str, route: &str, status: &str) {
     m::histogram!("soroban_pulse_http_request_duration_seconds", duration.as_secs_f64(), "method" => method.to_string(), "route" => route.to_string(), "status" => status.to_string());
@@ -95,6 +100,13 @@ mod tests {
     fn test_record_rpc_error() {
         // This should not panic
         record_rpc_error();
+        assert!(true);
+    }
+
+    #[test]
+    fn test_record_validation_failure() {
+        // This should not panic
+        record_validation_failure();
         assert!(true);
     }
 
