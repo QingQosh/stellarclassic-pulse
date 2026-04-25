@@ -1,4 +1,5 @@
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use sqlx::PgPool;
 
 // The local module is also named `metrics`, which shadows the external crate
 // of the same name. Use an explicit extern-crate alias to disambiguate.
@@ -116,6 +117,19 @@ mod tests {
         let duration = Duration::from_millis(150);
         record_http_request_duration(duration, "GET", "/events", "200");
         record_http_request_duration(Duration::ZERO, "POST", "/health", "500");
+        assert!(true);
+    }
+
+    #[tokio::test]
+    async fn test_update_db_pool_metrics() {
+        // Create a test pool
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(5)
+            .min_connections(1)
+            .connect_lazy("postgres://localhost/test");
+        
+        // This should not panic
+        update_db_pool_metrics(&pool);
         assert!(true);
     }
 }
