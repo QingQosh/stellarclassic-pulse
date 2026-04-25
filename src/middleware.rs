@@ -7,6 +7,22 @@ use axum::{
 };
 use std::sync::Arc;
 
+/// Middleware to extract request_id from headers and store in thread-local
+pub async fn request_id_middleware(
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let request_id = req
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string();
+    
+    crate::error::set_request_id(request_id);
+    next.run(req).await
+}
+
 #[derive(Clone)]
 pub struct AuthState {
     pub api_key: Option<String>,
