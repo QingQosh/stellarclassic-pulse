@@ -75,7 +75,7 @@ pub struct ApiDoc;
 
 pub fn create_router(
     pool: PgPool,
-    api_key: Option<String>,
+    api_keys: Vec<String>,
     allowed_origins: &[String],
     rate_limit_per_minute: u32,
     health_state: Arc<HealthState>,
@@ -83,12 +83,12 @@ pub fn create_router(
     prometheus_handle: PrometheusHandle,
     health_check_timeout_ms: u64,
 ) -> Router {
-    create_router_with_tx(pool, api_key, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0)
+    create_router_with_tx(pool, api_keys, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000)
 }
 
 pub fn create_router_with_tx(
     pool: PgPool,
-    api_key: Option<String>,
+    api_keys: Vec<String>,
     allowed_origins: &[String],
     rate_limit_per_minute: u32,
     behind_proxy: bool,
@@ -99,7 +99,7 @@ pub fn create_router_with_tx(
     sse_keepalive_interval_ms: u64,
 ) -> Router {
     let cors = build_cors(allowed_origins);
-    let auth_state = Arc::new(middleware::AuthState { api_key });
+    let auth_state = Arc::new(middleware::AuthState { api_keys });
     let app_state = AppState { pool, health_state, indexer_state, prometheus_handle, event_tx, sse_keepalive_interval_ms };
 
     // Build governor config: burst = rate_limit_per_minute, replenish 1 token per (60/rate) seconds.
