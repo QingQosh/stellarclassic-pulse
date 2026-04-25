@@ -3,6 +3,7 @@ use axum::http::{HeaderValue, Method, Request};
 use axum::extract::MatchedPath;
 use sqlx::PgPool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 use tokio::sync::broadcast;
 use tower_http::{
@@ -41,6 +42,8 @@ pub struct AppState {
     pub prometheus_handle: PrometheusHandle,
     pub event_tx: broadcast::Sender<SorobanEvent>,
     pub sse_keepalive_interval_ms: u64,
+    pub sse_connections: Arc<AtomicUsize>,
+    pub sse_max_connections: usize,
 }
 
 /// OpenAPI spec — all paths are documented via #[utoipa::path] on handlers.
@@ -97,10 +100,20 @@ pub fn create_router_with_tx(
     prometheus_handle: PrometheusHandle,
     event_tx: broadcast::Sender<SorobanEvent>,
     sse_keepalive_interval_ms: u64,
+    sse_max_connections: usize,
 ) -> Router {
     let cors = build_cors(allowed_origins);
     let auth_state = Arc::new(middleware::AuthState { api_key });
-    let app_state = AppState { pool, health_state, indexer_state, prometheus_handle, event_tx, sse_keepalive_interval_ms };
+    let app_state = AppState { 
+        pool, 
+        health_state, 
+        indexer_state, 
+        prometheus_handle, 
+        event_tx, 
+        sse_keepalive_interval_ms,
+        sse_connections: Arc::new(AtomicUsize::new(0)),
+        sse_max_connections,
+    };
 
     // Build governor config: burst = rate_limit_per_minute, replenish 1 token per (60/rate) seconds.
     // per_second(n) means n tokens replenished per second; we want rate_limit_per_minute / 60.
