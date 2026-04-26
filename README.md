@@ -196,6 +196,8 @@ Migrate to `/v1/` paths at your earliest convenience.
 
 ## Observability
 
+Prometheus alerting rules covering all key SLOs are defined in [`docs/alerts.yml`](docs/alerts.yml).
+
 ### Metrics
 
 The service exposes Prometheus-compatible metrics at `GET /metrics`:
