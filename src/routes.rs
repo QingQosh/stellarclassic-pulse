@@ -62,10 +62,12 @@ pub struct AppState {
         handlers::get_events_by_contract,
         handlers::get_events_by_tx,
         handlers::stream_events,
+        handlers::stream_events_by_contract,
         handlers::get_contracts,
     ),
     components(schemas(
         crate::models::Event,
+        crate::models::EventType,
         crate::models::PaginationParams,
         crate::models::ContractSummary,
     )),
@@ -128,6 +130,7 @@ pub fn create_router_with_tx(
         .route("/events", get(handlers::get_events))
         .route("/events/stream", get(handlers::stream_events))
         .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
+        .route("/events/contract/:contract_id/stream", get(handlers::stream_events_by_contract))
         .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx))
         .route("/contracts", get(handlers::get_contracts));
 
@@ -136,6 +139,7 @@ pub fn create_router_with_tx(
         .route("/events", get(handlers::get_events))
         .route("/events/stream", get(handlers::stream_events))
         .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
+        .route("/events/contract/:contract_id/stream", get(handlers::stream_events_by_contract))
         .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx))
         .route("/contracts", get(handlers::get_contracts))
         .layer(axum::middleware::from_fn(|req: Request<Body>, next: axum::middleware::Next| async move {

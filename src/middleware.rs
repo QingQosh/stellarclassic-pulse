@@ -10,7 +10,7 @@ use sha2::{Sha256, Digest};
 
 /// Middleware to extract request_id from headers and store in thread-local
 pub async fn request_id_middleware(
-    mut req: Request,
+    req: Request,
     next: Next,
 ) -> Response {
     let request_id = req
