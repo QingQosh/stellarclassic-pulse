@@ -9,8 +9,8 @@ groups:
           component: indexer
         annotations:
           summary: "Soroban Pulse indexer is falling behind"
-          description: "Indexer lag is {{ $value }} ledgers (threshold: 100). The indexer may be experiencing RPC errors or database slowness."
-      
+          description: "Indexer lag is {{ $value }} ledgers (threshold: 100). The indexer may be experiencing RPC errors or database slowness. Check logs with: kubectl logs -l app=soroban-pulse | grep 'Indexer error'"
+
       - alert: IndexerLagCritical
         expr: soroban_pulse_indexer_lag_ledgers > 500
         for: 10m
@@ -19,8 +19,66 @@ groups:
           component: indexer
         annotations:
           summary: "Soroban Pulse indexer lag is critical"
-          description: "Indexer lag is {{ $value }} ledgers (threshold: 500). Immediate investigation required."
-      
+          description: "Indexer lag is {{ $value }} ledgers (threshold: 500). Immediate investigation required. Check RPC endpoint health and database performance."
+
+      - alert: IndexerStall
+        expr: time() - soroban_pulse_indexer_last_poll_timestamp > 120
+        for: 0m
+        labels:
+          severity: critical
+          component: indexer
+        annotations:
+          summary: "Soroban Pulse indexer has stalled"
+          description: "No successful indexer poll in {{ $value | humanizeDuration }}. The indexer may have lost the advisory lock or crashed. Check replica health and restart if necessary."
+
+      - alert: HighRPCErrorRate
+        expr: |
+          rate(soroban_pulse_rpc_errors_total[5m])
+          /
+          (rate(soroban_pulse_rpc_errors_total[5m]) + rate(soroban_pulse_events_indexed_total[5m]) + 0.001)
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          component: indexer
+        annotations:
+          summary: "Soroban Pulse RPC error rate is above 5%"
+          description: "More than 5% of RPC calls are failing over the last 5 minutes (current rate: {{ $value | humanizePercentage }}). Check RPC endpoint connectivity and consider switching to a backup RPC node."
+
+      - alert: DBPoolExhaustion
+        expr: soroban_pulse_db_pool_size >= soroban_pulse_db_pool_max
+        for: 1m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Soroban Pulse database connection pool is exhausted"
+          description: "The database connection pool has been at maximum capacity for more than 1 minute (pool_size={{ $value }}). New requests may be queued or rejected. Consider increasing DB_MAX_CONNECTIONS or scaling the service."
+
+      - alert: HighHTTPErrorRate
+        expr: |
+          rate(soroban_pulse_http_request_duration_seconds_count{status=~"5.."}[5m])
+          /
+          rate(soroban_pulse_http_request_duration_seconds_count[5m])
+          > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          component: http
+        annotations:
+          summary: "Soroban Pulse HTTP 5xx error rate exceeds 1%"
+          description: "More than 1% of HTTP requests are returning 5xx errors over the last 5 minutes (current rate: {{ $value | humanizePercentage }}). Check application logs for errors and database connectivity."
+
+      - alert: P99LatencySLOBreach
+        expr: histogram_quantile(0.99, rate(soroban_pulse_http_request_duration_seconds_bucket[5m])) > 0.2
+        for: 5m
+        labels:
+          severity: critical
+          component: http
+        annotations:
+          summary: "Soroban Pulse p99 latency exceeds 200ms SLO"
+          description: "p99 request latency is {{ $value | humanizeDuration }} (SLO: 200ms). Consider scaling horizontally, adding database indexes, or investigating slow queries."
+
       - alert: IndexerRPCErrors
         expr: rate(soroban_pulse_rpc_errors_total[5m]) > 0.1
         for: 5m
@@ -29,8 +87,8 @@ groups:
           component: indexer
         annotations:
           summary: "Soroban Pulse RPC errors are elevated"
-          description: "RPC error rate is {{ $value }} errors/sec. Check RPC endpoint connectivity."
-      
+          description: "RPC error rate is {{ $value }} errors/sec. Check RPC endpoint connectivity and review logs for specific error messages."
+
       - alert: IndexerNoEventsIndexed
         expr: increase(soroban_pulse_events_indexed_total[10m]) == 0
         for: 15m
@@ -39,8 +97,8 @@ groups:
           component: indexer
         annotations:
           summary: "Soroban Pulse indexer is not indexing events"
-          description: "No events indexed in the last 10 minutes. Check if new ledgers are being produced on the network."
-      
+          description: "No events indexed in the last 10 minutes. This may be expected during low-activity periods on the network, but could also indicate an indexer stall. Verify network activity and check indexer logs."
+
       - alert: HTTPRequestLatencyHigh
         expr: histogram_quantile(0.95, rate(soroban_pulse_http_request_duration_seconds_bucket[5m])) > 1
         for: 5m
@@ -48,5 +106,5 @@ groups:
           severity: warning
           component: http
         annotations:
-          summary: "Soroban Pulse HTTP request latency is high"
-          description: "95th percentile request latency is {{ $value }}s. Consider scaling or investigating database performance."
+          summary: "Soroban Pulse HTTP p95 request latency is high"
+          description: "p95 request latency is {{ $value | humanizeDuration }}. Consider scaling or investigating database performance."
