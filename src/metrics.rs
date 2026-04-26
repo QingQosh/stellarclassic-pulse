@@ -52,6 +52,11 @@ pub fn update_sse_connections(count: usize) {
     m::gauge!("soroban_pulse_sse_connections_active", count as f64);
 }
 
+/// Record a replay job execution
+pub fn record_replay_job() {
+    m::counter!("soroban_pulse_replay_jobs_total", 1u64);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

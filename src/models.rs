@@ -90,6 +90,12 @@ pub struct StreamParams {
     pub contract_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct ReplayRequest {
+    pub from_ledger: u64,
+    pub to_ledger: u64,
+}
+
 #[derive(Debug, Serialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct ContractSummary {
     pub contract_id: String,

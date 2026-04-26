@@ -44,6 +44,7 @@ pub struct AppState {
     pub sse_keepalive_interval_ms: u64,
     pub sse_connections: Arc<AtomicUsize>,
     pub sse_max_connections: usize,
+    pub config: crate::config::Config,
 }
 
 /// OpenAPI spec — all paths are documented via #[utoipa::path] on handlers.
@@ -62,15 +63,18 @@ pub struct AppState {
         handlers::get_events_by_tx,
         handlers::stream_events,
         handlers::get_contracts,
+        handlers::replay_events,
     ),
     components(schemas(
         crate::models::Event,
         crate::models::PaginationParams,
         crate::models::ContractSummary,
+        crate::models::ReplayRequest,
     )),
     tags(
         (name = "events", description = "Event indexing endpoints"),
         (name = "system", description = "Health and observability endpoints"),
+        (name = "admin", description = "Administrative endpoints"),
     )
 )]
 pub struct ApiDoc;
@@ -84,8 +88,9 @@ pub fn create_router(
     indexer_state: Arc<IndexerState>,
     prometheus_handle: PrometheusHandle,
     _health_check_timeout_ms: u64,
+    config: crate::config::Config,
 ) -> Router {
-    create_router_with_tx(pool, api_keys, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000)
+    create_router_with_tx(pool, api_keys, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000, config)
 }
 
 pub fn create_router_with_tx(
@@ -100,10 +105,11 @@ pub fn create_router_with_tx(
     event_tx: broadcast::Sender<SorobanEvent>,
     sse_keepalive_interval_ms: u64,
     sse_max_connections: usize,
+    config: crate::config::Config,
 ) -> Router {
     let cors = build_cors(allowed_origins);
     let auth_state = Arc::new(middleware::AuthState { api_keys });
-    let app_state = AppState { pool, health_state, indexer_state, prometheus_handle, event_tx, sse_keepalive_interval_ms };
+    let app_state = AppState { pool, health_state, indexer_state, prometheus_handle, event_tx, sse_keepalive_interval_ms, sse_max_connections, config };
 
     // Build governor config: burst = rate_limit_per_minute, replenish 1 token per (60/rate) seconds.
     // per_second(n) means n tokens replenished per second; we want rate_limit_per_minute / 60.
@@ -117,7 +123,8 @@ pub fn create_router_with_tx(
         .route("/events/stream", get(handlers::stream_events))
         .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
         .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx))
-        .route("/contracts", get(handlers::get_contracts));
+        .route("/contracts", get(handlers::get_contracts))
+        .route("/admin/replay", axum::routing::post(handlers::replay_events));
 
     // Unversioned deprecated aliases (same handlers, add Deprecation header via middleware)
     let deprecated = Router::new()
