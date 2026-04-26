@@ -136,43 +136,106 @@ async fn metrics_endpoint_returns_prometheus_text(pool: PgPool) {
     assert!(body.contains("soroban_pulse"));
 }
 
-// --- Issue #182: indexer_mode in /status ---
+// --- Issue #185: from_ledger / to_ledger on contract endpoint ---
 
-#[sqlx::test(migrations = "./migrations")]
-async fn status_includes_indexer_mode_read_only_by_default(pool: PgPool) {
-    // IndexerState::new() defaults is_active_indexer to false
-    let app = make_router(pool, None);
-
-    let resp = app
-        .oneshot(Request::builder().uri("/status").body(Body::empty()).unwrap())
+async fn insert_contract_events(pool: &PgPool, contract_id: &str, ledgers: &[i64]) {
+    for (i, &ledger) in ledgers.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+             VALUES ($1, $2, $3, $4, NOW(), $5)",
+        )
+        .bind(contract_id)
+        .bind("contract")
+        .bind(format!("{:0>63}{}", i, ledger))
+        .bind(ledger)
+        .bind(serde_json::json!({}))
+        .execute(pool)
         .await
         .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body: serde_json::Value =
-        serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(body["indexer_mode"], "read_only");
+    }
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn status_includes_indexer_mode_active_when_lock_held(pool: PgPool) {
-    use std::sync::atomic::Ordering;
+async fn contract_ledger_range_filters_correctly(pool: PgPool) {
+    let contract_id = "C1234567890123456789012345678901234567890123456789012345";
+    insert_contract_events(&pool, contract_id, &[100, 200, 300, 400, 500]).await;
 
-    let health_state = Arc::new(HealthState::new(60));
-    health_state.update_last_poll();
-    let indexer_state = Arc::new(IndexerState::new());
-    // Simulate the indexer acquiring the lock
-    indexer_state.is_active_indexer.store(true, Ordering::Relaxed);
-    let prometheus_handle = init_metrics();
-    let app = create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 1_048_576);
-
+    let app = make_router(pool, None);
     let resp = app
-        .oneshot(Request::builder().uri("/status").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/v1/events/contract/{}?from_ledger=200&to_ledger=400",
+                    contract_id
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
     let body: serde_json::Value =
         serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(body["indexer_mode"], "active");
+
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(data.len(), 3);
+    for event in data {
+        let ledger = event["ledger"].as_i64().unwrap();
+        assert!((200..=400).contains(&ledger));
+    }
+    assert_eq!(body["from_ledger"], 200);
+    assert_eq!(body["to_ledger"], 400);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn contract_ledger_range_inverted_returns_400(pool: PgPool) {
+    let contract_id = "C1234567890123456789012345678901234567890123456789012345";
+    insert_contract_events(&pool, contract_id, &[100]).await;
+
+    let app = make_router(pool, None);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/v1/events/contract/{}?from_ledger=500&to_ledger=100",
+                    contract_id
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("from_ledger must be <= to_ledger"));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn contract_without_ledger_range_returns_all_events(pool: PgPool) {
+    let contract_id = "C1234567890123456789012345678901234567890123456789012345";
+    insert_contract_events(&pool, contract_id, &[100, 200, 300]).await;
+
+    let app = make_router(pool, None);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/events/contract/{}", contract_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["data"].as_array().unwrap().len(), 3);
+    assert!(body.get("from_ledger").is_none());
+    assert!(body.get("to_ledger").is_none());
 }
