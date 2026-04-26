@@ -1,5 +1,5 @@
 use std::env;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
@@ -8,6 +8,8 @@ use url::Url;
 pub struct IndexerState {
     pub current_ledger: AtomicU64,
     pub latest_ledger: AtomicU64,
+    /// True when this replica holds the advisory lock and is actively indexing.
+    pub is_active_indexer: AtomicBool,
     started_at: u64,
 }
 
@@ -20,6 +22,7 @@ impl IndexerState {
         Self {
             current_ledger: AtomicU64::new(0),
             latest_ledger: AtomicU64::new(0),
+            is_active_indexer: AtomicBool::new(false),
             started_at,
         }
     }

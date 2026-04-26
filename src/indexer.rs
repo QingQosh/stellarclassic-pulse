@@ -205,6 +205,10 @@ impl<R: RpcClient> Indexer<R> {
 
         if !acquired {
             info!("Indexer lock not acquired, running in read-only mode");
+            // Set mode to read_only so /status reflects this replica's role
+            if let Some(ref s) = self.indexer_state {
+                s.is_active_indexer.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
             // Hold the connection open so we can detect when the lock owner dies
             // and re-attempt on the next startup/restart cycle.
             drop(lock_conn);
@@ -212,6 +216,10 @@ impl<R: RpcClient> Indexer<R> {
         }
 
         info!("Indexer lock acquired, starting indexing");
+        // Set mode to active so /status reflects this replica's role
+        if let Some(ref s) = self.indexer_state {
+            s.is_active_indexer.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
 
         // Run the actual indexing loop; release lock on exit.
         self.run_loop().await;

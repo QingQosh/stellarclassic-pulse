@@ -135,3 +135,44 @@ async fn metrics_endpoint_returns_prometheus_text(pool: PgPool) {
         String::from_utf8(to_bytes(resp.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
     assert!(body.contains("soroban_pulse"));
 }
+
+// --- Issue #182: indexer_mode in /status ---
+
+#[sqlx::test(migrations = "./migrations")]
+async fn status_includes_indexer_mode_read_only_by_default(pool: PgPool) {
+    // IndexerState::new() defaults is_active_indexer to false
+    let app = make_router(pool, None);
+
+    let resp = app
+        .oneshot(Request::builder().uri("/status").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["indexer_mode"], "read_only");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn status_includes_indexer_mode_active_when_lock_held(pool: PgPool) {
+    use std::sync::atomic::Ordering;
+
+    let health_state = Arc::new(HealthState::new(60));
+    health_state.update_last_poll();
+    let indexer_state = Arc::new(IndexerState::new());
+    // Simulate the indexer acquiring the lock
+    indexer_state.is_active_indexer.store(true, Ordering::Relaxed);
+    let prometheus_handle = init_metrics();
+    let app = create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 1_048_576);
+
+    let resp = app
+        .oneshot(Request::builder().uri("/status").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["indexer_mode"], "active");
+}
