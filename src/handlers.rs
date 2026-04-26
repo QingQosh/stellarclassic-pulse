@@ -97,7 +97,8 @@ fn validate_tx_hash(tx_hash: &str) -> Result<(), AppError> {
     if tx_hash.len() != 64 {
         return Err(AppError::Validation("invalid tx_hash format".to_string()));
     }
-    if !tx_hash.chars().all(|c| c.is_ascii_hexdigit() && c.is_lowercase()) {
+    // Accept both uppercase and lowercase hex — callers should normalize to lowercase first.
+    if !tx_hash.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(AppError::Validation("invalid tx_hash format".to_string()));
     }
     Ok(())
@@ -728,7 +729,7 @@ pub async fn get_events_by_contract(
     path = "/v1/events/tx/{tx_hash}",
     tag = "events",
     params(
-        ("tx_hash" = String, Path, description = "Transaction hash (64 lowercase hex chars)"),
+        ("tx_hash" = String, Path, description = "Transaction hash (64 hex chars, case-insensitive — normalized to lowercase)"),
     ),
     responses(
         (status = 200, description = "Events for the given transaction (empty array if none)"),
@@ -740,6 +741,8 @@ pub async fn get_events_by_tx(
     Path(tx_hash): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Value>, AppError> {
+    // Normalize to lowercase so uppercase/mixed-case hashes from blockchain explorers work.
+    let tx_hash = tx_hash.to_lowercase();
     validate_tx_hash(&tx_hash)?;
 
     let columns = resolve_columns(&params)?;
@@ -1028,26 +1031,82 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn tx_hash_uppercase_hex_returns_400(pool: PgPool) {
-        let app = create_test_router(pool);
-        let uppercase_hex = "A".repeat(64);
+    async fn tx_hash_uppercase_hex_is_normalized_to_lowercase(pool: PgPool) {
+        // Insert an event with a lowercase tx_hash
+        let lowercase_hash = "a".repeat(64);
+        sqlx::query(
+            "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind("C_TEST_UPPER")
+        .bind("contract")
+        .bind(&lowercase_hash)
+        .bind(1_i64)
+        .bind(Utc::now())
+        .bind(json!({ "value": null, "topic": null }))
+        .execute(&pool)
+        .await
+        .unwrap();
 
+        let app = create_test_router(pool);
+
+        // Request with uppercase hash — should be normalized and return the same event
+        let uppercase_hash = "A".repeat(64);
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/v1/events/tx/{}", uppercase_hex))
+                    .uri(format!("/v1/events/tx/{}", uppercase_hash))
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v["error"], "invalid tx_hash format");
-        assert_eq!(v["code"], "VALIDATION_ERROR");
-        assert!(v["correlation_id"].as_str().is_some());
+        assert!(v["data"].is_array());
+        assert_eq!(v["data"].as_array().unwrap().len(), 1);
+        // Response tx_hash should be the normalized lowercase form
+        assert_eq!(v["tx_hash"], json!(lowercase_hash));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn tx_hash_mixed_case_is_normalized_to_lowercase(pool: PgPool) {
+        let lowercase_hash = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
+        sqlx::query(
+            "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind("C_TEST_MIXED")
+        .bind("contract")
+        .bind(lowercase_hash)
+        .bind(2_i64)
+        .bind(Utc::now())
+        .bind(json!({ "value": null, "topic": null }))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let app = create_test_router(pool);
+
+        // Mixed-case version of the same hash
+        let mixed_hash = "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/events/tx/{}", mixed_hash))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["data"].as_array().unwrap().len(), 1);
+        assert_eq!(v["tx_hash"], json!(lowercase_hash));
     }
 
     #[sqlx::test(migrations = "./migrations")]
