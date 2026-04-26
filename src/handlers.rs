@@ -71,7 +71,16 @@ fn rows_to_json(rows: &[sqlx::postgres::PgRow], columns: &[&str]) -> Result<Vec<
     Ok(events)
 }
 
-fn validate_contract_id(contract_id: &str) -> Result<(), AppError> {
+/// Resolve requested columns or return a 400 with unknown field names.
+fn resolve_columns<'a>(params: &'a PaginationParams) -> Result<Vec<&'a str>, AppError> {
+    params.columns().map_err(|(unknown, allowed)| {
+        AppError::Validation(format!(
+            "unknown fields: [{}]; valid fields are: [{}]",
+            unknown.join(", "),
+            allowed.join(", ")
+        ))
+    })
+}
     if contract_id.len() != 56 {
         return Err(AppError::Validation("invalid contract_id format".to_string()));
     }
@@ -470,7 +479,7 @@ pub async fn get_events(
     }
 
     let limit = params.limit();
-    let columns = params.columns();
+    let columns = resolve_columns(&params)?;
 
     // Cursor-based path
     if let Some(ref cursor_str) = params.cursor {
@@ -641,7 +650,7 @@ pub async fn get_events_by_contract(
 
     let limit = params.limit();
     let offset = params.offset();
-    let columns = params.columns();
+    let columns = resolve_columns(&params)?;
 
     let rows: Vec<models::Event> = sqlx::query_as::<_, models::Event>(
         "SELECT * FROM events WHERE contract_id = $1 ORDER BY ledger DESC LIMIT $2 OFFSET $3",
@@ -680,7 +689,7 @@ pub async fn get_events_by_tx(
 ) -> Result<Json<Value>, AppError> {
     validate_tx_hash(&tx_hash)?;
 
-    let columns = params.columns();
+    let columns = resolve_columns(&params)?;
 
     let events = rows_to_json(&rows, &columns)?;
 

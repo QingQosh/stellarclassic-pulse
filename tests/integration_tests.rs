@@ -135,3 +135,61 @@ async fn metrics_endpoint_returns_prometheus_text(pool: PgPool) {
         String::from_utf8(to_bytes(resp.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
     assert!(body.contains("soroban_pulse"));
 }
+
+// --- Issue #183: unknown fields return 400 ---
+
+#[sqlx::test(migrations = "./migrations")]
+async fn unknown_field_returns_400_with_details(pool: PgPool) {
+    let app = make_router(pool, None);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/events?fields=ledger,contarct_id")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let error = body["error"].as_str().unwrap();
+    assert!(error.contains("contarct_id"), "error should list unrecognized field");
+    assert!(error.contains("contract_id"), "error should list valid fields");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn valid_fields_param_returns_200(pool: PgPool) {
+    let app = make_router(pool, None);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/events?fields=ledger,contract_id")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn omitted_fields_param_returns_all_fields(pool: PgPool) {
+    let app = make_router(pool, None);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/events")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+}
