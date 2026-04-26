@@ -88,7 +88,7 @@ pub fn create_router(
     prometheus_handle: PrometheusHandle,
     health_check_timeout_ms: u64,
 ) -> Router {
-    create_router_with_tx(pool, api_keys, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000, 100, health_check_timeout_ms)
+    create_router_with_tx(pool, api_keys, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000, 1000, health_check_timeout_ms)
 }
 
 pub fn create_router_with_tx(
@@ -118,14 +118,6 @@ pub fn create_router_with_tx(
         sse_max_connections,
         health_check_timeout_ms,
     };
-
-    // Build governor config: burst = rate_limit_per_minute, replenish 1 token per (60/rate) seconds.
-    // per_second(n) means n tokens replenished per second; we want rate_limit_per_minute / 60.
-    // Use per_millisecond to avoid integer truncation: replenish 1 token every (60_000 / rate) ms.
-    let replenish_ms = 60_000u64 / u64::from(rate_limit_per_minute.max(1));
-    let burst = rate_limit_per_minute.max(1);
-
-    let max_body_size_bytes = 1_048_576; // 1MB default
 
     // Build governor config: burst = rate_limit_per_minute, replenish 1 token per (60/rate) seconds.
     // per_second(n) means n tokens replenished per second; we want rate_limit_per_minute / 60.
@@ -255,7 +247,7 @@ pub fn create_router_with_tx(
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(CompressionLayer::new())
         .layer(SetRequestIdLayer::x_request_id(UuidMakeRequestId))
-        .layer(RequestBodyLimitLayer::new(max_body_size_bytes))
+        .layer(RequestBodyLimitLayer::new(1024 * 1024)) // 1 MB default
         .with_state(app_state)
 }
 
