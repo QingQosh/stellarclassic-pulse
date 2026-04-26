@@ -230,6 +230,12 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
         "running"
     };
 
+    let indexer_mode = if state.indexer_state.is_active_indexer.load(Ordering::Relaxed) {
+        "active"
+    } else {
+        "read_only"
+    };
+
     let total_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
         .fetch_one(&state.pool)
         .await
@@ -265,6 +271,7 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
         "total_events": total_events,
         "events_by_type": events_by_type,
         "indexer_status": indexer_status,
+        "indexer_mode": indexer_mode,
     }))
 }
 
