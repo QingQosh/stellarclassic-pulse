@@ -198,6 +198,19 @@ Migrate to `/v1/` paths at your earliest convenience.
 
 Prometheus alerting rules covering all key SLOs are defined in [`docs/alerts.yml`](docs/alerts.yml).
 
+### Grafana Dashboard
+
+A pre-built Grafana dashboard is available at [`docs/grafana-dashboard.json`](docs/grafana-dashboard.json). It covers all key operational metrics with alert thresholds matching `docs/alerts.yml`.
+
+**To import:**
+
+1. In Grafana, go to **Dashboards → Import**
+2. Click **Upload JSON file** and select `docs/grafana-dashboard.json`
+3. Select your Prometheus datasource from the dropdown
+4. Click **Import**
+
+The dashboard includes template variables for the Prometheus datasource and instance label, so it works in any Grafana instance without modification.
+
 ### Metrics
 
 The service exposes Prometheus-compatible metrics at `GET /metrics`:
