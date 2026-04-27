@@ -200,6 +200,7 @@ pub fn create_router_with_tx(
     Router::new()
         .merge(health_routes)
         .merge(rate_limited_routes)
+        .layer(axum::middleware::from_fn(middleware::security_headers_middleware))
         .layer(axum::middleware::from_fn(middleware::request_id_middleware))
         .layer(axum::middleware::from_fn_with_state(
             auth_state,
