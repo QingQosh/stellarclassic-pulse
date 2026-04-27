@@ -25,6 +25,8 @@ migrations/
 └── 20260314000000_create_events.sql
 ```
 
+See [docs/schema.md](docs/schema.md) for a detailed description of the database schema, indexes, constraints, and an ER diagram.
+
 ## Setup
 
 ### 1. Prerequisites
