@@ -45,3 +45,7 @@ http-body-util = "0.1"
 [[bench]]
 name = "pagination"
 harness = false
+
+[[bench]]
+name = "db_queries"
+harness = false
