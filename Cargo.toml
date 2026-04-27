@@ -35,6 +35,9 @@ base64 = "0.22"
 sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"
+aes-gcm = { version = "0.10", optional = true }
+rand = { version = "0.8", optional = true }
+moka = { version = "0.12", features = ["future"] }
 
 [features]
 otel = ["tracing-opentelemetry", "opentelemetry", "opentelemetry-otlp"]

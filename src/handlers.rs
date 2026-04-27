@@ -753,6 +753,8 @@ fn ndjson_response(events: impl Iterator<Item = Value>) -> Response<Body> {
 }
 
 #[utoipa::path(
+    get,
+    path = "/v1/events",
     tag = "events",
     params(
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
@@ -1471,7 +1473,7 @@ pub async fn replay_events(
 
     // Spawn background task to handle the replay
     let pool = state.pool.clone();
-    let rpc_url = state.stellar_rpc_url.clone();
+    let rpc_url = state.config.stellar_rpc_url.clone();
     let from_ledger = request.from_ledger;
     let to_ledger = request.to_ledger;
     
@@ -1617,10 +1619,6 @@ mod tests {
         let prometheus_handle = crate::metrics::init_metrics();
 
         crate::routes::create_router(pool, Vec::new(), &[], 60, health_state, indexer_state, prometheus_handle, 2000)
-
-        let config = crate::config::Config::default();
-        crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000, config)
-
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -3120,6 +3118,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         // No rows → no ETag
         assert!(resp.headers().get("etag").is_none());
+    }
 
     // Replay endpoint tests
     #[sqlx::test(migrations = "./migrations")]
@@ -3497,7 +3496,7 @@ mod tests {
 pub async fn list_archive(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     #[cfg(feature = "archive")]
     {
-        let (bucket, prefix) = match (&state.archive_s3_bucket, &state.archive_s3_prefix) {
+        let (bucket, prefix) = match (&state.config.archive_s3_bucket, &state.config.archive_s3_prefix) {
             (Some(b), p) => (b.clone(), p.clone()),
             (None, _) => {
                 return Err(AppError::Validation(
