@@ -532,6 +532,7 @@ fn filter_fields(event: &models::Event, columns: &[&str], enc_key: Option<&[u8; 
         ("event_type" = Option<EventType>, Query, description = "Filter by event type: contract, diagnostic, system"),
         ("from_ledger" = Option<i64>, Query, description = "Return events at or after this ledger"),
         ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
+        ("contract_id" = Option<String>, Query, description = "Filter by contract ID (56-char Stellar contract address starting with C)"),
     ),
     responses(
         (status = 200, description = "Paginated list of events"),
@@ -552,6 +553,11 @@ pub async fn get_events(
         }
     }
 
+    // Validate contract_id if provided
+    if let Some(ref cid) = params.contract_id {
+        validate_contract_id(cid)?;
+    }
+
     let limit = params.limit();
     let columns = resolve_columns(&params)?;
 
@@ -564,6 +570,10 @@ pub async fn get_events(
         ];
         let mut bind_idx: i32 = 3;
 
+        if params.contract_id.is_some() {
+            conditions.push(format!("contract_id = ${bind_idx}"));
+            bind_idx += 1;
+        }
         if params.event_type.is_some() {
             conditions.push(format!("event_type = ${bind_idx}"));
             bind_idx += 1;
@@ -594,6 +604,7 @@ pub async fn get_events(
         let mut q = sqlx::query(&query_str)
             .bind(cursor_ledger)
             .bind(cursor_id);
+        if let Some(ref cid) = params.contract_id { q = q.bind(cid); }
         if let Some(ref et) = params.event_type { q = q.bind(et); }
         if let Some(fl) = params.from_ledger { q = q.bind(fl); }
         if let Some(tl) = params.to_ledger { q = q.bind(tl); }
@@ -627,6 +638,10 @@ pub async fn get_events(
     let mut conditions: Vec<String> = Vec::new();
     let mut bind_idx: i32 = 1;
 
+    if params.contract_id.is_some() {
+        conditions.push(format!("contract_id = ${bind_idx}"));
+        bind_idx += 1;
+    }
     if params.event_type.is_some() {
         conditions.push(format!("event_type = ${bind_idx}"));
         bind_idx += 1;
@@ -660,6 +675,7 @@ pub async fn get_events(
     );
 
     let mut q = sqlx::query(&query_str);
+    if let Some(ref cid) = params.contract_id { q = q.bind(cid); }
     if let Some(ref et) = params.event_type { q = q.bind(et); }
     if let Some(fl) = params.from_ledger { q = q.bind(fl); }
     if let Some(tl) = params.to_ledger { q = q.bind(tl); }
@@ -682,6 +698,7 @@ pub async fn get_events(
     let (total, approximate): (i64, bool) = if exact {
         let count_str = format!("SELECT COUNT(*) FROM events {}", where_clause);
         let mut cq = sqlx::query_scalar::<_, i64>(&count_str);
+        if let Some(ref cid) = params.contract_id { cq = cq.bind(cid); }
         if let Some(ref et) = params.event_type { cq = cq.bind(et); }
         if let Some(fl) = params.from_ledger { cq = cq.bind(fl); }
         if let Some(tl) = params.to_ledger { cq = cq.bind(tl); }
