@@ -10,12 +10,15 @@ mod db;
 mod encryption;
 mod error;
 mod handlers;
+mod index_monitor;
 mod indexer;
 mod metrics;
 mod middleware;
 mod models;
+mod normalizer;
 mod routes;
 mod rpc_client;
+mod webhook;
 
 #[cfg(feature = "archive")]
 mod archiver;
@@ -23,7 +26,7 @@ mod archiver;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[cfg(feature = "otel")]
@@ -73,15 +76,20 @@ async fn main() -> anyhow::Result<()> {
     // Initialize metrics exporter
     let prometheus_handle = metrics::init_metrics();
 
+    #[cfg(target_os = "linux")]
+    metrics::spawn_memory_collector();
+
     let config = config::Config::from_env();
 
     info!(
         rpc_url = %config.stellar_rpc_url,
+        rpc_headers = ?config.safe_rpc_headers(),
         start_ledger = config.start_ledger,
         port = config.port,
         db_url = %config.safe_db_url(),
         db_max_connections = config.db_max_connections,
         db_min_connections = config.db_min_connections,
+        indexer_event_types = ?config.indexer_event_types,
         "Resolved configuration",
     );
 
@@ -94,6 +102,9 @@ async fn main() -> anyhow::Result<()> {
                 config.db_max_connections,
                 config.db_min_connections,
                 config.db_statement_timeout_ms,
+                config.db_idle_timeout_secs,
+                config.db_max_lifetime_secs,
+                config.db_test_before_acquire,
             )
             .await
             {
@@ -112,8 +123,28 @@ async fn main() -> anyhow::Result<()> {
     
     let _ = db::run_migrations(&pool).await;
 
+    // Create read pool: use replica URL if configured, otherwise reuse primary pool.
+    let read_pool = if let Some(ref replica_url) = config.database_replica_url {
+        info!("DATABASE_REPLICA_URL set — HTTP handlers will use read replica");
+        match db::create_pool(
+            replica_url,
+            config.db_max_connections,
+            config.db_min_connections,
+            config.db_statement_timeout_ms,
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to connect to read replica, falling back to primary");
+                pool.clone()
+            }
+        }
+    } else {
+        pool.clone()
+    };
+
     info!("Migrations applied successfully");
-    info!(url = %config.stellar_rpc_url, "Soroban RPC URL");
     info!(environment = ?config.environment, "Running environment");
 
     // Create shared health state for indexer and HTTP handlers
@@ -128,9 +159,47 @@ async fn main() -> anyhow::Result<()> {
     // Broadcast channel for real-time SSE streaming (capacity 256 events)
     let (event_tx, _) = tokio::sync::broadcast::channel::<models::SorobanEvent>(256);
 
+    // Spawn webhook delivery task if WEBHOOK_URL is configured.
+    if let Some(ref webhook_url) = config.webhook_url {
+        let webhook_rx = event_tx.subscribe();
+        let webhook_url = webhook_url.clone();
+        let webhook_secret = config.webhook_secret.clone();
+        let webhook_contract_filter = config.webhook_contract_filter.clone();
+        let http_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("Failed to build webhook HTTP client");
+
+        info!(url = %webhook_url, "Webhook delivery enabled");
+
+        tokio::spawn(async move {
+            let mut rx = webhook_rx;
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        // Apply contract filter if configured
+                        if !webhook_contract_filter.is_empty()
+                            && !webhook_contract_filter.contains(&event.contract_id)
+                        {
+                            continue;
+                        }
+                        let client = http_client.clone();
+                        let url = webhook_url.clone();
+                        let secret = webhook_secret.clone();
+                        tokio::spawn(webhook::deliver(client, url, secret, event));
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(skipped = n, "Webhook subscriber lagged, some events skipped");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
     // Spawn background indexer with health state
     let rpc_client = indexer::SorobanRpcClient::new(&config);
-    let mut indexer = indexer::Indexer::new(pool.clone(), config.clone(), shutdown_rx, rpc_client);
+    let mut indexer = indexer::Indexer::new(pool.clone(), config.clone(), shutdown_rx.clone(), rpc_client);
     indexer.set_health_state(health_state.clone());
     indexer.set_indexer_state(indexer_state.clone());
     indexer.set_event_tx(event_tx.clone());
@@ -138,9 +207,8 @@ async fn main() -> anyhow::Result<()> {
         indexer.run().await;
     });
 
-    // Spawn archival background task (only when the `archive` feature is enabled).
-    #[cfg(feature = "archive")]
-    tokio::spawn(archiver::run_archiver(pool.clone(), config.clone()));
+    // Spawn index usage monitoring background task
+    index_monitor::spawn(pool.clone(), config.index_check_interval_hours, shutdown_rx.clone());
 
     async fn shutdown_signal() {
         #[cfg(unix)]
@@ -174,7 +242,8 @@ async fn main() -> anyhow::Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     info!(origins = ?config.allowed_origins, "Allowed CORS origins");
     info!(rate_limit = config.rate_limit_per_minute, "Rate limit per IP");
-    let router = routes::create_router_with_tx(pool, config.api_keys.clone(), &config.allowed_origins, config.rate_limit_per_minute, config.behind_proxy, health_state, indexer_state, prometheus_handle, event_tx, config.sse_keepalive_interval_ms, config.sse_max_connections, config.clone());
+
+    let router = routes::create_router_with_tx(pool, read_pool, config.api_keys.clone(), &config.allowed_origins, config.rate_limit_per_minute, config.behind_proxy, health_state, indexer_state, prometheus_handle, event_tx, config.sse_keepalive_interval_ms, config.sse_max_connections, 2000);
 
     info!(addr = %addr, "Soroban Pulse listening");
 
@@ -195,6 +264,64 @@ async fn main() -> anyhow::Result<()> {
         let _ = shutdown_rx_axum.changed().await;
     })
     .await?;
+
+
+    // When TLS is enabled directly, BEHIND_PROXY is forced false — no proxy in front.
+    let behind_proxy = match (&config.tls_cert_file, &config.tls_key_file) {
+        (Some(_), Some(_)) => {
+            if config.behind_proxy {
+                warn!("TLS_CERT_FILE and TLS_KEY_FILE are set — overriding BEHIND_PROXY=false (no proxy in front of direct TLS)");
+            }
+            false
+        }
+        _ => config.behind_proxy,
+    };
+
+    let router = routes::create_router_with_tx(pool, config.api_keys.clone(), &config.allowed_origins, config.rate_limit_per_minute, behind_proxy, health_state, indexer_state, prometheus_handle, event_tx, config.sse_keepalive_interval_ms, config.sse_max_connections, config.health_check_timeout_ms, config.event_data_encryption_key, config.event_data_encryption_key_old, config.clone());
+
+    match (&config.tls_cert_file, &config.tls_key_file) {
+        (Some(cert_path), Some(key_path)) => {
+            // Validate that the cert and key files exist and are readable at startup.
+            std::fs::metadata(cert_path)
+                .unwrap_or_else(|e| panic!("TLS_CERT_FILE '{}' is not accessible: {}", cert_path, e));
+            std::fs::metadata(key_path)
+                .unwrap_or_else(|e| panic!("TLS_KEY_FILE '{}' is not accessible: {}", key_path, e));
+
+            let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
+                .await
+                .unwrap_or_else(|e| panic!("Failed to load TLS certificate/key: {}", e));
+
+            info!(addr = %addr, cert = %cert_path, "Soroban Pulse listening (HTTPS/TLS)");
+
+            axum_server::bind_rustls(addr, tls_config)
+                .serve(router.into_make_service())
+                .await?;
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            warn!("Only one of TLS_CERT_FILE / TLS_KEY_FILE is set — both are required for TLS. Falling back to plain HTTP.");
+            let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+                error!(addr = %addr, "Address already in use");
+                e
+            })?;
+            info!(addr = %addr, "Soroban Pulse listening (HTTP)");
+            info!(behind_proxy = behind_proxy, "Running server - trusting X-Forwarded-For");
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async move { let _ = shutdown_rx_axum.changed().await; })
+                .await?;
+        }
+        (None, None) => {
+            let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+                error!(addr = %addr, "Address already in use");
+                e
+            })?;
+            info!(addr = %addr, "Soroban Pulse listening (HTTP)");
+            info!(behind_proxy = behind_proxy, "Running server - trusting X-Forwarded-For");
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async move { let _ = shutdown_rx_axum.changed().await; })
+                .await?;
+        }
+    }
+
     let _ = indexer_handle.await;
 
     #[cfg(feature = "otel")]
