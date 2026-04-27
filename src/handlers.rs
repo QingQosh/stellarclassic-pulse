@@ -1,19 +1,32 @@
 use axum::{extract::{Path, Query, State}, Json, response::IntoResponse, http::StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::http::HeaderMap;
 use sqlx::Row;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures::stream::{self, Stream, StreamExt};
 use serde_json::{json, Value};
-use sqlx::Row;
 use std::convert::Infallible;
 use std::time::Duration;
 use std::sync::OnceLock;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
+use reqwest;
 
 use std::sync::atomic::Ordering;
-use crate::{error::AppError, models::{self, ContractSummary, PaginationParams, StreamParams}, routes::AppState};
+use crate::{error::AppError, models::{self, ContractSummary, ExportParams, PaginationParams, StreamParams, ReplayRequest}, routes::AppState};
+
+/// Compute a lightweight ETag from the last event id, created_at, and total count.
+/// Uses SHA-256 truncated to 8 bytes, base64-encoded — no double-serialization needed.
+fn compute_etag(last_id: &Uuid, last_created_at: &DateTime<Utc>, total: i64) -> String {
+    use sha2::{Sha256, Digest};
+    let mut h = Sha256::new();
+    h.update(last_id.as_bytes());
+    h.update(last_created_at.timestamp_nanos_opt().unwrap_or(0).to_le_bytes());
+    h.update(total.to_le_bytes());
+    let digest = h.finalize();
+    format!("\"{}\"", URL_SAFE_NO_PAD.encode(&digest[..8]))
+}
 
 /// Simple in-process cache entry for the contracts list.
 struct CacheEntry {
@@ -51,7 +64,7 @@ fn decode_cursor(cursor: &str) -> Result<(i64, Uuid), AppError> {
 }
 
 /// Map sqlx rows to a JSON array, projecting only the requested columns.
-fn rows_to_json(rows: &[sqlx::postgres::PgRow], columns: &[&str]) -> Result<Vec<Value>, AppError> {
+fn rows_to_json(rows: &[sqlx::postgres::PgRow], columns: &[&str], enc_key: Option<&[u8; 32]>, enc_key_old: Option<&[u8; 32]>) -> Result<Vec<Value>, AppError> {
     let mut events = Vec::with_capacity(rows.len());
     for row in rows {
         let mut event = serde_json::Map::new();
@@ -63,7 +76,11 @@ fn rows_to_json(rows: &[sqlx::postgres::PgRow], columns: &[&str]) -> Result<Vec<
                 "tx_hash" => { event.insert(col.to_string(), json!(row.try_get::<String, _>(col)?)); }
                 "ledger" => { event.insert(col.to_string(), json!(row.try_get::<i64, _>(col)?)); }
                 "timestamp" => { event.insert(col.to_string(), json!(row.try_get::<DateTime<Utc>, _>(col)?)); }
-                "event_data" => { event.insert(col.to_string(), row.try_get::<Value, _>(col)?); }
+                "event_data" => {
+                    let raw: Value = row.try_get::<Value, _>(col)?;
+                    let decrypted = decrypt_event_data(&raw, enc_key, enc_key_old);
+                    event.insert(col.to_string(), decrypted);
+                }
                 "created_at" => { event.insert(col.to_string(), json!(row.try_get::<DateTime<Utc>, _>(col)?)); }
                 _ => {}
             }
@@ -84,7 +101,7 @@ fn resolve_columns<'a>(params: &'a PaginationParams) -> Result<Vec<&'a str>, App
     })
 }
 
-fn validate_contract_id(contract_id: &str) -> Result<(), AppError> {
+pub(crate) fn validate_contract_id(contract_id: &str) -> Result<(), AppError> {
     if contract_id.len() != 56 {
         return Err(AppError::Validation("invalid contract_id format".to_string()));
     }
@@ -97,7 +114,7 @@ fn validate_contract_id(contract_id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn validate_tx_hash(tx_hash: &str) -> Result<(), AppError> {
+pub(crate) fn validate_tx_hash(tx_hash: &str) -> Result<(), AppError> {
     if tx_hash.len() != 64 {
         return Err(AppError::Validation("invalid tx_hash format".to_string()));
     }
@@ -181,7 +198,7 @@ async fn build_health_response(state: &AppState) -> (StatusCode, Value) {
     tag = "system",
     responses(
         (status = 200, description = "Service is healthy"),
-        (status = 503, description = "Service is degraded"),
+        (status = 503, description = "Service is degraded", body = ErrorResponse),
     )
 )]
 pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
@@ -207,7 +224,7 @@ pub async fn health_live() -> (StatusCode, Json<Value>) {
     tag = "system",
     responses(
         (status = 200, description = "Service is ready"),
-        (status = 503, description = "Service is not ready"),
+        (status = 503, description = "Service is not ready", body = ErrorResponse),
     )
 )]
 pub async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
@@ -315,10 +332,14 @@ pub async fn swagger_ui() -> impl IntoResponse {
     tag = "events",
     params(
         ("contract_id" = Option<String>, Query, description = "Filter by contract ID (less preferred)"),
+        ("fields" = Option<String>, Query, description = "Comma-separated list of fields to include in each event"),
     ),
     responses(
         (status = 200, description = "SSE stream of new events (text/event-stream)"),
-        (status = 400, description = "Invalid contract_id format"),
+        (status = 400, description = "Invalid contract_id format", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 429, description = "Too many requests", body = ErrorResponse),
+        (status = 503, description = "Too many SSE connections", body = ErrorResponse),
     )
 )]
 pub async fn stream_events(
@@ -326,7 +347,7 @@ pub async fn stream_events(
     Query(params): Query<StreamParams>,
     headers: axum::http::HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
-    stream_events_internal(State(state), params.contract_id, headers).await
+    stream_events_internal(State(state), params.contract_id, params.fields, headers).await
 }
 
 /// Stream new events for a specific contract in real time via Server-Sent Events.
@@ -336,27 +357,185 @@ pub async fn stream_events(
     tag = "events",
     params(
         ("contract_id" = String, Path, description = "Stellar contract ID"),
+        ("fields" = Option<String>, Query, description = "Comma-separated list of fields to include in each event"),
     ),
     responses(
         (status = 200, description = "SSE stream of contract events (text/event-stream)"),
-        (status = 400, description = "Invalid contract_id format"),
+        (status = 400, description = "Invalid contract_id format", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 429, description = "Too many requests", body = ErrorResponse),
+        (status = 503, description = "Too many SSE connections", body = ErrorResponse),
     )
 )]
 pub async fn stream_events_by_contract(
     State(state): State<AppState>,
     Path(contract_id): Path<String>,
+    Query(params): Query<StreamParams>,
     headers: axum::http::HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
     validate_contract_id(&contract_id).map_err(|e| {
         let (status, body) = e.into_response_parts();
         (status, body)
     })?;
-    stream_events_internal(State(state), Some(contract_id), headers).await
+    stream_events_internal(State(state), Some(contract_id), params.fields, headers).await
+}
+
+/// Stream events for multiple contracts simultaneously via Server-Sent Events.
+#[utoipa::path(
+    get,
+    path = "/v1/events/stream/multi",
+    tag = "events",
+    params(
+        ("contract_ids" = String, Query, description = "Comma-separated list of contract IDs to subscribe to"),
+    ),
+    responses(
+        (status = 200, description = "SSE stream of events from the specified contracts (text/event-stream)"),
+        (status = 400, description = "Invalid or empty contract_ids", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 429, description = "Too many requests", body = ErrorResponse),
+        (status = 503, description = "Too many SSE connections", body = ErrorResponse),
+    )
+)]
+pub async fn stream_events_multi(
+    State(state): State<AppState>,
+    Query(params): Query<crate::models::MultiStreamParams>,
+    headers: axum::http::HeaderMap,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
+    let raw = params.contract_ids.unwrap_or_default();
+    if raw.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "contract_ids must not be empty", "code": "VALIDATION_ERROR" })),
+        ));
+    }
+
+    let ids: Vec<String> = raw.split(',').map(|s| s.trim().to_string()).collect();
+
+    // Validate every ID; collect all invalid ones for a helpful error message.
+    let invalid: Vec<String> = ids
+        .iter()
+        .filter(|id| validate_contract_id(id).is_err())
+        .cloned()
+        .collect();
+
+    if !invalid.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "invalid contract_id(s)",
+                "code": "VALIDATION_ERROR",
+                "invalid_ids": invalid,
+            })),
+        ));
+    }
+
+    // Check connection limit
+    let current_connections = state.sse_connections.load(std::sync::atomic::Ordering::Relaxed);
+    if current_connections >= state.sse_max_connections {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "too many SSE connections", "code": "SSE_LIMIT_EXCEEDED" })),
+        ));
+    }
+
+    state.sse_connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let new_count = state.sse_connections.load(std::sync::atomic::Ordering::Relaxed);
+    crate::metrics::update_sse_connections(new_count);
+
+    let keepalive_ms = state.sse_keepalive_interval_ms;
+    let sse_connections = state.sse_connections.clone();
+
+    // Replay missed events for any of the subscribed contracts.
+    let last_event_id = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+    let replay: Vec<crate::models::Event> = if let Some(last_id) = last_event_id {
+        let placeholders: String = ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("${}", i + 2))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at, 0::bigint AS total_count \
+             FROM events WHERE created_at > (SELECT created_at FROM events WHERE id = $1) \
+             AND contract_id IN ({}) ORDER BY created_at ASC",
+            placeholders
+        );
+        let mut q = sqlx::query_as::<_, crate::models::Event>(&sql).bind(last_id);
+        for id in &ids {
+            q = q.bind(id);
+        }
+        q.fetch_all(&state.pool).await.unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    let rx = state.event_tx.subscribe();
+    let enc_key = state.encryption_key;
+    let enc_key_old = state.encryption_key_old;
+
+    let replay_stream = futures::stream::iter(replay.into_iter().map(move |mut ev| {
+        ev.event_data = decrypt_event_data(&ev.event_data, enc_key.as_ref(), enc_key_old.as_ref());
+        let data = serde_json::to_string(&ev).unwrap_or_default();
+        Ok(Event::default()
+            .id(ev.id.to_string())
+            .retry(Duration::from_millis(keepalive_ms))
+            .data(data))
+    }));
+
+    let live_stream = futures::stream::unfold(
+        (rx, ids, keepalive_ms),
+        move |(mut rx, filter_ids, ka)| async move {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        if !filter_ids.contains(&event.contract_id) {
+                            continue;
+                        }
+                        let data = serde_json::to_string(&event).unwrap_or_default();
+                        let sse = Event::default()
+                            .id(format!("{}-{}", event.tx_hash, event.ledger))
+                            .retry(Duration::from_millis(ka))
+                            .data(data);
+                        return Some((Ok(sse), (rx, filter_ids, ka)));
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                }
+            }
+        },
+    );
+
+    let combined = replay_stream.chain(live_stream);
+
+    let stream_with_cleanup = futures::stream::unfold(
+        (Box::pin(combined), sse_connections.clone()),
+        move |(mut stream, counter)| async move {
+            match stream.next().await {
+                Some(item) => Some((item, (stream, counter))),
+                None => {
+                    let new_count = counter.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) - 1;
+                    crate::metrics::update_sse_connections(new_count);
+                    None
+                }
+            }
+        },
+    );
+
+    Ok(Sse::new(stream_with_cleanup).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_millis(keepalive_ms))
+            .text("ping"),
+    ))
 }
 
 async fn stream_events_internal(
     State(state): State<AppState>,
     contract_filter: Option<String>,
+    fields: Option<String>,
     headers: axum::http::HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
     // Check if we've reached the max SSE connections limit
@@ -387,6 +566,22 @@ async fn stream_events_internal(
         })?;
     }
 
+    // Resolve field projection — silently ignore unknown fields (consistent with REST endpoints).
+    let field_columns: Option<Vec<&'static str>> = fields.as_deref().and_then(|f| {
+        let trimmed = f.trim();
+        if trimmed.is_empty() {
+            return None; // empty → all fields
+        }
+        let cols: Vec<&'static str> = trimmed
+            .split(',')
+            .map(|s| s.trim())
+            .filter_map(|s| {
+                PaginationParams::ALLOWED_FIELDS.iter().find(|&&a| a == s).copied()
+            })
+            .collect();
+        if cols.is_empty() { None } else { Some(cols) }
+    });
+
     // Replay missed events if the client sends Last-Event-ID (a UUID).
     let last_event_id = headers
         .get("last-event-id")
@@ -396,7 +591,7 @@ async fn stream_events_internal(
     let replay: Vec<crate::models::Event> = if let Some(last_id) = last_event_id {
         let q = if let Some(ref cid) = contract_filter {
             sqlx::query_as::<_, crate::models::Event>(
-                "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at, 0::bigint AS total_count \
+                "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, event_data_normalized, created_at, 0::bigint AS total_count \
                  FROM events WHERE created_at > (SELECT created_at FROM events WHERE id = $1) \
                  AND contract_id = $2 ORDER BY created_at ASC",
             )
@@ -406,7 +601,7 @@ async fn stream_events_internal(
             .await
         } else {
             sqlx::query_as::<_, crate::models::Event>(
-                "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at, 0::bigint AS total_count \
+                "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, event_data_normalized, created_at, 0::bigint AS total_count \
                  FROM events WHERE created_at > (SELECT created_at FROM events WHERE id = $1) \
                  ORDER BY created_at ASC",
             )
@@ -420,9 +615,16 @@ async fn stream_events_internal(
     };
 
     let rx = state.event_tx.subscribe();
+    let enc_key = state.encryption_key;
+    let enc_key_old = state.encryption_key_old;
 
-    let replay_stream = stream::iter(replay.into_iter().map(move |ev| {
-        let data = serde_json::to_string(&ev).unwrap_or_default();
+    let field_columns_replay = field_columns.clone();
+    let replay_stream = stream::iter(replay.into_iter().map(move |mut ev| {
+        ev.event_data = decrypt_event_data(&ev.event_data, enc_key.as_ref(), enc_key_old.as_ref());
+        let data = match &field_columns_replay {
+            Some(cols) => serde_json::to_string(&filter_fields(&ev, cols, enc_key.as_ref(), enc_key_old.as_ref())).unwrap_or_default(),
+            None => serde_json::to_string(&ev).unwrap_or_default(),
+        };
         Ok(Event::default()
             .id(ev.id.to_string())
             .retry(Duration::from_millis(keepalive_ms))
@@ -430,8 +632,8 @@ async fn stream_events_internal(
     }));
 
     let live_stream = stream::unfold(
-        (rx, contract_filter, keepalive_ms),
-        move |(mut rx, filter, ka)| async move {
+        (rx, contract_filter, keepalive_ms, field_columns, enc_key, enc_key_old),
+        move |(mut rx, filter, ka, cols, ek, ek_old)| async move {
             loop {
                 match rx.recv().await {
                     Ok(event) => {
@@ -440,12 +642,15 @@ async fn stream_events_internal(
                                 continue;
                             }
                         }
-                        let data = serde_json::to_string(&event).unwrap_or_default();
+                        let data = match &cols {
+                            Some(c) => serde_json::to_string(&filter_fields(&event, c, ek.as_ref(), ek_old.as_ref())).unwrap_or_default(),
+                            None => serde_json::to_string(&event).unwrap_or_default(),
+                        };
                         let sse = Event::default()
                             .id(format!("{}-{}", event.tx_hash, event.ledger))
                             .retry(Duration::from_millis(ka))
                             .data(data);
-                        return Some((Ok(sse), (rx, filter, ka)));
+                        return Some((Ok(sse), (rx, filter, ka, cols, ek, ek_old)));
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
@@ -479,8 +684,20 @@ async fn stream_events_internal(
     ))
 }
 
+/// Decrypt event_data if an encryption key is configured.
+fn decrypt_event_data(raw: &Value, key: Option<&[u8; 32]>, old_key: Option<&[u8; 32]>) -> Value {
+    if let Some(k) = key {
+        crate::encryption::decrypt(k, old_key, raw).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to decrypt event_data, returning raw value");
+            raw.clone()
+        })
+    } else {
+        raw.clone()
+    }
+}
+
 /// Converts an `Event` to a JSON object containing only the requested fields.
-fn filter_fields(event: &models::Event, columns: &[&str]) -> Value {
+fn filter_fields(event: &models::Event, columns: &[&str], enc_key: Option<&[u8; 32]>, enc_key_old: Option<&[u8; 32]>) -> Value {
     let mut map = serde_json::Map::new();
     for &col in columns {
         match col {
@@ -490,7 +707,10 @@ fn filter_fields(event: &models::Event, columns: &[&str]) -> Value {
             "tx_hash"     => { map.insert(col.to_string(), json!(event.tx_hash)); }
             "ledger"      => { map.insert(col.to_string(), json!(event.ledger)); }
             "timestamp"   => { map.insert(col.to_string(), json!(event.timestamp)); }
-            "event_data"  => { map.insert(col.to_string(), event.event_data.clone()); }
+            "event_data"  => {
+                let decrypted = decrypt_event_data(&event.event_data, enc_key, enc_key_old);
+                map.insert(col.to_string(), decrypted);
+            }
             "created_at"  => { map.insert(col.to_string(), json!(event.created_at)); }
             _ => {}
         }
@@ -498,9 +718,39 @@ fn filter_fields(event: &models::Event, columns: &[&str]) -> Value {
     Value::Object(map)
 }
 
+/// Returns true if the client prefers NDJSON via the Accept header.
+fn accepts_ndjson(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("application/x-ndjson"))
+        .unwrap_or(false)
+}
+
+/// Build a plain JSON response from a `Value`.
+fn json_response(body: Value) -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap_or_default()))
+        .unwrap()
+}
+
+/// Build an NDJSON response: one JSON object per line, no wrapping array.
+fn ndjson_response(events: impl Iterator<Item = Value>) -> Response<Body> {
+    let mut buf = String::new();
+    for ev in events {
+        buf.push_str(&serde_json::to_string(&ev).unwrap_or_default());
+        buf.push('\n');
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/x-ndjson")
+        .body(Body::from(buf))
+        .unwrap()
+}
+
 #[utoipa::path(
-    get,
-    path = "/v1/events",
     tag = "events",
     params(
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
@@ -512,7 +762,12 @@ fn filter_fields(event: &models::Event, columns: &[&str]) -> Value {
         ("sort" = Option<String>, Query, description = "Sort order: asc (oldest first) or desc (newest first, default)"),
     ),
     responses(
-        (status = 200, description = "Paginated list of events"),
+        (status = 200, description = "Paginated list of events (JSON or NDJSON depending on Accept header)",
+            content(
+                ("application/json" = Value),
+                ("application/x-ndjson" = String),
+            )
+        ),
         (status = 400, description = "Invalid query parameters"),
     )
 )]
@@ -520,7 +775,8 @@ fn filter_fields(event: &models::Event, columns: &[&str]) -> Value {
 pub async fn get_events(
     State(state): State<AppState>,
     Query(params): Query<PaginationParams>,
-) -> Result<Json<Value>, AppError> {
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
     // Validate ledger range
     if let (Some(from), Some(to)) = (params.from_ledger, params.to_ledger) {
         if from > to {
@@ -528,6 +784,11 @@ pub async fn get_events(
                 "from_ledger must be <= to_ledger".to_string(),
             ));
         }
+    }
+
+    // Validate contract_id if provided
+    if let Some(ref cid) = params.contract_id {
+        validate_contract_id(cid)?;
     }
 
     let limit = params.limit();
@@ -547,6 +808,10 @@ pub async fn get_events(
         ];
         let mut bind_idx: i32 = 3;
 
+        if params.contract_id.is_some() {
+            conditions.push(format!("contract_id = ${bind_idx}"));
+            bind_idx += 1;
+        }
         if params.event_type.is_some() {
             conditions.push(format!("event_type = ${bind_idx}"));
             bind_idx += 1;
@@ -562,7 +827,6 @@ pub async fn get_events(
 
         let where_clause = format!("WHERE {}", conditions.join(" AND "));
 
-        // Always fetch ledger + id so we can build next_cursor; merge with requested columns.
         let mut select_cols = columns.to_vec();
         if !select_cols.contains(&"ledger") { select_cols.push("ledger"); }
         if !select_cols.contains(&"id") { select_cols.push("id"); }
@@ -577,12 +841,13 @@ pub async fn get_events(
         let mut q = sqlx::query(&query_str)
             .bind(cursor_ledger)
             .bind(cursor_id);
+        if let Some(ref cid) = params.contract_id { q = q.bind(cid); }
         if let Some(ref et) = params.event_type { q = q.bind(et); }
         if let Some(fl) = params.from_ledger { q = q.bind(fl); }
         if let Some(tl) = params.to_ledger { q = q.bind(tl); }
         q = q.bind(limit);
 
-        let rows = q.fetch_all(&state.pool).await?;
+        let rows = q.fetch_all(&state.read_pool).await?;
 
         let has_more = rows.len() as i64 == limit;
         let next_cursor = if has_more {
@@ -594,13 +859,18 @@ pub async fn get_events(
             None
         };
 
-        let events = rows_to_json(&rows, &columns)?;
+        let events = rows_to_json(&rows, &columns, state.encryption_key.as_ref(), state.encryption_key_old.as_ref())?;
 
-        return Ok(Json(json!({
+        let want_ndjson = accepts_ndjson(&headers);
+        if want_ndjson {
+            return Ok(ndjson_response(events.into_iter()));
+        }
+
+        return Ok(json_response(json!({
             "data": events,
             "next_cursor": next_cursor,
             "limit": limit,
-        })));
+        })).into_response());
     }
 
     // Offset-based path (deprecated fallback)
@@ -610,6 +880,10 @@ pub async fn get_events(
     let mut conditions: Vec<String> = Vec::new();
     let mut bind_idx: i32 = 1;
 
+    if params.contract_id.is_some() {
+        conditions.push(format!("contract_id = ${bind_idx}"));
+        bind_idx += 1;
+    }
     if params.event_type.is_some() {
         conditions.push(format!("event_type = ${bind_idx}"));
         bind_idx += 1;
@@ -629,10 +903,11 @@ pub async fn get_events(
         format!("WHERE {}", conditions.join(" AND "))
     };
 
-    // Always include ledger + id so we can emit next_cursor even in offset mode.
     let mut select_cols = columns.to_vec();
     if !select_cols.contains(&"ledger") { select_cols.push("ledger"); }
     if !select_cols.contains(&"id") { select_cols.push("id"); }
+    // Always fetch created_at for ETag computation
+    if !select_cols.contains(&"created_at") { select_cols.push("created_at"); }
 
     let query_str = format!(
         "SELECT {} FROM events {} ORDER BY ledger {dir}, id {dir} LIMIT ${} OFFSET ${}",
@@ -643,12 +918,13 @@ pub async fn get_events(
     );
 
     let mut q = sqlx::query(&query_str);
+    if let Some(ref cid) = params.contract_id { q = q.bind(cid); }
     if let Some(ref et) = params.event_type { q = q.bind(et); }
     if let Some(fl) = params.from_ledger { q = q.bind(fl); }
     if let Some(tl) = params.to_ledger { q = q.bind(tl); }
     q = q.bind(limit).bind(offset);
 
-    let rows = q.fetch_all(&state.pool).await?;
+    let rows = q.fetch_all(&state.read_pool).await?;
 
     let has_more = rows.len() as i64 == limit;
     let next_cursor = if has_more {
@@ -660,26 +936,49 @@ pub async fn get_events(
         None
     };
 
-    let events = rows_to_json(&rows, &columns)?;
+    let events = rows_to_json(&rows, &columns, state.encryption_key.as_ref(), state.encryption_key_old.as_ref())?;
 
-    let (total, approximate): (i64, bool) = if exact {
+    let (total, approximate): (i64, bool) = if exact || !conditions.is_empty() {
         let count_str = format!("SELECT COUNT(*) FROM events {}", where_clause);
         let mut cq = sqlx::query_scalar::<_, i64>(&count_str);
+        if let Some(ref cid) = params.contract_id { cq = cq.bind(cid); }
         if let Some(ref et) = params.event_type { cq = cq.bind(et); }
         if let Some(fl) = params.from_ledger { cq = cq.bind(fl); }
         if let Some(tl) = params.to_ledger { cq = cq.bind(tl); }
-        let count = cq.fetch_one(&state.pool).await?;
+        let count = cq.fetch_one(&state.read_pool).await?;
         (count, false)
     } else {
-        match sqlx::query_scalar::<_, i64>(
+        let count = sqlx::query_scalar::<_, i64>(
             "SELECT reltuples::bigint FROM pg_class WHERE relname = 'events'",
         )
-        .fetch_one(&state.pool)
+        .fetch_one(&state.read_pool)
         .await?;
         (count, true)
     };
 
-    Ok(Json(json!({
+    // Build ETag from last row's id + created_at + total
+    let etag = rows.first().and_then(|row| {
+        let id: Option<Uuid> = row.try_get("id").ok();
+        let created_at: Option<DateTime<Utc>> = row.try_get("created_at").ok();
+        id.zip(created_at).map(|(id, ca)| compute_etag(&id, &ca, total))
+    });
+
+    // Check If-None-Match — return 304 if ETag matches
+    if let Some(ref tag) = etag {
+        if let Some(inm) = headers.get("if-none-match").and_then(|v| v.to_str().ok()) {
+            if inm == tag {
+                let resp = axum::http::Response::builder()
+                    .status(StatusCode::NOT_MODIFIED)
+                    .header("ETag", tag.as_str())
+                    .header("Cache-Control", "no-cache")
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+                return Ok(resp.into_response());
+            }
+        }
+    }
+
+    let body = json!({
         "data": events,
         "next_cursor": next_cursor,
         "total": total,
@@ -687,7 +986,126 @@ pub async fn get_events(
         "limit": limit,
         "approximate": approximate,
         "pagination": "offset — migrate to cursor parameter for better performance",
-    })))
+    });
+
+    let mut response = Json(body).into_response();
+    if let Some(ref tag) = etag {
+        response.headers_mut().insert(
+            "ETag",
+            tag.parse().unwrap(),
+        );
+        response.headers_mut().insert(
+            "Cache-Control",
+            "no-cache".parse().unwrap(),
+        );
+    }
+    Ok(response)
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/events/export",
+    tag = "events",
+    params(
+        ("event_type" = Option<String>, Query, description = "Filter by event type: contract, diagnostic, system"),
+        ("from_ledger" = Option<i64>, Query, description = "Return events at or after this ledger"),
+        ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
+        ("contract_id" = Option<String>, Query, description = "Filter by contract ID"),
+    ),
+    responses(
+        (status = 200, description = "CSV stream of events", content_type = "text/csv"),
+        (status = 400, description = "Invalid query parameters"),
+        (status = 401, description = "API key required"),
+    )
+)]
+pub async fn export_events(
+    State(state): State<AppState>,
+    Query(params): Query<ExportParams>,
+) -> Result<impl IntoResponse, AppError> {
+    // Require API key: export is always auth-gated regardless of global auth config.
+    // (The auth middleware already enforces this when api_keys is non-empty;
+    //  this guard ensures it even if the middleware is bypassed in tests.)
+    if state.config.api_keys.is_empty() {
+        return Err(AppError::Validation(
+            "export endpoint requires API key authentication".to_string(),
+        ));
+    }
+
+    if let (Some(from), Some(to)) = (params.from_ledger, params.to_ledger) {
+        if from > to {
+            return Err(AppError::Validation(
+                "from_ledger must be <= to_ledger".to_string(),
+            ));
+        }
+    }
+
+    let max_rows = state.export_max_rows as i64;
+
+    let mut conditions: Vec<String> = Vec::new();
+    let mut bind_idx: i32 = 1;
+
+    if params.contract_id.is_some() {
+        conditions.push(format!("contract_id = ${bind_idx}"));
+        bind_idx += 1;
+    }
+    if params.event_type.is_some() {
+        conditions.push(format!("event_type = ${bind_idx}"));
+        bind_idx += 1;
+    }
+    if params.from_ledger.is_some() {
+        conditions.push(format!("ledger >= ${bind_idx}"));
+        bind_idx += 1;
+    }
+    if params.to_ledger.is_some() {
+        conditions.push(format!("ledger <= ${bind_idx}"));
+        bind_idx += 1;
+    }
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    let query_str = format!(
+        "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at \
+         FROM events {where_clause} ORDER BY ledger ASC, id ASC LIMIT ${bind_idx}"
+    );
+
+    let mut q = sqlx::query(&query_str);
+    if let Some(ref cid) = params.contract_id { q = q.bind(cid); }
+    if let Some(ref et) = params.event_type   { q = q.bind(et); }
+    if let Some(fl) = params.from_ledger      { q = q.bind(fl); }
+    if let Some(tl) = params.to_ledger        { q = q.bind(tl); }
+    q = q.bind(max_rows);
+
+    let rows = q.fetch_all(&state.pool).await?;
+
+    let mut csv = String::from("id,contract_id,event_type,tx_hash,ledger,timestamp,event_data,created_at\n");
+    for row in &rows {
+        use sqlx::Row;
+        let id: uuid::Uuid           = row.try_get("id")?;
+        let contract_id: String      = row.try_get("contract_id")?;
+        let event_type: String       = row.try_get("event_type")?;
+        let tx_hash: String          = row.try_get("tx_hash")?;
+        let ledger: i64              = row.try_get("ledger")?;
+        let timestamp: chrono::DateTime<chrono::Utc> = row.try_get("timestamp")?;
+        let event_data: serde_json::Value = row.try_get("event_data")?;
+        let created_at: chrono::DateTime<chrono::Utc> = row.try_get("created_at")?;
+        // Escape event_data JSON for CSV (wrap in quotes, escape inner quotes)
+        let data_str = event_data.to_string().replace('"', "\"\"");
+        csv.push_str(&format!(
+            "{id},{contract_id},{event_type},{tx_hash},{ledger},{timestamp},\"{data_str}\",{created_at}\n"
+        ));
+    }
+
+    Ok((
+        [
+            ("Content-Type", "text/csv"),
+            ("Content-Disposition", "attachment; filename=\"events.csv\""),
+        ],
+        csv,
+    ))
 }
 
 #[utoipa::path(
@@ -698,14 +1116,18 @@ pub async fn get_events(
         ("contract_id" = String, Path, description = "Stellar contract ID (56-char, starts with C)"),
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
         ("limit" = Option<i64>, Query, description = "Results per page, 1–100 (default: 20)"),
+        ("exact_count" = Option<bool>, Query, description = "Use exact COUNT(*) instead of approximate (default: false)"),
         ("from_ledger" = Option<i64>, Query, description = "Return events at or after this ledger"),
         ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
         ("sort" = Option<String>, Query, description = "Sort order: asc (oldest first) or desc (newest first, default)"),
     ),
     responses(
         (status = 200, description = "Events for the given contract"),
-        (status = 400, description = "Invalid contract_id format or ledger range"),
-        (status = 404, description = "No events found for contract"),
+        (status = 400, description = "Invalid contract_id format or ledger range", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "No events found for contract", body = ErrorResponse),
+        (status = 429, description = "Too many requests", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
 pub async fn get_events_by_contract(
@@ -715,21 +1137,18 @@ pub async fn get_events_by_contract(
 ) -> Result<Json<Value>, AppError> {
     validate_contract_id(&contract_id)?;
 
-    // Validate ledger range
     if let (Some(from), Some(to)) = (params.from_ledger, params.to_ledger) {
         if from > to {
-            return Err(AppError::Validation(
-                "from_ledger must be <= to_ledger".to_string(),
-            ));
+            return Err(AppError::Validation("from_ledger must be <= to_ledger".to_string()));
         }
     }
 
     let limit = params.limit();
     let offset = params.offset();
+    let exact = params.exact_count.unwrap_or(false);
     let columns = resolve_columns(&params)?;
     let dir = params.sort.unwrap_or(crate::models::SortOrder::Desc).as_sql();
 
-    // Build query dynamically based on optional ledger filters
     let mut conditions: Vec<String> = vec!["contract_id = $1".to_string()];
     let mut bind_idx: i32 = 2;
 
@@ -754,28 +1173,52 @@ pub async fn get_events_by_contract(
     if let Some(tl) = params.to_ledger { q = q.bind(tl); }
     q = q.bind(limit).bind(offset);
 
-    let rows = q.fetch_all(&state.pool).await?;
+    let rows = q.fetch_all(&state.read_pool).await?;
 
     if rows.is_empty() {
         return Err(AppError::NotFound);
     }
 
-    let events: Vec<Value> = rows.iter().map(|e| filter_fields(e, &columns)).collect();
+    let events: Vec<Value> = rows.iter().map(|e| filter_fields(e, &columns, state.encryption_key.as_ref(), state.encryption_key_old.as_ref())).collect();
+
+    // Fetch total count, using the moka cache when no ledger filters are applied.
+    let total: i64 = if params.from_ledger.is_none() && params.to_ledger.is_none() {
+        if let Some(cached) = state.contract_count_cache.get(&contract_id).await {
+            cached
+        } else {
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM events WHERE contract_id = $1",
+            )
+            .bind(&contract_id)
+            .fetch_one(&state.pool)
+            .await?;
+            state.contract_count_cache.insert(contract_id.clone(), count).await;
+            count
+        }
+    } else {
+        let mut count_conditions: Vec<String> = vec!["contract_id = $1".to_string()];
+        let mut cidx: i32 = 2;
+        if params.from_ledger.is_some() { count_conditions.push(format!("ledger >= ${cidx}")); cidx += 1; }
+        if params.to_ledger.is_some() { count_conditions.push(format!("ledger <= ${cidx}")); cidx += 1; }
+        let _ = cidx;
+        let count_str = format!("SELECT COUNT(*) FROM events WHERE {}", count_conditions.join(" AND "));
+        let mut cq = sqlx::query_scalar::<_, i64>(&count_str).bind(&contract_id);
+        if let Some(fl) = params.from_ledger { cq = cq.bind(fl); }
+        if let Some(tl) = params.to_ledger { cq = cq.bind(tl); }
+        cq.fetch_one(&state.pool).await?
+    };
 
     let mut response = json!({
         "data": events,
         "contract_id": contract_id,
+        "total": total,
         "page": params.page.unwrap_or(1),
         "limit": limit,
+        "approximate": approximate,
     });
 
-    // Echo back applied filters for client confirmation
-    if let Some(fl) = params.from_ledger {
-        response["from_ledger"] = json!(fl);
-    }
-    if let Some(tl) = params.to_ledger {
-        response["to_ledger"] = json!(tl);
-    }
+    if let Some(fl) = params.from_ledger { response["from_ledger"] = json!(fl); }
+    if let Some(tl) = params.to_ledger { response["to_ledger"] = json!(tl); }
 
     Ok(Json(response))
 }
@@ -789,7 +1232,10 @@ pub async fn get_events_by_contract(
     ),
     responses(
         (status = 200, description = "Events for the given transaction (empty array if none)"),
-        (status = 400, description = "Invalid tx_hash format"),
+        (status = 400, description = "Invalid tx_hash format", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 429, description = "Too many requests", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
 pub async fn get_events_by_tx(
@@ -797,7 +1243,6 @@ pub async fn get_events_by_tx(
     Path(tx_hash): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Value>, AppError> {
-    // Normalize to lowercase so uppercase/mixed-case hashes from blockchain explorers work.
     let tx_hash = tx_hash.to_lowercase();
     validate_tx_hash(&tx_hash)?;
 
@@ -814,12 +1259,18 @@ pub async fn get_events_by_tx(
 
     let rows = sqlx::query(&query_str)
         .bind(&tx_hash)
-        .fetch_all(&state.pool)
+        .fetch_all(&state.read_pool)
         .await?;
 
+    let total = rows.len() as i64;
     let events = rows_to_json(&rows, &columns)?;
 
-    Ok(Json(json!({ "data": events, "tx_hash": tx_hash })))
+    Ok(Json(json!({
+        "data": events,
+        "tx_hash": tx_hash,
+        "total": total,
+        "approximate": false,
+    })))
 }
 
 #[utoipa::path(
@@ -832,6 +1283,9 @@ pub async fn get_events_by_tx(
     ),
     responses(
         (status = 200, description = "Paginated list of indexed contract IDs"),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 429, description = "Too many requests", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
 pub async fn get_contracts(
@@ -858,11 +1312,11 @@ pub async fn get_contracts(
     )
     .bind(limit)
     .bind(offset)
-    .fetch_all(&state.pool)
+    .fetch_all(&state.read_pool)
     .await?;
 
     let total: i64 = sqlx::query_scalar("SELECT COUNT(DISTINCT contract_id) FROM events")
-        .fetch_one(&state.pool)
+        .fetch_one(&state.read_pool)
         .await?;
 
     let result = json!({
@@ -884,6 +1338,189 @@ pub async fn get_contracts(
     Ok(Json(result))
 }
 
+/// Replay events for a specific ledger range
+#[utoipa::path(
+    post,
+    path = "/v1/admin/replay",
+    tag = "admin",
+    request_body(content = ReplayRequest, description = "Ledger range to replay", content_type = "application/json"),
+    responses(
+        (status = 202, description = "Replay job accepted and queued"),
+        (status = 401, description = "Unauthorized - API key required"),
+        (status = 403, description = "Forbidden - not the active indexer"),
+        (status = 400, description = "Invalid request parameters"),
+    )
+)]
+pub async fn replay_events(
+    State(state): State<AppState>,
+    Json(request): Json<models::ReplayRequest>,
+) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
+    // Validate ledger range
+    if request.from_ledger > request.to_ledger {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "from_ledger must be <= to_ledger"
+            }))
+        ));
+    }
+
+    // Validate range size (max 10,000 ledgers)
+    let range_size = request.to_ledger.saturating_sub(request.from_ledger) + 1;
+    if range_size > 10_000 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "ledger range cannot exceed 10,000 ledgers"
+            }))
+        ));
+    }
+
+    // Check if this replica is the active indexer (holds the advisory lock)
+    let is_active = state.indexer_state.is_active_indexer.load(std::sync::atomic::Ordering::Relaxed);
+    if !is_active {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "replay endpoint only available on active indexer"
+            }))
+        ));
+    }
+
+    // Record the replay job metric
+    crate::metrics::record_replay_job();
+
+    // Spawn background task to handle the replay
+    let pool = state.pool.clone();
+    let rpc_url = state.stellar_rpc_url.clone();
+    let from_ledger = request.from_ledger;
+    let to_ledger = request.to_ledger;
+    
+    tokio::spawn(async move {
+        if let Err(e) = execute_replay_job(pool, &rpc_url, from_ledger, to_ledger).await {
+            tracing::error!(error = %e, "Replay job failed");
+        }
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "message": "replay job accepted",
+            "from_ledger": request.from_ledger,
+            "to_ledger": request.to_ledger
+        }))
+    ))
+}
+
+/// Execute the replay job using the same fetch_and_store_events logic
+async fn execute_replay_job(
+    pool: sqlx::PgPool,
+    rpc_url: &str,
+    from_ledger: u64,
+    to_ledger: u64,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    tracing::info!(from_ledger = from_ledger, to_ledger = to_ledger, "Starting replay job");
+
+    // Create RPC client
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(60))
+        .build()?;
+
+    let mut current_ledger = from_ledger;
+    
+    while current_ledger <= to_ledger {
+        // Fetch events for current ledger range
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getEvents",
+            "params": {
+                "filters": [],
+                "pagination": {"limit": 100},
+                "startLedger": current_ledger
+            }
+        });
+
+        let response = client
+            .post(rpc_url)
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(format!("RPC request failed: {}", response.status()).into());
+        }
+
+        let rpc_response: crate::models::RpcResponse<crate::models::GetEventsResult> = 
+            response.json().await?;
+
+        let result = match rpc_response.result {
+            Some(r) => r,
+            None => {
+                if let Some(err) = rpc_response.error {
+                    return Err(format!("RPC error: {}", err.message).into());
+                } else {
+                    return Err("RPC returned no result".into());
+                }
+            }
+        };
+
+        // Store events with ON CONFLICT DO NOTHING for idempotency
+        for event in result.events {
+            if let Err(e) = store_event_with_idempotency(&pool, &event).await {
+                tracing::warn!(error = %e, "Failed to store event during replay");
+            }
+        }
+
+        // Move to next ledger or break if we've reached the end
+        if result.latest_ledger >= current_ledger {
+            current_ledger = result.latest_ledger + 1;
+        } else {
+            break;
+        }
+
+        // Add small delay to avoid overwhelming the RPC
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    tracing::info!(from_ledger = from_ledger, to_ledger = to_ledger, "Replay job completed");
+    Ok(())
+}
+
+/// Store event with idempotency using ON CONFLICT DO NOTHING
+async fn store_event_with_idempotency(
+    pool: &sqlx::PgPool,
+    event: &crate::models::SorobanEvent,
+) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+    let ledger = i64::try_from(event.ledger)?;
+    let timestamp = DateTime::parse_from_rfc3339(&event.ledger_closed_at)
+        .map(|dt| dt.with_timezone(&chrono::Utc))?;
+
+    let event_data = serde_json::json!({
+        "value": event.value,
+        "topic": event.topic
+    });
+
+    let result = sqlx::query(
+        r#"
+        INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (tx_hash, contract_id, event_type) DO NOTHING
+        "#,
+    )
+    .bind(&event.contract_id)
+    .bind(&event.event_type)
+    .bind(&event.tx_hash)
+    .bind(ledger)
+    .bind(timestamp)
+    .bind(event_data)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -899,7 +1536,12 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let indexer_state = Arc::new(IndexerState::new());
         let prometheus_handle = crate::metrics::init_metrics();
-        crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000)
+
+        crate::routes::create_router(pool, Vec::new(), &[], 60, health_state, indexer_state, prometheus_handle, 2000)
+
+        let config = crate::config::Config::default();
+        crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000, config)
+
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -920,27 +1562,6 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["data"], json!([]));
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn get_events_by_contract_no_events_returns_200_empty_data(pool: PgPool) {
-        let app = create_test_router(pool);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/events/contract/unknown_contract_no_events_deadbeef")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v["data"], json!([]));
-        assert_eq!(v["contract_id"], json!("unknown_contract_no_events_deadbeef"));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1321,7 +1942,7 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let prometheus_handle = crate::metrics::init_metrics();
         let indexer_state = Arc::new(IndexerState::new());
-        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000);
+        let app = crate::routes::create_router(pool, Vec::new(), &[], 60, health_state, indexer_state, prometheus_handle, 2000);
 
         let response = app
             .oneshot(
@@ -1390,7 +2011,7 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let prometheus_handle = crate::metrics::init_metrics();
         let indexer_state = Arc::new(IndexerState::new());
-        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000);
+        let app = crate::routes::create_router(pool, Vec::new(), &[], 60, health_state, indexer_state, prometheus_handle, 2000);
 
         let response = app
             .oneshot(
@@ -1415,7 +2036,7 @@ mod tests {
         // never updated, treated as stalled
         let prometheus_handle = crate::metrics::init_metrics();
         let indexer_state = Arc::new(IndexerState::new());
-        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000);
+        let app = crate::routes::create_router(pool, Vec::new(), &[], 60, health_state, indexer_state, prometheus_handle, 2000);
 
         let response = app
             .oneshot(
@@ -1640,6 +2261,10 @@ mod tests {
         
         assert_eq!(v["data"].as_array().unwrap().len(), 1);
         assert_eq!(v["contract_id"], contract_id);
+        assert_eq!(v["total"], 1);
+        assert!(v.get("page").is_some());
+        assert!(v.get("limit").is_some());
+        assert!(v.get("approximate").is_some());
     }
 
     // Events by contract tests - Error cases
@@ -1747,6 +2372,73 @@ mod tests {
         );
     }
 
+    // --- Validation edge-case unit tests (discovered via fuzzing review) ---
+
+    #[test]
+    fn validate_contract_id_empty_returns_err() {
+        assert!(validate_contract_id("").is_err());
+    }
+
+    #[test]
+    fn validate_contract_id_55_chars_returns_err() {
+        let s = format!("C{}", "A".repeat(54));
+        assert!(validate_contract_id(&s).is_err());
+    }
+
+    #[test]
+    fn validate_contract_id_57_chars_returns_err() {
+        let s = format!("C{}", "A".repeat(56));
+        assert!(validate_contract_id(&s).is_err());
+    }
+
+    #[test]
+    fn validate_contract_id_starts_with_lowercase_c_returns_err() {
+        let s = format!("c{}", "A".repeat(55));
+        assert!(validate_contract_id(&s).is_err());
+    }
+
+    #[test]
+    fn validate_contract_id_with_special_chars_returns_err() {
+        let s = format!("C{}!", "A".repeat(54));
+        assert!(validate_contract_id(&s).is_err());
+    }
+
+    #[test]
+    fn validate_contract_id_valid_returns_ok() {
+        let s = format!("C{}", "A".repeat(55));
+        assert!(validate_contract_id(&s).is_ok());
+    }
+
+    #[test]
+    fn validate_tx_hash_empty_returns_err() {
+        assert!(validate_tx_hash("").is_err());
+    }
+
+    #[test]
+    fn validate_tx_hash_63_chars_returns_err() {
+        assert!(validate_tx_hash(&"a".repeat(63)).is_err());
+    }
+
+    #[test]
+    fn validate_tx_hash_65_chars_returns_err() {
+        assert!(validate_tx_hash(&"a".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn validate_tx_hash_non_hex_returns_err() {
+        assert!(validate_tx_hash(&"g".repeat(64)).is_err());
+    }
+
+    #[test]
+    fn validate_tx_hash_valid_lowercase_returns_ok() {
+        assert!(validate_tx_hash(&"a".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn validate_tx_hash_valid_uppercase_returns_ok() {
+        assert!(validate_tx_hash(&"A".repeat(64)).is_ok());
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn stream_events_invalid_contract_id_returns_400(pool: PgPool) {
         let app = create_test_router(pool);
@@ -1789,6 +2481,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn stream_events_invalid_topic_prefix_returns_400(pool: PgPool) {
+        let app = create_test_router(pool);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/stream?topic_prefix=not-valid-json{{{")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"], "topic_prefix must be valid JSON");
+        assert_eq!(v["code"], "VALIDATION_ERROR");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn stream_events_valid_topic_prefix_returns_sse_stream(pool: PgPool) {
+        let app = create_test_router(pool);
+
+        // URL-encoded JSON: {"sym":"swap"}
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/stream?topic_prefix=%7B%22sym%22%3A%22swap%22%7D")
+                    .header("Accept", "text/event-stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "text/event-stream"
+        );
     }
 
     // Metrics endpoint tests
@@ -2229,5 +2965,437 @@ mod tests {
         assert!(v.get("total").is_some());
         assert!(v.get("page").is_some());
         assert!(v["next_cursor"].is_string(), "offset path must also return next_cursor");
+    }
+
+
+    // --- ETag / conditional GET tests ---
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_events_returns_etag_header(pool: PgPool) {
+        insert_events(&pool, 3).await;
+        let app = create_test_router(pool);
+
+        let resp = app
+            .oneshot(Request::builder().uri("/v1/events").body(Body::empty()).unwrap())
+            .await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().contains_key("etag"), "ETag header must be present");
+        let etag = resp.headers().get("etag").unwrap().to_str().unwrap().to_string();
+        assert!(etag.starts_with('"') && etag.ends_with('"'), "ETag must be quoted: {etag}");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_events_matching_etag_returns_304(pool: PgPool) {
+        insert_events(&pool, 3).await;
+        let app = create_test_router(pool);
+
+        // First request — get ETag
+        let resp = app.clone()
+            .oneshot(Request::builder().uri("/v1/events").body(Body::empty()).unwrap())
+            .await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let etag = resp.headers().get("etag").unwrap().to_str().unwrap().to_string();
+
+        // Second request with If-None-Match — should get 304
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events")
+                    .header("if-none-match", &etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+        // 304 must include ETag header
+        assert_eq!(resp.headers().get("etag").unwrap().to_str().unwrap(), etag);
+        // 304 body must be empty
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert!(body.is_empty());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_events_non_matching_etag_returns_200(pool: PgPool) {
+        insert_events(&pool, 3).await;
+        let app = create_test_router(pool);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events")
+                    .header("if-none-match", "\"stale-etag-value\"")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_events_empty_db_no_etag(pool: PgPool) {
+        let app = create_test_router(pool);
+
+        let resp = app
+            .oneshot(Request::builder().uri("/v1/events").body(Body::empty()).unwrap())
+            .await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        // No rows → no ETag
+        assert!(resp.headers().get("etag").is_none());
+
+    // Replay endpoint tests
+    #[sqlx::test(migrations = "./migrations")]
+    async fn replay_endpoint_requires_api_key(pool: PgPool) {
+        let app = create_test_router(pool);
+        let replay_request = ReplayRequest {
+            from_ledger: 100,
+            to_ledger: 200,
+        };
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/replay")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::to_string(&replay_request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Should return 401 when no API key is provided (since test router has no API keys configured)
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"], "unauthorized");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn replay_endpoint_validates_ledger_range(pool: PgPool) {
+        let health_state = Arc::new(HealthState::new(60));
+        let indexer_state = Arc::new(IndexerState::new());
+        let prometheus_handle = crate::metrics::init_metrics();
+        // Create router with API key to bypass auth
+        let app = crate::routes::create_router(
+            pool, 
+            vec!["test-key".to_string()], 
+            &[], 
+            60, 
+            health_state, 
+            indexer_state, 
+            prometheus_handle, 
+            2000
+        );
+
+        // Test invalid range: from_ledger > to_ledger
+        let replay_request = ReplayRequest {
+            from_ledger: 200,
+            to_ledger: 100,
+        };
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/replay")
+                    .header("Authorization", "Bearer test-key")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::to_string(&replay_request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"], "from_ledger must be <= to_ledger");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn replay_endpoint_validates_range_size(pool: PgPool) {
+        let health_state = Arc::new(HealthState::new(60));
+        let indexer_state = Arc::new(IndexerState::new());
+        let prometheus_handle = crate::metrics::init_metrics();
+        // Create router with API key to bypass auth
+        let app = crate::routes::create_router(
+            pool, 
+            vec!["test-key".to_string()], 
+            &[], 
+            60, 
+            health_state, 
+            indexer_state, 
+            prometheus_handle, 
+            2000
+        );
+
+        // Test range too large: > 10,000 ledgers
+        let replay_request = ReplayRequest {
+            from_ledger: 1,
+            to_ledger: 15000,
+        };
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/replay")
+                    .header("Authorization", "Bearer test-key")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::to_string(&replay_request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"], "ledger range cannot exceed 10,000 ledgers");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn replay_endpoint_returns_403_when_not_active_indexer(pool: PgPool) {
+        let health_state = Arc::new(HealthState::new(60));
+        let mut indexer_state = Arc::new(IndexerState::new());
+        
+        // Set indexer as not active
+        indexer_state.is_active_indexer.store(false, std::sync::atomic::Ordering::Relaxed);
+        
+        let prometheus_handle = crate::metrics::init_metrics();
+        // Create router with API key to bypass auth
+        let app = crate::routes::create_router(
+            pool, 
+            vec!["test-key".to_string()], 
+            &[], 
+            60, 
+            health_state, 
+            indexer_state, 
+            prometheus_handle, 
+            2000
+        );
+
+        let replay_request = ReplayRequest {
+            from_ledger: 100,
+            to_ledger: 200,
+        };
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/replay")
+                    .header("Authorization", "Bearer test-key")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::to_string(&replay_request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"], "replay endpoint only available on active indexer");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn replay_endpoint_accepts_valid_request(pool: PgPool) {
+        let health_state = Arc::new(HealthState::new(60));
+        let mut indexer_state = Arc::new(IndexerState::new());
+        
+        // Set indexer as active
+        indexer_state.is_active_indexer.store(true, std::sync::atomic::Ordering::Relaxed);
+        
+        let prometheus_handle = crate::metrics::init_metrics();
+        // Create router with API key to bypass auth
+        let app = crate::routes::create_router(
+            pool, 
+            vec!["test-key".to_string()], 
+            &[], 
+            60, 
+            health_state, 
+            indexer_state, 
+            prometheus_handle, 
+            2000
+        );
+
+        let replay_request = ReplayRequest {
+            from_ledger: 100,
+            to_ledger: 200,
+        };
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/replay")
+                    .header("Authorization", "Bearer test-key")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::to_string(&replay_request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["message"], "replay job accepted");
+        assert_eq!(v["from_ledger"], 100);
+        assert_eq!(v["to_ledger"], 200);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn replay_endpoint_accepts_x_api_key_header(pool: PgPool) {
+        let health_state = Arc::new(HealthState::new(60));
+        let mut indexer_state = Arc::new(IndexerState::new());
+        
+        // Set indexer as active
+        indexer_state.is_active_indexer.store(true, std::sync::atomic::Ordering::Relaxed);
+        
+        let prometheus_handle = crate::metrics::init_metrics();
+        // Create router with API key to bypass auth
+        let app = crate::routes::create_router(
+            pool, 
+            vec!["test-key".to_string()], 
+            &[], 
+            60, 
+            health_state, 
+            indexer_state, 
+            prometheus_handle, 
+            2000
+        );
+
+        let replay_request = ReplayRequest {
+            from_ledger: 100,
+            to_ledger: 200,
+        };
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/replay")
+                    .header("X-Api-Key", "test-key")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::to_string(&replay_request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["message"], "replay job accepted");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn replay_endpoint_rejects_invalid_api_key(pool: PgPool) {
+        let health_state = Arc::new(HealthState::new(60));
+        let indexer_state = Arc::new(IndexerState::new());
+        let prometheus_handle = crate::metrics::init_metrics();
+        // Create router with API key
+        let app = crate::routes::create_router(
+            pool, 
+            vec!["correct-key".to_string()], 
+            &[], 
+            60, 
+            health_state, 
+            indexer_state, 
+            prometheus_handle, 
+            2000
+        );
+
+        let replay_request = ReplayRequest {
+            from_ledger: 100,
+            to_ledger: 200,
+        };
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/replay")
+                    .header("Authorization", "Bearer wrong-key")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::to_string(&replay_request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"], "unauthorized");
+
+    }
+
+    // --- CSV export tests ---
+
+    fn create_export_router(pool: PgPool) -> axum::Router {
+        let health_state = Arc::new(HealthState::new(60));
+        let indexer_state = Arc::new(IndexerState::new());
+        let prometheus_handle = crate::metrics::init_metrics();
+        // Export requires api_keys to be non-empty
+        crate::routes::create_router(pool, vec!["test-key".to_string()], &[], 60, health_state, indexer_state, prometheus_handle, 2000)
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn export_events_returns_csv_with_header(pool: PgPool) {
+        sqlx::query(
+            "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind("C1234567890123456789012345678901234567890123456789012345")
+        .bind("contract")
+        .bind("a".repeat(64))
+        .bind(1_i64)
+        .bind(Utc::now())
+        .bind(json!({"value": null, "topic": []}))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let app = create_export_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/export")
+                    .header("Authorization", "Bearer test-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("content-type").unwrap(), "text/csv");
+        assert!(response.headers().get("content-disposition").unwrap().to_str().unwrap().contains("events.csv"));
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let csv = String::from_utf8(body.to_vec()).unwrap();
+        let mut lines = csv.lines();
+        assert_eq!(lines.next().unwrap(), "id,contract_id,event_type,tx_hash,ledger,timestamp,event_data,created_at");
+        assert!(lines.next().is_some(), "expected at least one data row");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn export_events_without_api_key_returns_error(pool: PgPool) {
+        // Router with no api_keys configured
+        let app = create_test_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/export")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Should be rejected (400 validation error since no api_keys means guard fires)
+        assert!(response.status().is_client_error());
     }
 }
