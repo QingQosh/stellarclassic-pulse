@@ -68,17 +68,19 @@ pub struct AppState {
         handlers::stream_events,
         handlers::stream_events_by_contract,
         handlers::get_contracts,
-        handlers::list_archive,
+        handlers::replay_events,
     ),
     components(schemas(
         crate::models::Event,
         crate::models::EventType,
         crate::models::PaginationParams,
         crate::models::ContractSummary,
+        crate::models::ReplayRequest,
     )),
     tags(
         (name = "events", description = "Event indexing endpoints"),
         (name = "system", description = "Health and observability endpoints"),
+        (name = "admin", description = "Administrative endpoints"),
     )
 )]
 pub struct ApiDoc;
@@ -146,7 +148,8 @@ pub fn create_router_with_tx(
         .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
         .route("/events/contract/:contract_id/stream", get(handlers::stream_events_by_contract))
         .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx))
-        .route("/contracts", get(handlers::get_contracts));
+        .route("/contracts", get(handlers::get_contracts))
+        .route("/admin/replay", axum::routing::post(handlers::replay_events));
 
     // Unversioned deprecated aliases (same handlers, add Deprecation header via middleware)
     let deprecated = Router::new()
@@ -223,6 +226,7 @@ pub fn create_router_with_tx(
     Router::new()
         .merge(health_routes)
         .merge(rate_limited_routes)
+        .layer(axum::middleware::from_fn(middleware::security_headers_middleware))
         .layer(axum::middleware::from_fn(middleware::request_id_middleware))
         .layer(axum::middleware::from_fn_with_state(
             auth_state,
