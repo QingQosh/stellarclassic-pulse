@@ -53,7 +53,7 @@ fn decode_cursor(cursor: &str) -> Result<(i64, Uuid), AppError> {
 }
 
 /// Map sqlx rows to a JSON array, projecting only the requested columns.
-fn rows_to_json(rows: &[sqlx::postgres::PgRow], columns: &[&str]) -> Result<Vec<Value>, AppError> {
+fn rows_to_json(rows: &[sqlx::postgres::PgRow], columns: &[&str], enc_key: Option<&[u8; 32]>, enc_key_old: Option<&[u8; 32]>) -> Result<Vec<Value>, AppError> {
     let mut events = Vec::with_capacity(rows.len());
     for row in rows {
         let mut event = serde_json::Map::new();
@@ -65,7 +65,11 @@ fn rows_to_json(rows: &[sqlx::postgres::PgRow], columns: &[&str]) -> Result<Vec<
                 "tx_hash" => { event.insert(col.to_string(), json!(row.try_get::<String, _>(col)?)); }
                 "ledger" => { event.insert(col.to_string(), json!(row.try_get::<i64, _>(col)?)); }
                 "timestamp" => { event.insert(col.to_string(), json!(row.try_get::<DateTime<Utc>, _>(col)?)); }
-                "event_data" => { event.insert(col.to_string(), row.try_get::<Value, _>(col)?); }
+                "event_data" => {
+                    let raw: Value = row.try_get::<Value, _>(col)?;
+                    let decrypted = decrypt_event_data(&raw, enc_key, enc_key_old);
+                    event.insert(col.to_string(), decrypted);
+                }
                 "created_at" => { event.insert(col.to_string(), json!(row.try_get::<DateTime<Utc>, _>(col)?)); }
                 _ => {}
             }
@@ -422,8 +426,11 @@ async fn stream_events_internal(
     };
 
     let rx = state.event_tx.subscribe();
+    let enc_key = state.encryption_key;
+    let enc_key_old = state.encryption_key_old;
 
-    let replay_stream = stream::iter(replay.into_iter().map(move |ev| {
+    let replay_stream = stream::iter(replay.into_iter().map(move |mut ev| {
+        ev.event_data = decrypt_event_data(&ev.event_data, enc_key.as_ref(), enc_key_old.as_ref());
         let data = serde_json::to_string(&ev).unwrap_or_default();
         Ok(Event::default()
             .id(ev.id.to_string())
@@ -481,8 +488,20 @@ async fn stream_events_internal(
     ))
 }
 
+/// Decrypt event_data if an encryption key is configured.
+fn decrypt_event_data(raw: &Value, key: Option<&[u8; 32]>, old_key: Option<&[u8; 32]>) -> Value {
+    if let Some(k) = key {
+        crate::encryption::decrypt(k, old_key, raw).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to decrypt event_data, returning raw value");
+            raw.clone()
+        })
+    } else {
+        raw.clone()
+    }
+}
+
 /// Converts an `Event` to a JSON object containing only the requested fields.
-fn filter_fields(event: &models::Event, columns: &[&str]) -> Value {
+fn filter_fields(event: &models::Event, columns: &[&str], enc_key: Option<&[u8; 32]>, enc_key_old: Option<&[u8; 32]>) -> Value {
     let mut map = serde_json::Map::new();
     for &col in columns {
         match col {
@@ -492,7 +511,10 @@ fn filter_fields(event: &models::Event, columns: &[&str]) -> Value {
             "tx_hash"     => { map.insert(col.to_string(), json!(event.tx_hash)); }
             "ledger"      => { map.insert(col.to_string(), json!(event.ledger)); }
             "timestamp"   => { map.insert(col.to_string(), json!(event.timestamp)); }
-            "event_data"  => { map.insert(col.to_string(), event.event_data.clone()); }
+            "event_data"  => {
+                let decrypted = decrypt_event_data(&event.event_data, enc_key, enc_key_old);
+                map.insert(col.to_string(), decrypted);
+            }
             "created_at"  => { map.insert(col.to_string(), json!(event.created_at)); }
             _ => {}
         }
@@ -541,6 +563,7 @@ fn ndjson_response(events: impl Iterator<Item = Value>) -> Response<Body> {
         ("event_type" = Option<EventType>, Query, description = "Filter by event type: contract, diagnostic, system"),
         ("from_ledger" = Option<i64>, Query, description = "Return events at or after this ledger"),
         ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
+        ("contract_id" = Option<String>, Query, description = "Filter by contract ID (56-char Stellar contract address starting with C)"),
     ),
     responses(
         (status = 200, description = "Paginated list of events (JSON or NDJSON depending on Accept header)",
@@ -567,6 +590,11 @@ pub async fn get_events(
         }
     }
 
+    // Validate contract_id if provided
+    if let Some(ref cid) = params.contract_id {
+        validate_contract_id(cid)?;
+    }
+
     let limit = params.limit();
     let columns = resolve_columns(&params)?;
 
@@ -579,6 +607,10 @@ pub async fn get_events(
         ];
         let mut bind_idx: i32 = 3;
 
+        if params.contract_id.is_some() {
+            conditions.push(format!("contract_id = ${bind_idx}"));
+            bind_idx += 1;
+        }
         if params.event_type.is_some() {
             conditions.push(format!("event_type = ${bind_idx}"));
             bind_idx += 1;
@@ -609,6 +641,7 @@ pub async fn get_events(
         let mut q = sqlx::query(&query_str)
             .bind(cursor_ledger)
             .bind(cursor_id);
+        if let Some(ref cid) = params.contract_id { q = q.bind(cid); }
         if let Some(ref et) = params.event_type { q = q.bind(et); }
         if let Some(fl) = params.from_ledger { q = q.bind(fl); }
         if let Some(tl) = params.to_ledger { q = q.bind(tl); }
@@ -626,7 +659,7 @@ pub async fn get_events(
             None
         };
 
-        let events = rows_to_json(&rows, &columns)?;
+        let events = rows_to_json(&rows, &columns, state.encryption_key.as_ref(), state.encryption_key_old.as_ref())?;
 
         let want_ndjson = accepts_ndjson(&headers);
         if want_ndjson {
@@ -647,6 +680,10 @@ pub async fn get_events(
     let mut conditions: Vec<String> = Vec::new();
     let mut bind_idx: i32 = 1;
 
+    if params.contract_id.is_some() {
+        conditions.push(format!("contract_id = ${bind_idx}"));
+        bind_idx += 1;
+    }
     if params.event_type.is_some() {
         conditions.push(format!("event_type = ${bind_idx}"));
         bind_idx += 1;
@@ -680,6 +717,7 @@ pub async fn get_events(
     );
 
     let mut q = sqlx::query(&query_str);
+    if let Some(ref cid) = params.contract_id { q = q.bind(cid); }
     if let Some(ref et) = params.event_type { q = q.bind(et); }
     if let Some(fl) = params.from_ledger { q = q.bind(fl); }
     if let Some(tl) = params.to_ledger { q = q.bind(tl); }
@@ -697,11 +735,12 @@ pub async fn get_events(
         None
     };
 
-    let events = rows_to_json(&rows, &columns)?;
+    let events = rows_to_json(&rows, &columns, state.encryption_key.as_ref(), state.encryption_key_old.as_ref())?;
 
     let (total, approximate): (i64, bool) = if exact {
         let count_str = format!("SELECT COUNT(*) FROM events {}", where_clause);
         let mut cq = sqlx::query_scalar::<_, i64>(&count_str);
+        if let Some(ref cid) = params.contract_id { cq = cq.bind(cid); }
         if let Some(ref et) = params.event_type { cq = cq.bind(et); }
         if let Some(fl) = params.from_ledger { cq = cq.bind(fl); }
         if let Some(tl) = params.to_ledger { cq = cq.bind(tl); }
@@ -798,7 +837,7 @@ pub async fn get_events_by_contract(
         return Err(AppError::NotFound);
     }
 
-    let events: Vec<Value> = rows.iter().map(|e| filter_fields(e, &columns)).collect();
+    let events: Vec<Value> = rows.iter().map(|e| filter_fields(e, &columns, state.encryption_key.as_ref(), state.encryption_key_old.as_ref())).collect();
 
     // Count: approximate via pg_class filtered by contract, or exact via COUNT(*)
     let (total, approximate): (i64, bool) = if exact {

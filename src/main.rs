@@ -7,6 +7,7 @@
 )]
 mod config;
 mod db;
+mod encryption;
 mod error;
 mod handlers;
 mod indexer;
@@ -19,7 +20,7 @@ mod rpc_client;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[cfg(feature = "otel")]
@@ -109,7 +110,6 @@ async fn main() -> anyhow::Result<()> {
     let _ = db::run_migrations(&pool).await;
 
     info!("Migrations applied successfully");
-    info!(url = %config.stellar_rpc_url, "Soroban RPC URL");
     info!(environment = ?config.environment, "Running environment");
 
     // Create shared health state for indexer and HTTP handlers
