@@ -32,12 +32,10 @@ async-trait = "0.1"
 tower_governor = { version = "0.8", features = ["axum"] }
 base64 = "0.22"
 sha2 = "0.10"
-<<<<<<< feature/issue-196-direct-tls
 axum-server = { version = "0.7", features = ["tls-rustls"] }
-=======
 aes-gcm = { version = "0.10", optional = true }
 rand = { version = "0.8", optional = true }
->>>>>>> main
+moka = { version = "0.12", features = ["future"] }
 
 [features]
 otel = ["tracing-opentelemetry", "opentelemetry", "opentelemetry-otlp"]

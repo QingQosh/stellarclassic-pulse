@@ -133,17 +133,16 @@ pub struct Config {
     pub environment: Environment,
     pub max_body_size_bytes: usize,
     pub log_sample_rate: u32,
-<<<<<<< feature/issue-196-direct-tls
     pub tls_cert_file: Option<String>,
     pub tls_key_file: Option<String>,
-=======
     /// AES-256-GCM key for encrypting event_data at the application level.
     /// Set via EVENT_DATA_ENCRYPTION_KEY (64 hex chars = 32 bytes).
     pub event_data_encryption_key: Option<[u8; 32]>,
     /// Previous encryption key for key rotation support.
     /// Set via EVENT_DATA_ENCRYPTION_KEY_OLD.
     pub event_data_encryption_key_old: Option<[u8; 32]>,
->>>>>>> main
+    pub contract_count_cache_size: u64,
+    pub contract_count_cache_ttl_secs: u64,
 }
 
 impl Default for Config {
@@ -172,13 +171,12 @@ impl Default for Config {
             environment: Environment::Development,
             max_body_size_bytes: 1024 * 1024, // 1 MB default
             log_sample_rate: 1,
-<<<<<<< feature/issue-196-direct-tls
             tls_cert_file: None,
             tls_key_file: None,
-=======
             event_data_encryption_key: None,
             event_data_encryption_key_old: None,
->>>>>>> main
+            contract_count_cache_size: 1000,
+            contract_count_cache_ttl_secs: 30,
         }
     }
 }
@@ -416,10 +414,8 @@ impl Config {
                 assert!(v > 0, "LOG_SAMPLE_RATE must be a positive integer, got {v}");
                 v
             },
-<<<<<<< feature/issue-196-direct-tls
             tls_cert_file: env::var("TLS_CERT_FILE").ok().filter(|s| !s.is_empty()),
             tls_key_file: env::var("TLS_KEY_FILE").ok().filter(|s| !s.is_empty()),
-=======
             event_data_encryption_key: env::var("EVENT_DATA_ENCRYPTION_KEY")
                 .ok()
                 .filter(|s| !s.is_empty())
@@ -428,7 +424,14 @@ impl Config {
                 .ok()
                 .filter(|s| !s.is_empty())
                 .map(|s| parse_hex_key("EVENT_DATA_ENCRYPTION_KEY_OLD", &s)),
->>>>>>> main
+            contract_count_cache_size: env::var("CONTRACT_COUNT_CACHE_SIZE")
+                .unwrap_or_else(|_| "1000".to_string())
+                .parse()
+                .expect("CONTRACT_COUNT_CACHE_SIZE must be a number"),
+            contract_count_cache_ttl_secs: env::var("CONTRACT_COUNT_CACHE_TTL_SECS")
+                .unwrap_or_else(|_| "30".to_string())
+                .parse()
+                .expect("CONTRACT_COUNT_CACHE_TTL_SECS must be a number"),
         }
     }
 }
