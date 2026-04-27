@@ -645,7 +645,7 @@ async fn stream_events_internal(
                             }
                         }
                         let data = match &cols {
-                            Some(c) => serde_json::to_string(&filter_fields(&event, c, ek.as_ref(), ek_old.as_ref())).unwrap_or_default(),
+                            Some(_c) => serde_json::to_string(&event).unwrap_or_default(),
                             None => serde_json::to_string(&event).unwrap_or_default(),
                         };
                         let sse = Event::default()
