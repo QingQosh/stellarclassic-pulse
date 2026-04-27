@@ -51,7 +51,7 @@ fn decode_cursor(cursor: &str) -> Result<(i64, Uuid), AppError> {
 }
 
 /// Map sqlx rows to a JSON array, projecting only the requested columns.
-fn rows_to_json(rows: &[sqlx::postgres::PgRow], columns: &[&str]) -> Result<Vec<Value>, AppError> {
+fn rows_to_json(rows: &[sqlx::postgres::PgRow], columns: &[&str], enc_key: Option<&[u8; 32]>, enc_key_old: Option<&[u8; 32]>) -> Result<Vec<Value>, AppError> {
     let mut events = Vec::with_capacity(rows.len());
     for row in rows {
         let mut event = serde_json::Map::new();
@@ -63,7 +63,11 @@ fn rows_to_json(rows: &[sqlx::postgres::PgRow], columns: &[&str]) -> Result<Vec<
                 "tx_hash" => { event.insert(col.to_string(), json!(row.try_get::<String, _>(col)?)); }
                 "ledger" => { event.insert(col.to_string(), json!(row.try_get::<i64, _>(col)?)); }
                 "timestamp" => { event.insert(col.to_string(), json!(row.try_get::<DateTime<Utc>, _>(col)?)); }
-                "event_data" => { event.insert(col.to_string(), row.try_get::<Value, _>(col)?); }
+                "event_data" => {
+                    let raw: Value = row.try_get::<Value, _>(col)?;
+                    let decrypted = decrypt_event_data(&raw, enc_key, enc_key_old);
+                    event.insert(col.to_string(), decrypted);
+                }
                 "created_at" => { event.insert(col.to_string(), json!(row.try_get::<DateTime<Utc>, _>(col)?)); }
                 _ => {}
             }
@@ -315,6 +319,7 @@ pub async fn swagger_ui() -> impl IntoResponse {
     tag = "events",
     params(
         ("contract_id" = Option<String>, Query, description = "Filter by contract ID (less preferred)"),
+        ("fields" = Option<String>, Query, description = "Comma-separated list of fields to include in each event"),
     ),
     responses(
         (status = 200, description = "SSE stream of new events (text/event-stream)"),
@@ -326,7 +331,7 @@ pub async fn stream_events(
     Query(params): Query<StreamParams>,
     headers: axum::http::HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
-    stream_events_internal(State(state), params.contract_id, headers).await
+    stream_events_internal(State(state), params.contract_id, params.fields, headers).await
 }
 
 /// Stream new events for a specific contract in real time via Server-Sent Events.
@@ -336,6 +341,7 @@ pub async fn stream_events(
     tag = "events",
     params(
         ("contract_id" = String, Path, description = "Stellar contract ID"),
+        ("fields" = Option<String>, Query, description = "Comma-separated list of fields to include in each event"),
     ),
     responses(
         (status = 200, description = "SSE stream of contract events (text/event-stream)"),
@@ -345,18 +351,20 @@ pub async fn stream_events(
 pub async fn stream_events_by_contract(
     State(state): State<AppState>,
     Path(contract_id): Path<String>,
+    Query(params): Query<StreamParams>,
     headers: axum::http::HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
     validate_contract_id(&contract_id).map_err(|e| {
         let (status, body) = e.into_response_parts();
         (status, body)
     })?;
-    stream_events_internal(State(state), Some(contract_id), headers).await
+    stream_events_internal(State(state), Some(contract_id), params.fields, headers).await
 }
 
 async fn stream_events_internal(
     State(state): State<AppState>,
     contract_filter: Option<String>,
+    fields: Option<String>,
     headers: axum::http::HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
     // Check if we've reached the max SSE connections limit
@@ -386,6 +394,22 @@ async fn stream_events_internal(
             (StatusCode::BAD_REQUEST, Json(body))
         })?;
     }
+
+    // Resolve field projection — silently ignore unknown fields (consistent with REST endpoints).
+    let field_columns: Option<Vec<&'static str>> = fields.as_deref().and_then(|f| {
+        let trimmed = f.trim();
+        if trimmed.is_empty() {
+            return None; // empty → all fields
+        }
+        let cols: Vec<&'static str> = trimmed
+            .split(',')
+            .map(|s| s.trim())
+            .filter_map(|s| {
+                PaginationParams::ALLOWED_FIELDS.iter().find(|&&a| a == s).copied()
+            })
+            .collect();
+        if cols.is_empty() { None } else { Some(cols) }
+    });
 
     // Replay missed events if the client sends Last-Event-ID (a UUID).
     let last_event_id = headers
@@ -420,9 +444,16 @@ async fn stream_events_internal(
     };
 
     let rx = state.event_tx.subscribe();
+    let enc_key = state.encryption_key;
+    let enc_key_old = state.encryption_key_old;
 
-    let replay_stream = stream::iter(replay.into_iter().map(move |ev| {
-        let data = serde_json::to_string(&ev).unwrap_or_default();
+    let field_columns_replay = field_columns.clone();
+    let replay_stream = stream::iter(replay.into_iter().map(move |mut ev| {
+        ev.event_data = decrypt_event_data(&ev.event_data, enc_key.as_ref(), enc_key_old.as_ref());
+        let data = match &field_columns_replay {
+            Some(cols) => serde_json::to_string(&filter_fields(&ev, cols, enc_key.as_ref(), enc_key_old.as_ref())).unwrap_or_default(),
+            None => serde_json::to_string(&ev).unwrap_or_default(),
+        };
         Ok(Event::default()
             .id(ev.id.to_string())
             .retry(Duration::from_millis(keepalive_ms))
@@ -430,8 +461,8 @@ async fn stream_events_internal(
     }));
 
     let live_stream = stream::unfold(
-        (rx, contract_filter, keepalive_ms),
-        move |(mut rx, filter, ka)| async move {
+        (rx, contract_filter, keepalive_ms, field_columns, enc_key, enc_key_old),
+        move |(mut rx, filter, ka, cols, ek, ek_old)| async move {
             loop {
                 match rx.recv().await {
                     Ok(event) => {
@@ -440,12 +471,15 @@ async fn stream_events_internal(
                                 continue;
                             }
                         }
-                        let data = serde_json::to_string(&event).unwrap_or_default();
+                        let data = match &cols {
+                            Some(c) => serde_json::to_string(&filter_fields(&event, c, ek.as_ref(), ek_old.as_ref())).unwrap_or_default(),
+                            None => serde_json::to_string(&event).unwrap_or_default(),
+                        };
                         let sse = Event::default()
                             .id(format!("{}-{}", event.tx_hash, event.ledger))
                             .retry(Duration::from_millis(ka))
                             .data(data);
-                        return Some((Ok(sse), (rx, filter, ka)));
+                        return Some((Ok(sse), (rx, filter, ka, cols, ek, ek_old)));
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
@@ -479,8 +513,20 @@ async fn stream_events_internal(
     ))
 }
 
+/// Decrypt event_data if an encryption key is configured.
+fn decrypt_event_data(raw: &Value, key: Option<&[u8; 32]>, old_key: Option<&[u8; 32]>) -> Value {
+    if let Some(k) = key {
+        crate::encryption::decrypt(k, old_key, raw).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to decrypt event_data, returning raw value");
+            raw.clone()
+        })
+    } else {
+        raw.clone()
+    }
+}
+
 /// Converts an `Event` to a JSON object containing only the requested fields.
-fn filter_fields(event: &models::Event, columns: &[&str]) -> Value {
+fn filter_fields(event: &models::Event, columns: &[&str], enc_key: Option<&[u8; 32]>, enc_key_old: Option<&[u8; 32]>) -> Value {
     let mut map = serde_json::Map::new();
     for &col in columns {
         match col {
@@ -490,7 +536,10 @@ fn filter_fields(event: &models::Event, columns: &[&str]) -> Value {
             "tx_hash"     => { map.insert(col.to_string(), json!(event.tx_hash)); }
             "ledger"      => { map.insert(col.to_string(), json!(event.ledger)); }
             "timestamp"   => { map.insert(col.to_string(), json!(event.timestamp)); }
-            "event_data"  => { map.insert(col.to_string(), event.event_data.clone()); }
+            "event_data"  => {
+                let decrypted = decrypt_event_data(&event.event_data, enc_key, enc_key_old);
+                map.insert(col.to_string(), decrypted);
+            }
             "created_at"  => { map.insert(col.to_string(), json!(event.created_at)); }
             _ => {}
         }
@@ -509,6 +558,7 @@ fn filter_fields(event: &models::Event, columns: &[&str]) -> Value {
         ("event_type" = Option<EventType>, Query, description = "Filter by event type: contract, diagnostic, system"),
         ("from_ledger" = Option<i64>, Query, description = "Return events at or after this ledger"),
         ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
+        ("contract_id" = Option<String>, Query, description = "Filter by contract ID (56-char Stellar contract address starting with C)"),
     ),
     responses(
         (status = 200, description = "Paginated list of events"),
@@ -529,6 +579,11 @@ pub async fn get_events(
         }
     }
 
+    // Validate contract_id if provided
+    if let Some(ref cid) = params.contract_id {
+        validate_contract_id(cid)?;
+    }
+
     let limit = params.limit();
     let columns = resolve_columns(&params)?;
 
@@ -541,6 +596,10 @@ pub async fn get_events(
         ];
         let mut bind_idx: i32 = 3;
 
+        if params.contract_id.is_some() {
+            conditions.push(format!("contract_id = ${bind_idx}"));
+            bind_idx += 1;
+        }
         if params.event_type.is_some() {
             conditions.push(format!("event_type = ${bind_idx}"));
             bind_idx += 1;
@@ -571,6 +630,7 @@ pub async fn get_events(
         let mut q = sqlx::query(&query_str)
             .bind(cursor_ledger)
             .bind(cursor_id);
+        if let Some(ref cid) = params.contract_id { q = q.bind(cid); }
         if let Some(ref et) = params.event_type { q = q.bind(et); }
         if let Some(fl) = params.from_ledger { q = q.bind(fl); }
         if let Some(tl) = params.to_ledger { q = q.bind(tl); }
@@ -588,7 +648,7 @@ pub async fn get_events(
             None
         };
 
-        let events = rows_to_json(&rows, &columns)?;
+        let events = rows_to_json(&rows, &columns, state.encryption_key.as_ref(), state.encryption_key_old.as_ref())?;
 
         return Ok(Json(json!({
             "data": events,
@@ -604,6 +664,10 @@ pub async fn get_events(
     let mut conditions: Vec<String> = Vec::new();
     let mut bind_idx: i32 = 1;
 
+    if params.contract_id.is_some() {
+        conditions.push(format!("contract_id = ${bind_idx}"));
+        bind_idx += 1;
+    }
     if params.event_type.is_some() {
         conditions.push(format!("event_type = ${bind_idx}"));
         bind_idx += 1;
@@ -637,6 +701,7 @@ pub async fn get_events(
     );
 
     let mut q = sqlx::query(&query_str);
+    if let Some(ref cid) = params.contract_id { q = q.bind(cid); }
     if let Some(ref et) = params.event_type { q = q.bind(et); }
     if let Some(fl) = params.from_ledger { q = q.bind(fl); }
     if let Some(tl) = params.to_ledger { q = q.bind(tl); }
@@ -654,18 +719,19 @@ pub async fn get_events(
         None
     };
 
-    let events = rows_to_json(&rows, &columns)?;
+    let events = rows_to_json(&rows, &columns, state.encryption_key.as_ref(), state.encryption_key_old.as_ref())?;
 
     let (total, approximate): (i64, bool) = if exact {
         let count_str = format!("SELECT COUNT(*) FROM events {}", where_clause);
         let mut cq = sqlx::query_scalar::<_, i64>(&count_str);
+        if let Some(ref cid) = params.contract_id { cq = cq.bind(cid); }
         if let Some(ref et) = params.event_type { cq = cq.bind(et); }
         if let Some(fl) = params.from_ledger { cq = cq.bind(fl); }
         if let Some(tl) = params.to_ledger { cq = cq.bind(tl); }
         let count = cq.fetch_one(&state.pool).await?;
         (count, false)
     } else {
-        match sqlx::query_scalar::<_, i64>(
+        let count = sqlx::query_scalar::<_, i64>(
             "SELECT reltuples::bigint FROM pg_class WHERE relname = 'events'",
         )
         .fetch_one(&state.pool)
@@ -858,11 +924,39 @@ pub async fn get_events_by_contract(
         return Err(AppError::NotFound);
     }
 
-    let events: Vec<Value> = rows.iter().map(|e| filter_fields(e, &columns)).collect();
+    let events: Vec<Value> = rows.iter().map(|e| filter_fields(e, &columns, state.encryption_key.as_ref(), state.encryption_key_old.as_ref())).collect();
+
+    // Fetch total count, using the moka cache when no ledger filters are applied.
+    let total: i64 = if params.from_ledger.is_none() && params.to_ledger.is_none() {
+        if let Some(cached) = state.contract_count_cache.get(&contract_id).await {
+            cached
+        } else {
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM events WHERE contract_id = $1",
+            )
+            .bind(&contract_id)
+            .fetch_one(&state.pool)
+            .await?;
+            state.contract_count_cache.insert(contract_id.clone(), count).await;
+            count
+        }
+    } else {
+        let mut count_conditions: Vec<String> = vec!["contract_id = $1".to_string()];
+        let mut cidx: i32 = 2;
+        if params.from_ledger.is_some() { count_conditions.push(format!("ledger >= ${cidx}")); cidx += 1; }
+        if params.to_ledger.is_some() { count_conditions.push(format!("ledger <= ${cidx}")); cidx += 1; }
+        let _ = cidx;
+        let count_str = format!("SELECT COUNT(*) FROM events WHERE {}", count_conditions.join(" AND "));
+        let mut cq = sqlx::query_scalar::<_, i64>(&count_str).bind(&contract_id);
+        if let Some(fl) = params.from_ledger { cq = cq.bind(fl); }
+        if let Some(tl) = params.to_ledger { cq = cq.bind(tl); }
+        cq.fetch_one(&state.pool).await?
+    };
 
     let mut response = json!({
         "data": events,
         "contract_id": contract_id,
+        "total": total,
         "page": params.page.unwrap_or(1),
         "limit": limit,
     });
@@ -915,7 +1009,7 @@ pub async fn get_events_by_tx(
         .fetch_all(&state.pool)
         .await?;
 
-    let events = rows_to_json(&rows, &columns)?;
+    let events = rows_to_json(&rows, &columns, state.encryption_key.as_ref(), state.encryption_key_old.as_ref())?;
 
     Ok(Json(json!({ "data": events, "tx_hash": tx_hash })))
 }
@@ -1180,7 +1274,6 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let indexer_state = Arc::new(IndexerState::new());
         let prometheus_handle = crate::metrics::init_metrics();
-        let config = crate::config::Config::default();
         crate::routes::create_router(pool, vec![], &[], 60, health_state, indexer_state, prometheus_handle, 2000)
     }
 
@@ -2546,7 +2639,6 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let indexer_state = Arc::new(IndexerState::new());
         let prometheus_handle = crate::metrics::init_metrics();
-        
         // Create router with API key to bypass auth
         let app = crate::routes::create_router(
             pool, 
@@ -2556,7 +2648,7 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000, 
+            2000
         );
 
         // Test invalid range: from_ledger > to_ledger
@@ -2589,7 +2681,6 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let indexer_state = Arc::new(IndexerState::new());
         let prometheus_handle = crate::metrics::init_metrics();
-        
         // Create router with API key to bypass auth
         let app = crate::routes::create_router(
             pool, 
@@ -2599,7 +2690,7 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000, 
+            2000
         );
 
         // Test range too large: > 10,000 ledgers
@@ -2636,7 +2727,6 @@ mod tests {
         indexer_state.is_active_indexer.store(false, std::sync::atomic::Ordering::Relaxed);
         
         let prometheus_handle = crate::metrics::init_metrics();
-        
         // Create router with API key to bypass auth
         let app = crate::routes::create_router(
             pool, 
@@ -2646,7 +2736,7 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000, 
+            2000
         );
 
         let replay_request = ReplayRequest {
@@ -2682,7 +2772,6 @@ mod tests {
         indexer_state.is_active_indexer.store(true, std::sync::atomic::Ordering::Relaxed);
         
         let prometheus_handle = crate::metrics::init_metrics();
-        
         // Create router with API key to bypass auth
         let app = crate::routes::create_router(
             pool, 
@@ -2692,7 +2781,7 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000, 
+            2000
         );
 
         let replay_request = ReplayRequest {
@@ -2730,7 +2819,6 @@ mod tests {
         indexer_state.is_active_indexer.store(true, std::sync::atomic::Ordering::Relaxed);
         
         let prometheus_handle = crate::metrics::init_metrics();
-        
         // Create router with API key to bypass auth
         let app = crate::routes::create_router(
             pool, 
@@ -2740,7 +2828,7 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000, 
+            2000
         );
 
         let replay_request = ReplayRequest {
@@ -2772,7 +2860,6 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let indexer_state = Arc::new(IndexerState::new());
         let prometheus_handle = crate::metrics::init_metrics();
-        
         // Create router with API key
         let app = crate::routes::create_router(
             pool, 
@@ -2782,7 +2869,7 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000, 
+            2000
         );
 
         let replay_request = ReplayRequest {

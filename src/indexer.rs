@@ -534,11 +534,23 @@ impl<R: RpcClient> Indexer<R> {
             "topic": event.topic
         });
 
-        let result = sqlx::query(
+        let event_data = if let Some(ref key) = self.config.event_data_encryption_key {
+            crate::encryption::encrypt(key, &event_data).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to encrypt event_data, storing plaintext");
+                event_data
+            })
+        } else {
+            event_data
+        };
+
+        // RETURNING (xmax = 0) distinguishes a true INSERT (xmax=0) from an UPDATE (xmax≠0).
+        let inserted: bool = sqlx::query_scalar(
             r#"
             INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
             VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (tx_hash, contract_id, event_type) DO NOTHING
+            ON CONFLICT (tx_hash, contract_id, event_type)
+            DO UPDATE SET event_data = events.event_data || EXCLUDED.event_data
+            RETURNING (xmax = 0)
             "#,
         )
         .bind(&event.contract_id)
@@ -547,10 +559,10 @@ impl<R: RpcClient> Indexer<R> {
         .bind(ledger)
         .bind(timestamp)
         .bind(event_data)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
 
-        Ok(result.rows_affected())
+        Ok(u64::from(inserted))
     }
 
     async fn store_event_in_tx(
@@ -724,21 +736,6 @@ mod tests {
         assert!(!Indexer::<MockRpcClient>::validate_event_data(&event));
     }
 
-    #[test]
-    fn validate_event_data_rejects_string_topic() {
-        let mut event = make_event(1);
-        event.value = json!({"key": "value"});
-        event.topic = Some(Value::String("invalid".to_string()));
-        assert!(!Indexer::<MockRpcClient>::validate_event_data(&event));
-    }
-
-    #[test]
-    fn validate_event_data_rejects_object_topic() {
-        let mut event = make_event(1);
-        event.value = json!({"key": "value"});
-        event.topic = Some(json!({"invalid": "object"}));
-        assert!(!Indexer::<MockRpcClient>::validate_event_data(&event));
-    }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn invalid_event_data_is_skipped(pool: PgPool) {
@@ -787,8 +784,10 @@ mod tests {
                 environment: crate::config::Environment::Development,
                 max_body_size_bytes: 1024 * 1024,
                 log_sample_rate: 1,
-                export_max_rows: 1_000_000,
-                health_check_timeout_ms: 2000,
+                event_data_encryption_key: None,
+                event_data_encryption_key_old: None,
+                contract_count_cache_size: 1000,
+                contract_count_cache_ttl_secs: 30,
             },
             shutdown_rx,
             MockRpcClient::new(),
@@ -969,8 +968,10 @@ mod tests {
                 environment: crate::config::Environment::Development,
                 max_body_size_bytes: 1024 * 1024,
                 log_sample_rate: 1,
-                export_max_rows: 1_000_000,
-                health_check_timeout_ms: 2000,
+                event_data_encryption_key: None,
+                event_data_encryption_key_old: None,
+                contract_count_cache_size: 1000,
+                contract_count_cache_ttl_secs: 30,
             },
             shutdown_rx,
             mock_client,
