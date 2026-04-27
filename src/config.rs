@@ -177,6 +177,24 @@ pub struct Config {
     pub webhook_url: Option<String>,
     pub webhook_secret: Option<String>,
     pub webhook_contract_filter: Vec<String>,
+    // Fields used by routes/handlers
+    pub contract_count_cache_size: u64,
+    pub contract_count_cache_ttl_secs: u64,
+    pub export_max_rows: u64,
+    pub health_check_timeout_ms: u64,
+    // Fields used by indexer
+    pub indexer_event_types: Vec<String>,
+    pub event_data_encryption_key: Option<[u8; 32]>,
+    pub event_data_encryption_key_old: Option<[u8; 32]>,
+    // Fields used by index_monitor
+    pub index_check_interval_hours: u64,
+    // Fields used by archiver (archive feature)
+    pub archive_s3_bucket: Option<String>,
+    pub archive_s3_prefix: Option<String>,
+    pub archive_after_days: u32,
+    // TLS (optional)
+    pub tls_cert_file: Option<String>,
+    pub tls_key_file: Option<String>,
 }
 
 impl Default for Config {
@@ -213,6 +231,19 @@ impl Default for Config {
             webhook_url: None,
             webhook_secret: None,
             webhook_contract_filter: Vec::new(),
+            contract_count_cache_size: 1000,
+            contract_count_cache_ttl_secs: 30,
+            export_max_rows: 10_000,
+            health_check_timeout_ms: 2000,
+            indexer_event_types: Vec::new(),
+            event_data_encryption_key: None,
+            event_data_encryption_key_old: None,
+            index_check_interval_hours: 24,
+            archive_s3_bucket: None,
+            archive_s3_prefix: None,
+            archive_after_days: 30,
+            tls_cert_file: None,
+            tls_key_file: None,
         }
     }
 }
@@ -321,6 +352,7 @@ fn parse_indexer_event_types() -> Vec<String> {
             t
         })
         .collect()
+}
 
 /// Parse a 64-hex-char string into a 32-byte key, panicking with a clear message on failure.
 fn parse_hex_key(var: &str, value: &str) -> [u8; 32] {
@@ -501,6 +533,33 @@ impl Config {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect(),
+            contract_count_cache_size: env_or_file_or("CONTRACT_COUNT_CACHE_SIZE", &file, "1000")
+                .parse()
+                .expect("CONTRACT_COUNT_CACHE_SIZE must be a number"),
+            contract_count_cache_ttl_secs: env_or_file_or("CONTRACT_COUNT_CACHE_TTL_SECS", &file, "30")
+                .parse()
+                .expect("CONTRACT_COUNT_CACHE_TTL_SECS must be a number"),
+            export_max_rows: env_or_file_or("EXPORT_MAX_ROWS", &file, "10000")
+                .parse()
+                .expect("EXPORT_MAX_ROWS must be a number"),
+            health_check_timeout_ms: env_or_file_or("HEALTH_CHECK_TIMEOUT_MS", &file, "2000")
+                .parse()
+                .expect("HEALTH_CHECK_TIMEOUT_MS must be a number"),
+            indexer_event_types: parse_indexer_event_types(),
+            event_data_encryption_key: env_or_file("EVENT_DATA_ENCRYPTION_KEY", &file)
+                .map(|v| parse_hex_key("EVENT_DATA_ENCRYPTION_KEY", &v)),
+            event_data_encryption_key_old: env_or_file("EVENT_DATA_ENCRYPTION_KEY_OLD", &file)
+                .map(|v| parse_hex_key("EVENT_DATA_ENCRYPTION_KEY_OLD", &v)),
+            index_check_interval_hours: env_or_file_or("INDEX_CHECK_INTERVAL_HOURS", &file, "24")
+                .parse()
+                .expect("INDEX_CHECK_INTERVAL_HOURS must be a number"),
+            archive_s3_bucket: env::var("ARCHIVE_S3_BUCKET").ok().filter(|s| !s.is_empty()),
+            archive_s3_prefix: env::var("ARCHIVE_S3_PREFIX").ok().filter(|s| !s.is_empty()),
+            archive_after_days: env_or_file_or("ARCHIVE_AFTER_DAYS", &file, "30")
+                .parse()
+                .expect("ARCHIVE_AFTER_DAYS must be a number"),
+            tls_cert_file: env::var("TLS_CERT_FILE").ok().filter(|s| !s.is_empty()),
+            tls_key_file: env::var("TLS_KEY_FILE").ok().filter(|s| !s.is_empty()),
         }
     }
 }
@@ -663,7 +722,9 @@ mod tests {
     fn test_parse_indexer_event_types_invalid_panics() {
         std::env::set_var("INDEXER_EVENT_TYPES", "contract,invalid");
         let _ = super::parse_indexer_event_types();
+    }
 
+    #[test]
     fn startup_log_fields_do_not_contain_credentials() {
         // Verify that the fields logged at startup are safe.
         // safe_db_url() must strip credentials.

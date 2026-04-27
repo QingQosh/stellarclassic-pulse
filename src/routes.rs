@@ -68,6 +68,7 @@ pub struct AppState {
         handlers::health,
         handlers::status,
         handlers::get_events,
+        handlers::get_event_stats,
         handlers::export_events,
         handlers::get_events_by_contract,
         handlers::get_events_by_tx,
@@ -84,6 +85,8 @@ pub struct AppState {
         crate::models::SortOrder,
         crate::models::PaginationParams,
         crate::models::ContractSummary,
+        crate::models::EventStats,
+        crate::models::ContractStatEntry,
         crate::models::ReplayRequest,
         crate::models::ErrorResponse,
     )),
@@ -106,11 +109,7 @@ pub fn create_router(
     health_check_timeout_ms: u64,
     config: crate::config::Config,
 ) -> Router {
-
-    create_router_with_tx(pool.clone(), pool, api_keys, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000, 1000, health_check_timeout_ms)
-
-    create_router_with_tx(pool, api_keys, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000, 1000, health_check_timeout_ms, None, None)
-
+    create_router_with_tx(pool.clone(), pool, api_keys, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000, 1000, health_check_timeout_ms, None, None, config)
 }
 
 pub fn create_router_with_tx(
@@ -163,22 +162,18 @@ pub fn create_router_with_tx(
     // Versioned v1 routes
     let v1 = Router::new()
         .route("/events", get(handlers::get_events))
+        .route("/events/stats", get(handlers::get_event_stats))
         .route("/events/export", get(handlers::export_events))
         .route("/events/stream", get(handlers::stream_events))
 
         .route("/events/contract/{contract_id}", get(handlers::get_events_by_contract))
         .route("/events/contract/{contract_id}/stream", get(handlers::stream_events_by_contract))
         .route("/events/tx/{tx_hash}", get(handlers::get_events_by_tx))
-        .route("/contracts", get(handlers::get_contracts));
-
-        .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
-        .route("/events/contract/:contract_id/stream", get(handlers::stream_events_by_contract))
-        .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx))
         .route("/contracts", get(handlers::get_contracts))
         .route("/admin/replay", axum::routing::post(handlers::replay_events))
         .route("/subscriptions", axum::routing::post(subscriptions::create_subscription))
-        .route("/subscriptions/:id", get(subscriptions::get_subscription).delete(subscriptions::cancel_subscription))
-        .route("/subscriptions/:id/ack", axum::routing::post(subscriptions::ack_subscription));
+        .route("/subscriptions/{id}", get(subscriptions::get_subscription).delete(subscriptions::cancel_subscription))
+        .route("/subscriptions/{id}/ack", axum::routing::post(subscriptions::ack_subscription));
 
 
     // Unversioned deprecated aliases (same handlers, add Deprecation header via middleware)
@@ -278,7 +273,7 @@ pub fn create_router_with_tx(
             let duration = start.elapsed();
             let status = response.status().as_u16().to_string();
             metrics::record_http_request_duration(duration, &method, &route, &status);
-            if duration.as_millis() as u64 > slow_request_threshold_ms {
+            if duration.as_millis() as u64 > 500 {
                 tracing::warn!(
                     method = %method,
                     path = %route,
