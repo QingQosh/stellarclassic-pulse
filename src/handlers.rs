@@ -1,10 +1,11 @@
 use axum::{extract::{Path, Query, State}, Json, response::IntoResponse, http::StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::body::Body;
+use axum::http::{header, Response};
 use sqlx::Row;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures::stream::{self, Stream, StreamExt};
 use serde_json::{json, Value};
-use sqlx::Row;
 use std::convert::Infallible;
 use std::time::Duration;
 use std::sync::OnceLock;
@@ -499,9 +500,39 @@ fn filter_fields(event: &models::Event, columns: &[&str]) -> Value {
     Value::Object(map)
 }
 
+/// Returns true if the client prefers NDJSON via the Accept header.
+fn accepts_ndjson(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("application/x-ndjson"))
+        .unwrap_or(false)
+}
+
+/// Build a plain JSON response from a `Value`.
+fn json_response(body: Value) -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap_or_default()))
+        .unwrap()
+}
+
+/// Build an NDJSON response: one JSON object per line, no wrapping array.
+fn ndjson_response(events: impl Iterator<Item = Value>) -> Response<Body> {
+    let mut buf = String::new();
+    for ev in events {
+        buf.push_str(&serde_json::to_string(&ev).unwrap_or_default());
+        buf.push('\n');
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/x-ndjson")
+        .body(Body::from(buf))
+        .unwrap()
+}
+
 #[utoipa::path(
-    get,
-    path = "/v1/events",
     tag = "events",
     params(
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
@@ -512,7 +543,12 @@ fn filter_fields(event: &models::Event, columns: &[&str]) -> Value {
         ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
     ),
     responses(
-        (status = 200, description = "Paginated list of events"),
+        (status = 200, description = "Paginated list of events (JSON or NDJSON depending on Accept header)",
+            content(
+                ("application/json" = Value),
+                ("application/x-ndjson" = String),
+            )
+        ),
         (status = 400, description = "Invalid query parameters"),
     )
 )]
@@ -520,7 +556,8 @@ fn filter_fields(event: &models::Event, columns: &[&str]) -> Value {
 pub async fn get_events(
     State(state): State<AppState>,
     Query(params): Query<PaginationParams>,
-) -> Result<Json<Value>, AppError> {
+    headers: axum::http::HeaderMap,
+) -> Result<Response<Body>, AppError> {
     // Validate ledger range
     if let (Some(from), Some(to)) = (params.from_ledger, params.to_ledger) {
         if from > to {
@@ -591,7 +628,12 @@ pub async fn get_events(
 
         let events = rows_to_json(&rows, &columns)?;
 
-        return Ok(Json(json!({
+        let want_ndjson = accepts_ndjson(&headers);
+        if want_ndjson {
+            return Ok(ndjson_response(events.into_iter()));
+        }
+
+        return Ok(json_response(json!({
             "data": events,
             "next_cursor": next_cursor,
             "limit": limit,
@@ -666,7 +708,7 @@ pub async fn get_events(
         let count = cq.fetch_one(&state.pool).await?;
         (count, false)
     } else {
-        match sqlx::query_scalar::<_, i64>(
+        let count = sqlx::query_scalar::<_, i64>(
             "SELECT reltuples::bigint FROM pg_class WHERE relname = 'events'",
         )
         .fetch_one(&state.pool)
@@ -674,7 +716,12 @@ pub async fn get_events(
         (count, true)
     };
 
-    Ok(Json(json!({
+    let want_ndjson = accepts_ndjson(&headers);
+    if want_ndjson {
+        return Ok(ndjson_response(events.into_iter()));
+    }
+
+    Ok(json_response(json!({
         "data": events,
         "next_cursor": next_cursor,
         "total": total,
@@ -931,7 +978,7 @@ pub async fn replay_events(
 
     // Spawn background task to handle the replay
     let pool = state.pool.clone();
-    let rpc_url = state.config.stellar_rpc_url.clone();
+    let rpc_url = state.stellar_rpc_url.clone();
     let from_ledger = request.from_ledger;
     let to_ledger = request.to_ledger;
     
@@ -1075,8 +1122,7 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let indexer_state = Arc::new(IndexerState::new());
         let prometheus_handle = crate::metrics::init_metrics();
-        let config = crate::config::Config::default();
-        crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000, config)
+        crate::routes::create_router(pool, vec![], &[], 60, health_state, indexer_state, prometheus_handle, 2000)
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1498,7 +1544,7 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let prometheus_handle = crate::metrics::init_metrics();
         let indexer_state = Arc::new(IndexerState::new());
-        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000);
+        let app = crate::routes::create_router(pool, vec![], &[], 60, health_state, indexer_state, prometheus_handle, 2000);
 
         let response = app
             .oneshot(
@@ -1567,7 +1613,7 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let prometheus_handle = crate::metrics::init_metrics();
         let indexer_state = Arc::new(IndexerState::new());
-        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000);
+        let app = crate::routes::create_router(pool, vec![], &[], 60, health_state, indexer_state, prometheus_handle, 2000);
 
         let response = app
             .oneshot(
@@ -1592,7 +1638,7 @@ mod tests {
         // never updated, treated as stalled
         let prometheus_handle = crate::metrics::init_metrics();
         let indexer_state = Arc::new(IndexerState::new());
-        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000);
+        let app = crate::routes::create_router(pool, vec![], &[], 60, health_state, indexer_state, prometheus_handle, 2000);
 
         let response = app
             .oneshot(
@@ -2441,7 +2487,6 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let indexer_state = Arc::new(IndexerState::new());
         let prometheus_handle = crate::metrics::init_metrics();
-        let config = crate::config::Config::default();
         
         // Create router with API key to bypass auth
         let app = crate::routes::create_router(
@@ -2452,8 +2497,7 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000, 
-            config
+            2000
         );
 
         // Test invalid range: from_ledger > to_ledger
@@ -2486,7 +2530,6 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let indexer_state = Arc::new(IndexerState::new());
         let prometheus_handle = crate::metrics::init_metrics();
-        let config = crate::config::Config::default();
         
         // Create router with API key to bypass auth
         let app = crate::routes::create_router(
@@ -2497,8 +2540,7 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000, 
-            config
+            2000
         );
 
         // Test range too large: > 10,000 ledgers
@@ -2535,7 +2577,6 @@ mod tests {
         indexer_state.is_active_indexer.store(false, std::sync::atomic::Ordering::Relaxed);
         
         let prometheus_handle = crate::metrics::init_metrics();
-        let config = crate::config::Config::default();
         
         // Create router with API key to bypass auth
         let app = crate::routes::create_router(
@@ -2546,8 +2587,7 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000, 
-            config
+            2000
         );
 
         let replay_request = ReplayRequest {
@@ -2583,7 +2623,6 @@ mod tests {
         indexer_state.is_active_indexer.store(true, std::sync::atomic::Ordering::Relaxed);
         
         let prometheus_handle = crate::metrics::init_metrics();
-        let config = crate::config::Config::default();
         
         // Create router with API key to bypass auth
         let app = crate::routes::create_router(
@@ -2594,8 +2633,7 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000, 
-            config
+            2000
         );
 
         let replay_request = ReplayRequest {
@@ -2633,7 +2671,6 @@ mod tests {
         indexer_state.is_active_indexer.store(true, std::sync::atomic::Ordering::Relaxed);
         
         let prometheus_handle = crate::metrics::init_metrics();
-        let config = crate::config::Config::default();
         
         // Create router with API key to bypass auth
         let app = crate::routes::create_router(
@@ -2644,8 +2681,7 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000, 
-            config
+            2000
         );
 
         let replay_request = ReplayRequest {
@@ -2677,7 +2713,6 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let indexer_state = Arc::new(IndexerState::new());
         let prometheus_handle = crate::metrics::init_metrics();
-        let config = crate::config::Config::default();
         
         // Create router with API key
         let app = crate::routes::create_router(
@@ -2688,8 +2723,7 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000, 
-            config
+            2000
         );
 
         let replay_request = ReplayRequest {
@@ -2714,5 +2748,90 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["error"], "unauthorized");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_events_accept_ndjson_returns_ndjson(pool: PgPool) {
+        let app = create_test_router(pool.clone());
+
+        for i in 0..3_i64 {
+            sqlx::query(
+                "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(format!("C{:0>55}", i))
+            .bind("contract")
+            .bind(format!("{:0>64}", i))
+            .bind(i)
+            .bind(Utc::now())
+            .bind(json!({}))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events")
+                    .header("Accept", "application/x-ndjson")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/x-ndjson"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3);
+        for line in &lines {
+            let v: Value = serde_json::from_str(line).expect("each line must be valid JSON");
+            assert!(v.is_object());
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_events_accept_json_returns_json_array(pool: PgPool) {
+        let app = create_test_router(pool.clone());
+
+        sqlx::query(
+            "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind("C1234567890123456789012345678901234567890123456789012345")
+        .bind("contract")
+        .bind("a".repeat(64))
+        .bind(1_i64)
+        .bind(Utc::now())
+        .bind(json!({}))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events")
+                    .header("Accept", "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/json"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert!(v["data"].is_array());
     }
 }
