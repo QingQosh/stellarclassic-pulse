@@ -612,6 +612,22 @@ impl<R: RpcClient> Indexer<R> {
             .map(|dt| dt.with_timezone(&chrono::Utc))
             .map_err(|_| anyhow::anyhow!("Unparseable ledger_closed_at"))?;
         let event_data = json!({ "value": event.value, "topic": event.topic });
+
+        // Enforce size limit before INSERT.
+        let serialized = serde_json::to_vec(&event_data)?;
+        if serialized.len() > self.config.max_event_data_bytes {
+            warn!(
+                tx_hash = %event.tx_hash,
+                contract_id = %event.contract_id,
+                ledger = event.ledger,
+                size_bytes = serialized.len(),
+                limit_bytes = self.config.max_event_data_bytes,
+                "event_data exceeds size limit, skipping",
+            );
+            metrics::record_oversized_event();
+            return Ok(0);
+        }
+
         let result = sqlx::query(
             r#"INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
                VALUES ($1, $2, $3, $4, $5, $6)
@@ -821,15 +837,13 @@ mod tests {
 
                 event_data_encryption_key: None,
                 event_data_encryption_key_old: None,
+                max_event_data_bytes: 65536,
 
             },
             shutdown_rx,
             MockRpcClient::new(),
         )
     }
-
-    #[tokio::test]
-    async fn test_should_log_debug_sampling() {
         let pool = PgPool::connect("postgres://localhost/soroban_pulse").await.unwrap_or_else(|_| {
             // Fallback for environments where PG is not available
             // In a real test environment we'd have a pool.
@@ -1037,6 +1051,7 @@ mod tests {
 
                 event_data_encryption_key: None,
                 event_data_encryption_key_old: None,
+                max_event_data_bytes: 65536,
 
             },
             shutdown_rx,
@@ -1046,5 +1061,46 @@ mod tests {
         // Test that the indexer can use the mock client
         let latest_ledger = indexer.get_latest_ledger().await.unwrap();
         assert_eq!(latest_ledger, 100);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn oversized_event_is_skipped(pool: PgPool) {
+        let mut idx = indexer(pool.clone());
+        idx.config.max_event_data_bytes = 10; // tiny limit
+
+        let mut event = make_event(1);
+        // value large enough to exceed 10 bytes when serialized
+        event.value = json!({"k": "a very long string value that exceeds the limit"});
+
+        let mut tx = pool.begin().await.unwrap();
+        let rows = idx.store_event_in_tx(&mut tx, &event).await.unwrap();
+        tx.commit().await.unwrap();
+
+        assert_eq!(rows, 0, "oversized event must be skipped");
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn event_within_size_limit_is_stored(pool: PgPool) {
+        let idx = indexer(pool.clone()); // default 65536 limit
+
+        let event = make_event(1); // tiny event, well within limit
+
+        let mut tx = pool.begin().await.unwrap();
+        let rows = idx.store_event_in_tx(&mut tx, &event).await.unwrap();
+        tx.commit().await.unwrap();
+
+        assert_eq!(rows, 1);
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }

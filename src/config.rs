@@ -177,6 +177,7 @@ pub struct Config {
     pub webhook_url: Option<String>,
     pub webhook_secret: Option<String>,
     pub webhook_contract_filter: Vec<String>,
+    pub max_event_data_bytes: usize,
 }
 
 impl Default for Config {
@@ -213,6 +214,7 @@ impl Default for Config {
             webhook_url: None,
             webhook_secret: None,
             webhook_contract_filter: Vec::new(),
+            max_event_data_bytes: 65536,
         }
     }
 }
@@ -501,6 +503,12 @@ impl Config {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect(),
+            max_event_data_bytes: parse_int::<usize>(
+                "MAX_EVENT_DATA_BYTES",
+                &env_or_file_or("MAX_EVENT_DATA_BYTES", &file, "65536"),
+                "65536",
+                &mut errors,
+            ).unwrap_or(65536),
         }
     }
 }
