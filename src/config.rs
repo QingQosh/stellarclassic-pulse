@@ -136,6 +136,8 @@ pub struct Config {
     pub environment: Environment,
     pub max_body_size_bytes: usize,
     pub log_sample_rate: u32,
+    pub export_max_rows: u64,
+    pub health_check_timeout_ms: u64,
 }
 
 impl Default for Config {
@@ -167,6 +169,8 @@ impl Default for Config {
             environment: Environment::Development,
             max_body_size_bytes: 1024 * 1024, // 1 MB default
             log_sample_rate: 1,
+            export_max_rows: 1_000_000,
+            health_check_timeout_ms: 2000,
         }
     }
 }
@@ -402,6 +406,14 @@ impl Config {
                 assert!(v > 0, "LOG_SAMPLE_RATE must be a positive integer, got {v}");
                 v
             },
+            export_max_rows: env::var("EXPORT_MAX_ROWS")
+                .unwrap_or_else(|_| "1000000".to_string())
+                .parse()
+                .expect("EXPORT_MAX_ROWS must be a number"),
+            health_check_timeout_ms: env::var("HEALTH_CHECK_TIMEOUT_MS")
+                .unwrap_or_else(|_| "2000".to_string())
+                .parse()
+                .expect("HEALTH_CHECK_TIMEOUT_MS must be a number"),
         }
     }
 }

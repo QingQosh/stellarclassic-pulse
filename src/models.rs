@@ -91,6 +91,14 @@ pub struct StreamParams {
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct ExportParams {
+    pub event_type: Option<EventType>,
+    pub from_ledger: Option<i64>,
+    pub to_ledger: Option<i64>,
+    pub contract_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ReplayRequest {
     pub from_ledger: u64,
     pub to_ledger: u64,

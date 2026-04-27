@@ -45,6 +45,8 @@ pub struct AppState {
     pub sse_connections: Arc<AtomicUsize>,
     pub sse_max_connections: usize,
     pub health_check_timeout_ms: u64,
+    pub export_max_rows: u64,
+    pub config: crate::config::Config,
 }
 
 /// OpenAPI spec — all paths are documented via #[utoipa::path] on handlers.
@@ -59,6 +61,7 @@ pub struct AppState {
         handlers::health,
         handlers::status,
         handlers::get_events,
+        handlers::export_events,
         handlers::get_events_by_contract,
         handlers::get_events_by_tx,
         handlers::stream_events,
@@ -91,7 +94,8 @@ pub fn create_router(
     prometheus_handle: PrometheusHandle,
     health_check_timeout_ms: u64,
 ) -> Router {
-    create_router_with_tx(pool, api_keys, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000, 1000, health_check_timeout_ms)
+    let config = crate::config::Config { health_check_timeout_ms, ..crate::config::Config::default() };
+    create_router_with_tx(pool, api_keys, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000, 1000, config)
 }
 
 pub fn create_router_with_tx(
@@ -106,10 +110,12 @@ pub fn create_router_with_tx(
     event_tx: broadcast::Sender<SorobanEvent>,
     sse_keepalive_interval_ms: u64,
     sse_max_connections: usize,
-    health_check_timeout_ms: u64,
+    config: crate::config::Config,
 ) -> Router {
     let cors = build_cors(allowed_origins);
     let auth_state = Arc::new(middleware::AuthState { api_keys });
+    let health_check_timeout_ms = config.health_check_timeout_ms;
+    let export_max_rows = config.export_max_rows;
     let app_state = AppState {
         pool,
         health_state,
@@ -120,6 +126,8 @@ pub fn create_router_with_tx(
         sse_connections: Arc::new(AtomicUsize::new(0)),
         sse_max_connections,
         health_check_timeout_ms,
+        export_max_rows,
+        config,
     };
 
     // Build governor config: burst = rate_limit_per_minute, replenish 1 token per (60/rate) seconds.
@@ -131,6 +139,7 @@ pub fn create_router_with_tx(
     // Versioned v1 routes
     let v1 = Router::new()
         .route("/events", get(handlers::get_events))
+        .route("/events/export", get(handlers::export_events))
         .route("/events/stream", get(handlers::stream_events))
         .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
         .route("/events/contract/:contract_id/stream", get(handlers::stream_events_by_contract))
