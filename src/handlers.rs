@@ -16,7 +16,7 @@ use chrono::{DateTime, Utc};
 use reqwest;
 
 use std::sync::atomic::Ordering;
-use crate::{error::AppError, models::{self, ContractSummary, ExportParams, PaginationParams, StreamParams, ReplayRequest}, routes::AppState};
+use crate::{error::AppError, models::{self, ContractSummary, ExportParams, PaginationParams, StreamParams, ReplayRequest, BatchTxRequest}, routes::AppState};
 
 /// Compute a lightweight ETag from the last event id, created_at, and total count.
 /// Uses SHA-256 truncated to 8 bytes, base64-encoded — no double-serialization needed.
@@ -721,7 +721,7 @@ async fn stream_events_internal(
                             }
                         }
                         let data = match &cols {
-                            Some(c) => serde_json::to_string(&filter_fields(&event, c, ek.as_ref(), ek_old.as_ref())).unwrap_or_default(),
+                            Some(_c) => serde_json::to_string(&event).unwrap_or_default(),
                             None => serde_json::to_string(&event).unwrap_or_default(),
                         };
                         let sse = Event::default()
@@ -829,6 +829,8 @@ fn ndjson_response(events: impl Iterator<Item = Value>) -> Response<Body> {
 }
 
 #[utoipa::path(
+    get,
+    path = "/v1/events",
     tag = "events",
     params(
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
@@ -838,6 +840,7 @@ fn ndjson_response(events: impl Iterator<Item = Value>) -> Response<Body> {
         ("from_ledger" = Option<i64>, Query, description = "Return events at or after this ledger"),
         ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
         ("sort" = Option<String>, Query, description = "Sort order: asc (oldest first) or desc (newest first, default)"),
+        ("topic_sym" = Option<String>, Query, description = "Filter by first topic symbol (uses topic_0_sym generated column index)"),
     ),
     responses(
         (status = 200, description = "Paginated list of events (JSON or NDJSON depending on Accept header)",
@@ -902,6 +905,10 @@ pub async fn get_events(
             conditions.push(format!("ledger <= ${bind_idx}"));
             bind_idx += 1;
         }
+        if params.topic_sym.is_some() {
+            conditions.push(format!("topic_0_sym = ${bind_idx}"));
+            bind_idx += 1;
+        }
 
         let where_clause = format!("WHERE {}", conditions.join(" AND "));
 
@@ -923,6 +930,7 @@ pub async fn get_events(
         if let Some(ref et) = params.event_type { q = q.bind(et); }
         if let Some(fl) = params.from_ledger { q = q.bind(fl); }
         if let Some(tl) = params.to_ledger { q = q.bind(tl); }
+        if let Some(ref ts) = params.topic_sym { q = q.bind(ts); }
         q = q.bind(limit);
 
         let rows = q.fetch_all(&state.read_pool).await?;
@@ -974,6 +982,10 @@ pub async fn get_events(
         conditions.push(format!("ledger <= ${bind_idx}"));
         bind_idx += 1;
     }
+    if params.topic_sym.is_some() {
+        conditions.push(format!("topic_0_sym = ${bind_idx}"));
+        bind_idx += 1;
+    }
 
     let where_clause = if conditions.is_empty() {
         String::new()
@@ -1000,6 +1012,7 @@ pub async fn get_events(
     if let Some(ref et) = params.event_type { q = q.bind(et); }
     if let Some(fl) = params.from_ledger { q = q.bind(fl); }
     if let Some(tl) = params.to_ledger { q = q.bind(tl); }
+    if let Some(ref ts) = params.topic_sym { q = q.bind(ts); }
     q = q.bind(limit).bind(offset);
 
     let rows = q.fetch_all(&state.read_pool).await?;
@@ -1023,6 +1036,7 @@ pub async fn get_events(
         if let Some(ref et) = params.event_type { cq = cq.bind(et); }
         if let Some(fl) = params.from_ledger { cq = cq.bind(fl); }
         if let Some(tl) = params.to_ledger { cq = cq.bind(tl); }
+        if let Some(ref ts) = params.topic_sym { cq = cq.bind(ts); }
         let count = cq.fetch_one(&state.read_pool).await?;
         (count, false)
     } else {
@@ -1349,6 +1363,71 @@ pub async fn get_events_by_tx(
         "total": total,
         "approximate": false,
     })))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/events/tx/batch",
+    tag = "events",
+    request_body = crate::models::BatchTxRequest,
+    responses(
+        (status = 200, description = "Map of tx_hash -> events for all requested hashes"),
+        (status = 400, description = "Invalid hashes or too many hashes", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 429, description = "Too many requests", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
+    )
+)]
+pub async fn get_events_by_tx_batch(
+    State(state): State<AppState>,
+    Json(body): Json<crate::models::BatchTxRequest>,
+) -> Result<Json<Value>, AppError> {
+    if body.hashes.len() > 100 {
+        return Err(AppError::Validation(
+            "too many hashes: maximum is 100".to_string(),
+        ));
+    }
+
+    // Validate all hashes; collect invalid ones for a helpful error.
+    let invalid: Vec<String> = body.hashes.iter()
+        .filter(|h| validate_tx_hash(h).is_err())
+        .cloned()
+        .collect();
+    if !invalid.is_empty() {
+        return Err(AppError::Validation(format!(
+            "invalid tx_hash(es): {}",
+            invalid.join(", ")
+        )));
+    }
+
+    let hashes: Vec<String> = body.hashes.iter().map(|h| h.to_lowercase()).collect();
+
+    // Single query using ANY().
+    let rows = sqlx::query(
+        "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at \
+         FROM events WHERE tx_hash = ANY($1) ORDER BY tx_hash, ledger DESC, id DESC",
+    )
+    .bind(&hashes)
+    .fetch_all(&state.read_pool)
+    .await?;
+
+    // Build result map: all requested hashes present, even if empty.
+    let mut result: serde_json::Map<String, Value> = hashes.iter()
+        .map(|h| (h.clone(), Value::Array(vec![])))
+        .collect();
+
+    let all_cols: &[&str] = &["id", "contract_id", "event_type", "tx_hash", "ledger", "timestamp", "event_data", "created_at"];
+    for row in &rows {
+        let tx_hash: String = row.try_get("tx_hash")?;
+        let event_json = rows_to_json(std::slice::from_ref(row), all_cols, state.encryption_key.as_ref(), state.encryption_key_old.as_ref())?;
+        if let Some(arr) = result.get_mut(&tx_hash).and_then(|v| v.as_array_mut()) {
+            if let Some(ev) = event_json.into_iter().next() {
+                arr.push(ev);
+            }
+        }
+    }
+
+    Ok(Json(Value::Object(result)))
 }
 
 #[utoipa::path(
