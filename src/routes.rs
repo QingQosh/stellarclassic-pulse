@@ -80,6 +80,7 @@ pub struct AppState {
     components(schemas(
         crate::models::Event,
         crate::models::EventType,
+        crate::models::SortOrder,
         crate::models::PaginationParams,
         crate::models::ContractSummary,
         crate::models::ReplayRequest,

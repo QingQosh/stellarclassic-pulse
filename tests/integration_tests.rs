@@ -300,51 +300,34 @@ async fn sse_deprecated_contract_stream_unversioned_alias_works(pool: PgPool) {
     assert_eq!(resp.headers().get("Deprecation").unwrap(), "true");
 }
 
-// --- Issue #194: contract_id filter on GET /v1/events ---
+// --- Issue #186: sort parameter ---
 
-#[sqlx::test(migrations = "./migrations")]
-async fn events_contract_id_filter_returns_matching_events(pool: PgPool) {
-    let contract_a = "C1111111111111111111111111111111111111111111111111111111";
-    let contract_b = "C2222222222222222222222222222222222222222222222222222222";
-    
-    insert_contract_events(&pool, contract_a, &[100, 200]).await;
-    insert_contract_events(&pool, contract_b, &[150, 250]).await;
-
-    let app = make_router(pool, None);
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .uri(format!("/v1/events?contract_id={}", contract_a))
-                .body(Body::empty())
-                .unwrap(),
+async fn insert_events_with_ledgers(pool: &PgPool, ledgers: &[i64]) {
+    for (i, &ledger) in ledgers.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+             VALUES ($1, $2, $3, $4, NOW(), $5)",
         )
+        .bind(format!("C{:0>55}", i))
+        .bind("contract")
+        .bind(format!("{:0>63}{}", i, ledger))
+        .bind(ledger)
+        .bind(serde_json::json!({}))
+        .execute(pool)
         .await
         .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body: serde_json::Value =
-        serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
-
-    let data = body["data"].as_array().unwrap();
-    assert_eq!(data.len(), 2);
-    for event in data {
-        assert_eq!(event["contract_id"].as_str().unwrap(), contract_a);
     }
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn events_contract_id_with_ledger_range_filters_correctly(pool: PgPool) {
-    let contract_id = "C1234567890123456789012345678901234567890123456789012345";
-    insert_contract_events(&pool, contract_id, &[100, 200, 300, 400, 500]).await;
+async fn get_events_sort_desc_returns_newest_first(pool: PgPool) {
+    insert_events_with_ledgers(&pool, &[100, 200, 300]).await;
 
     let app = make_router(pool, None);
     let resp = app
         .oneshot(
             Request::builder()
-                .uri(format!(
-                    "/v1/events?contract_id={}&from_ledger=200&to_ledger=400",
-                    contract_id
-                ))
+                .uri("/v1/events?sort=desc")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -354,24 +337,66 @@ async fn events_contract_id_with_ledger_range_filters_correctly(pool: PgPool) {
     assert_eq!(resp.status(), StatusCode::OK);
     let body: serde_json::Value =
         serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
-
     let data = body["data"].as_array().unwrap();
     assert_eq!(data.len(), 3);
-    for event in data {
-        assert_eq!(event["contract_id"].as_str().unwrap(), contract_id);
-        let ledger = event["ledger"].as_i64().unwrap();
-        assert!((200..=400).contains(&ledger));
-    }
+    assert!(data[0]["ledger"].as_i64().unwrap() >= data[1]["ledger"].as_i64().unwrap());
+    assert!(data[1]["ledger"].as_i64().unwrap() >= data[2]["ledger"].as_i64().unwrap());
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn events_invalid_contract_id_returns_400(pool: PgPool) {
-    let app = make_router(pool, None);
+async fn get_events_sort_asc_returns_oldest_first(pool: PgPool) {
+    insert_events_with_ledgers(&pool, &[100, 200, 300]).await;
 
+    let app = make_router(pool, None);
     let resp = app
         .oneshot(
             Request::builder()
-                .uri("/v1/events?contract_id=INVALID")
+                .uri("/v1/events?sort=asc")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(data.len(), 3);
+    assert!(data[0]["ledger"].as_i64().unwrap() <= data[1]["ledger"].as_i64().unwrap());
+    assert!(data[1]["ledger"].as_i64().unwrap() <= data[2]["ledger"].as_i64().unwrap());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn get_events_default_sort_is_desc(pool: PgPool) {
+    insert_events_with_ledgers(&pool, &[100, 200, 300]).await;
+
+    let app = make_router(pool, None);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/events")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let data = body["data"].as_array().unwrap();
+    // Default is desc — first element should have the highest ledger
+    assert!(data[0]["ledger"].as_i64().unwrap() >= data[data.len() - 1]["ledger"].as_i64().unwrap());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn get_events_invalid_sort_returns_400(pool: PgPool) {
+    let app = make_router(pool, None);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/events?sort=random")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -379,7 +404,52 @@ async fn events_invalid_contract_id_returns_400(pool: PgPool) {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn get_events_by_contract_sort_asc_returns_oldest_first(pool: PgPool) {
+    let contract_id = "C1234567890123456789012345678901234567890123456789012345";
+    insert_contract_events(&pool, contract_id, &[100, 200, 300]).await;
+
+    let app = make_router(pool, None);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/events/contract/{}?sort=asc", contract_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
     let body: serde_json::Value =
         serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert!(body["error"].as_str().unwrap().contains("invalid contract_id format"));
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(data.len(), 3);
+    assert!(data[0]["ledger"].as_i64().unwrap() <= data[1]["ledger"].as_i64().unwrap());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn get_events_by_contract_sort_desc_returns_newest_first(pool: PgPool) {
+    let contract_id = "C1234567890123456789012345678901234567890123456789012345";
+    insert_contract_events(&pool, contract_id, &[100, 200, 300]).await;
+
+    let app = make_router(pool, None);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/events/contract/{}?sort=desc", contract_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(data.len(), 3);
+    assert!(data[0]["ledger"].as_i64().unwrap() >= data[1]["ledger"].as_i64().unwrap());
 }

@@ -759,7 +759,7 @@ fn ndjson_response(events: impl Iterator<Item = Value>) -> Response<Body> {
         ("event_type" = Option<EventType>, Query, description = "Filter by event type: contract, diagnostic, system"),
         ("from_ledger" = Option<i64>, Query, description = "Return events at or after this ledger"),
         ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
-        ("contract_id" = Option<String>, Query, description = "Filter by contract ID (56-char Stellar contract address starting with C)"),
+        ("sort" = Option<String>, Query, description = "Sort order: asc (oldest first) or desc (newest first, default)"),
     ),
     responses(
         (status = 200, description = "Paginated list of events (JSON or NDJSON depending on Accept header)",
@@ -793,13 +793,18 @@ pub async fn get_events(
 
     let limit = params.limit();
     let columns = resolve_columns(&params)?;
+    let dir = params.sort.unwrap_or(crate::models::SortOrder::Desc).as_sql();
 
     // Cursor-based path
     if let Some(ref cursor_str) = params.cursor {
         let (cursor_ledger, cursor_id) = decode_cursor(cursor_str)?;
 
+        // For DESC (default): rows where (ledger, id) < cursor
+        // For ASC: rows where (ledger, id) > cursor
+        let cursor_op = if params.sort == Some(crate::models::SortOrder::Asc) { ">" } else { "<" };
+
         let mut conditions: Vec<String> = vec![
-            format!("(ledger, id) < ($1, $2)")
+            format!("(ledger, id) {cursor_op} ($1, $2)")
         ];
         let mut bind_idx: i32 = 3;
 
@@ -827,7 +832,7 @@ pub async fn get_events(
         if !select_cols.contains(&"id") { select_cols.push("id"); }
 
         let query_str = format!(
-            "SELECT {} FROM events {} ORDER BY ledger DESC, id DESC LIMIT ${}",
+            "SELECT {} FROM events {} ORDER BY ledger {dir}, id {dir} LIMIT ${}",
             select_cols.join(", "),
             where_clause,
             bind_idx,
@@ -905,7 +910,7 @@ pub async fn get_events(
     if !select_cols.contains(&"created_at") { select_cols.push("created_at"); }
 
     let query_str = format!(
-        "SELECT {} FROM events {} ORDER BY ledger DESC, id DESC LIMIT ${} OFFSET ${}",
+        "SELECT {} FROM events {} ORDER BY ledger {dir}, id {dir} LIMIT ${} OFFSET ${}",
         select_cols.join(", "),
         where_clause,
         bind_idx,
@@ -1114,6 +1119,7 @@ pub async fn export_events(
         ("exact_count" = Option<bool>, Query, description = "Use exact COUNT(*) instead of approximate (default: false)"),
         ("from_ledger" = Option<i64>, Query, description = "Return events at or after this ledger"),
         ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
+        ("sort" = Option<String>, Query, description = "Sort order: asc (oldest first) or desc (newest first, default)"),
     ),
     responses(
         (status = 200, description = "Events for the given contract"),
@@ -1141,6 +1147,7 @@ pub async fn get_events_by_contract(
     let offset = params.offset();
     let exact = params.exact_count.unwrap_or(false);
     let columns = resolve_columns(&params)?;
+    let dir = params.sort.unwrap_or(crate::models::SortOrder::Desc).as_sql();
 
     let mut conditions: Vec<String> = vec!["contract_id = $1".to_string()];
     let mut bind_idx: i32 = 2;
@@ -1156,8 +1163,8 @@ pub async fn get_events_by_contract(
 
     let where_clause = format!("WHERE {}", conditions.join(" AND "));
     let query_str = format!(
-        "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, event_data_normalized, created_at, 0::bigint AS total_count \
-         FROM events {} ORDER BY ledger DESC LIMIT ${} OFFSET ${}",
+        "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at, 0::bigint AS total_count \
+         FROM events {} ORDER BY ledger {dir} LIMIT ${} OFFSET ${}",
         where_clause, bind_idx, bind_idx + 1,
     );
 
