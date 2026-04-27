@@ -7,6 +7,7 @@
 )]
 mod config;
 mod db;
+mod encryption;
 mod error;
 mod handlers;
 mod indexer;
@@ -109,7 +110,6 @@ async fn main() -> anyhow::Result<()> {
     let _ = db::run_migrations(&pool).await;
 
     info!("Migrations applied successfully");
-    info!(url = %config.stellar_rpc_url, "Soroban RPC URL");
     info!(environment = ?config.environment, "Running environment");
 
     // Create shared health state for indexer and HTTP handlers
