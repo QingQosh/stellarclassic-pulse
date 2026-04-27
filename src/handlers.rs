@@ -316,10 +316,11 @@ pub async fn swagger_ui() -> impl IntoResponse {
     tag = "events",
     params(
         ("contract_id" = Option<String>, Query, description = "Filter by contract ID (less preferred)"),
+        ("topic_prefix" = Option<String>, Query, description = "Filter by topic[0] JSON value (URL-encoded JSON). Returns 400 if not valid JSON."),
     ),
     responses(
         (status = 200, description = "SSE stream of new events (text/event-stream)"),
-        (status = 400, description = "Invalid contract_id format"),
+        (status = 400, description = "Invalid contract_id format or topic_prefix is not valid JSON"),
     )
 )]
 pub async fn stream_events(
@@ -327,7 +328,7 @@ pub async fn stream_events(
     Query(params): Query<StreamParams>,
     headers: axum::http::HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
-    stream_events_internal(State(state), params.contract_id, headers).await
+    stream_events_internal(State(state), params.contract_id, params.topic_prefix, headers).await
 }
 
 /// Stream new events for a specific contract in real time via Server-Sent Events.
@@ -352,12 +353,13 @@ pub async fn stream_events_by_contract(
         let (status, body) = e.into_response_parts();
         (status, body)
     })?;
-    stream_events_internal(State(state), Some(contract_id), headers).await
+    stream_events_internal(State(state), Some(contract_id), None, headers).await
 }
 
 async fn stream_events_internal(
     State(state): State<AppState>,
     contract_filter: Option<String>,
+    topic_prefix: Option<String>,
     headers: axum::http::HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
     // Check if we've reached the max SSE connections limit
@@ -387,6 +389,20 @@ async fn stream_events_internal(
             (StatusCode::BAD_REQUEST, Json(body))
         })?;
     }
+
+    // Parse and validate topic_prefix if provided — must be valid JSON.
+    let topic_filter: Option<Value> = match topic_prefix {
+        Some(ref raw) => {
+            let v: Value = serde_json::from_str(raw).map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "topic_prefix must be valid JSON", "code": "VALIDATION_ERROR" })),
+                )
+            })?;
+            Some(v)
+        }
+        None => None,
+    };
 
     // Replay missed events if the client sends Last-Event-ID (a UUID).
     let last_event_id = headers
@@ -431,8 +447,8 @@ async fn stream_events_internal(
     }));
 
     let live_stream = stream::unfold(
-        (rx, contract_filter, keepalive_ms),
-        move |(mut rx, filter, ka)| async move {
+        (rx, contract_filter, topic_filter, keepalive_ms),
+        move |(mut rx, filter, topic, ka)| async move {
             loop {
                 match rx.recv().await {
                     Ok(event) => {
@@ -441,12 +457,20 @@ async fn stream_events_internal(
                                 continue;
                             }
                         }
+                        if let Some(ref prefix) = topic {
+                            let first_topic = event.topic
+                                .as_ref()
+                                .and_then(|t| t.first());
+                            if first_topic != Some(prefix) {
+                                continue;
+                            }
+                        }
                         let data = serde_json::to_string(&event).unwrap_or_default();
                         let sse = Event::default()
                             .id(format!("{}-{}", event.tx_hash, event.ledger))
                             .retry(Duration::from_millis(ka))
                             .data(data);
-                        return Some((Ok(sse), (rx, filter, ka)));
+                        return Some((Ok(sse), (rx, filter, topic, ka)));
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
@@ -2033,6 +2057,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn stream_events_invalid_topic_prefix_returns_400(pool: PgPool) {
+        let app = create_test_router(pool);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/stream?topic_prefix=not-valid-json{{{")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"], "topic_prefix must be valid JSON");
+        assert_eq!(v["code"], "VALIDATION_ERROR");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn stream_events_valid_topic_prefix_returns_sse_stream(pool: PgPool) {
+        let app = create_test_router(pool);
+
+        // URL-encoded JSON: {"sym":"swap"}
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/stream?topic_prefix=%7B%22sym%22%3A%22swap%22%7D")
+                    .header("Accept", "text/event-stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "text/event-stream"
+        );
     }
 
     // Metrics endpoint tests

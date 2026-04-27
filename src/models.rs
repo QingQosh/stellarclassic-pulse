@@ -88,6 +88,7 @@ impl SearchParams {
 #[derive(Debug, Deserialize)]
 pub struct StreamParams {
     pub contract_id: Option<String>,
+    pub topic_prefix: Option<String>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
