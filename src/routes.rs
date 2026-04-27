@@ -235,17 +235,32 @@ pub fn create_router_with_tx(
             auth_state,
             middleware::auth_middleware,
         ))
-        .layer(axum::middleware::from_fn(|req: axum::http::Request<Body>, next: axum::middleware::Next| async move {
+        .layer(axum::middleware::from_fn(move |req: axum::http::Request<Body>, next: axum::middleware::Next| async move {
             let method = req.method().as_str().to_string();
             let route = req.extensions()
                 .get::<MatchedPath>()
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_else(|| "<unknown>".to_string());
+            let request_id = req.headers()
+                .get("x-request-id")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("unknown")
+                .to_owned();
             let start = Instant::now();
             let response = next.run(req).await;
             let duration = start.elapsed();
             let status = response.status().as_u16().to_string();
             metrics::record_http_request_duration(duration, &method, &route, &status);
+            if duration.as_millis() as u64 > slow_request_threshold_ms {
+                tracing::warn!(
+                    method = %method,
+                    path = %route,
+                    status = %status,
+                    duration_ms = duration.as_millis(),
+                    request_id = %request_id,
+                    "slow request"
+                );
+            }
             response
         }))
         .layer(cors)
@@ -301,6 +316,81 @@ mod tests {
     use axum::http::{header, Request, StatusCode};
     use axum::body::Body;
     use tower::ServiceExt;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    /// Build a minimal router that sleeps for `delay_ms` and runs the metrics
+    /// middleware with the given `threshold_ms`.
+    fn slow_request_test_app(delay_ms: u64, threshold_ms: u64) -> Router {
+        Router::new()
+            .route("/slow", get(move || async move {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                "ok"
+            }))
+            .layer(axum::middleware::from_fn(move |req: axum::http::Request<Body>, next: axum::middleware::Next| async move {
+                let method = req.method().as_str().to_string();
+                let route = req.extensions()
+                    .get::<MatchedPath>()
+                    .map(|p| p.as_str().to_string())
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                let request_id = req.headers()
+                    .get("x-request-id")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("unknown")
+                    .to_owned();
+                let start = std::time::Instant::now();
+                let response = next.run(req).await;
+                let duration = start.elapsed();
+                let status = response.status().as_u16().to_string();
+                if duration.as_millis() as u64 > threshold_ms {
+                    tracing::warn!(
+                        method = %method,
+                        path = %route,
+                        status = %status,
+                        duration_ms = duration.as_millis(),
+                        request_id = %request_id,
+                        "slow request"
+                    );
+                }
+                response
+            }))
+    }
+
+    #[tokio::test]
+    async fn slow_request_warn_is_emitted() {
+        // Capture warn-level events.
+        let (writer, output) = tracing_subscriber::fmt::TestWriter::new();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(writer)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let app = slow_request_test_app(20, 0); // threshold=0 → always warn
+        app.oneshot(
+            Request::builder().uri("/slow").body(Body::empty()).unwrap()
+        ).await.unwrap();
+
+        let logs = output.into_string();
+        assert!(logs.contains("slow request"), "expected 'slow request' warn, got: {logs}");
+    }
+
+    #[tokio::test]
+    async fn fast_request_no_warn() {
+        let (writer, output) = tracing_subscriber::fmt::TestWriter::new();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(writer)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let app = slow_request_test_app(0, 60_000); // threshold=60s → never warn
+        app.oneshot(
+            Request::builder().uri("/slow").body(Body::empty()).unwrap()
+        ).await.unwrap();
+
+        let logs = output.into_string();
+        assert!(!logs.contains("slow request"), "unexpected 'slow request' warn: {logs}");
+    }
 
     #[tokio::test]
     async fn test_compression_header() {
