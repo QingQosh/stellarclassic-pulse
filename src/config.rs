@@ -133,6 +133,9 @@ pub struct Config {
     pub environment: Environment,
     pub max_body_size_bytes: usize,
     pub log_sample_rate: u32,
+    pub webhook_url: Option<String>,
+    pub webhook_secret: Option<String>,
+    pub webhook_contract_filter: Vec<String>,
 }
 
 impl Default for Config {
@@ -161,6 +164,9 @@ impl Default for Config {
             environment: Environment::Development,
             max_body_size_bytes: 1024 * 1024, // 1 MB default
             log_sample_rate: 1,
+            webhook_url: None,
+            webhook_secret: None,
+            webhook_contract_filter: Vec::new(),
         }
     }
 }
@@ -384,6 +390,14 @@ impl Config {
                 assert!(v > 0, "LOG_SAMPLE_RATE must be a positive integer, got {v}");
                 v
             },
+            webhook_url: env::var("WEBHOOK_URL").ok().filter(|s| !s.is_empty()),
+            webhook_secret: env::var("WEBHOOK_SECRET").ok().filter(|s| !s.is_empty()),
+            webhook_contract_filter: env::var("WEBHOOK_CONTRACT_FILTER")
+                .unwrap_or_default()
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
         }
     }
 }
