@@ -9,6 +9,7 @@ use std::sync::OnceLock;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
+use reqwest;
 
 use std::sync::atomic::Ordering;
 use crate::{error::AppError, models::{self, ContractSummary, PaginationParams, StreamParams, ReplayRequest}, routes::AppState};
