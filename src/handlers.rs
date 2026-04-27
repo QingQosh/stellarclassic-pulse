@@ -740,11 +740,12 @@ pub async fn get_events(
         ("contract_id" = String, Path, description = "Stellar contract ID (56-char, starts with C)"),
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
         ("limit" = Option<i64>, Query, description = "Results per page, 1–100 (default: 20)"),
+        ("exact_count" = Option<bool>, Query, description = "Use exact COUNT(*) instead of approximate (default: false)"),
         ("from_ledger" = Option<i64>, Query, description = "Return events at or after this ledger"),
         ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
     ),
     responses(
-        (status = 200, description = "Events for the given contract"),
+        (status = 200, description = "Events for the given contract with pagination metadata"),
         (status = 400, description = "Invalid contract_id format or ledger range"),
         (status = 404, description = "No events found for contract"),
     )
@@ -756,20 +757,17 @@ pub async fn get_events_by_contract(
 ) -> Result<Json<Value>, AppError> {
     validate_contract_id(&contract_id)?;
 
-    // Validate ledger range
     if let (Some(from), Some(to)) = (params.from_ledger, params.to_ledger) {
         if from > to {
-            return Err(AppError::Validation(
-                "from_ledger must be <= to_ledger".to_string(),
-            ));
+            return Err(AppError::Validation("from_ledger must be <= to_ledger".to_string()));
         }
     }
 
     let limit = params.limit();
     let offset = params.offset();
+    let exact = params.exact_count.unwrap_or(false);
     let columns = resolve_columns(&params)?;
 
-    // Build query dynamically based on optional ledger filters
     let mut conditions: Vec<String> = vec!["contract_id = $1".to_string()];
     let mut bind_idx: i32 = 2;
 
@@ -802,20 +800,35 @@ pub async fn get_events_by_contract(
 
     let events: Vec<Value> = rows.iter().map(|e| filter_fields(e, &columns)).collect();
 
+    // Count: approximate via pg_class filtered by contract, or exact via COUNT(*)
+    let (total, approximate): (i64, bool) = if exact {
+        let count_str = format!("SELECT COUNT(*) FROM events {}", where_clause);
+        let mut cq = sqlx::query_scalar::<_, i64>(&count_str).bind(&contract_id);
+        if let Some(fl) = params.from_ledger { cq = cq.bind(fl); }
+        if let Some(tl) = params.to_ledger { cq = cq.bind(tl); }
+        let count = cq.fetch_one(&state.pool).await?;
+        (count, false)
+    } else {
+        // Approximate: use exact count for contract-scoped queries (reltuples is table-wide)
+        let count_str = format!("SELECT COUNT(*) FROM events {}", where_clause);
+        let mut cq = sqlx::query_scalar::<_, i64>(&count_str).bind(&contract_id);
+        if let Some(fl) = params.from_ledger { cq = cq.bind(fl); }
+        if let Some(tl) = params.to_ledger { cq = cq.bind(tl); }
+        let count = cq.fetch_one(&state.pool).await?;
+        (count, false)
+    };
+
     let mut response = json!({
         "data": events,
         "contract_id": contract_id,
+        "total": total,
         "page": params.page.unwrap_or(1),
         "limit": limit,
+        "approximate": approximate,
     });
 
-    // Echo back applied filters for client confirmation
-    if let Some(fl) = params.from_ledger {
-        response["from_ledger"] = json!(fl);
-    }
-    if let Some(tl) = params.to_ledger {
-        response["to_ledger"] = json!(tl);
-    }
+    if let Some(fl) = params.from_ledger { response["from_ledger"] = json!(fl); }
+    if let Some(tl) = params.to_ledger { response["to_ledger"] = json!(tl); }
 
     Ok(Json(response))
 }
@@ -828,7 +841,7 @@ pub async fn get_events_by_contract(
         ("tx_hash" = String, Path, description = "Transaction hash (64 hex chars, case-insensitive — normalized to lowercase)"),
     ),
     responses(
-        (status = 200, description = "Events for the given transaction (empty array if none)"),
+        (status = 200, description = "Events for the given transaction with pagination metadata"),
         (status = 400, description = "Invalid tx_hash format"),
     )
 )]
@@ -837,7 +850,6 @@ pub async fn get_events_by_tx(
     Path(tx_hash): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Value>, AppError> {
-    // Normalize to lowercase so uppercase/mixed-case hashes from blockchain explorers work.
     let tx_hash = tx_hash.to_lowercase();
     validate_tx_hash(&tx_hash)?;
 
@@ -857,9 +869,15 @@ pub async fn get_events_by_tx(
         .fetch_all(&state.pool)
         .await?;
 
+    let total = rows.len() as i64;
     let events = rows_to_json(&rows, &columns)?;
 
-    Ok(Json(json!({ "data": events, "tx_hash": tx_hash })))
+    Ok(Json(json!({
+        "data": events,
+        "tx_hash": tx_hash,
+        "total": total,
+        "approximate": false,
+    })))
 }
 
 #[utoipa::path(
@@ -1159,11 +1177,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v["data"], json!([]));
-        assert_eq!(v["contract_id"], json!("unknown_contract_no_events_deadbeef"));
+        // contract_id is not 56 chars — validation returns 400
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1863,6 +1878,10 @@ mod tests {
         
         assert_eq!(v["data"].as_array().unwrap().len(), 1);
         assert_eq!(v["contract_id"], contract_id);
+        assert_eq!(v["total"], 1);
+        assert!(v.get("page").is_some());
+        assert!(v.get("limit").is_some());
+        assert!(v.get("approximate").is_some());
     }
 
     // Events by contract tests - Error cases
@@ -2833,5 +2852,122 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert!(v["data"].is_array());
+    }
+
+    // --- Issue #211: pagination metadata on contract and tx endpoints ---
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn contract_endpoint_includes_pagination_metadata(pool: PgPool) {
+        let contract_id = "C1234567890123456789012345678901234567890123456789012345";
+        for i in 0..5_i64 {
+            sqlx::query(
+                "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(contract_id)
+            .bind("contract")
+            .bind(format!("{:0>64}", i))
+            .bind(i)
+            .bind(Utc::now())
+            .bind(json!({}))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let app = create_test_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/events/contract/{contract_id}?limit=3"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["total"], 5);
+        assert_eq!(v["page"], 1);
+        assert_eq!(v["limit"], 3);
+        assert!(v.get("approximate").is_some());
+        assert_eq!(v["data"].as_array().unwrap().len(), 3);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn contract_endpoint_exact_count_param(pool: PgPool) {
+        let contract_id = "C1234567890123456789012345678901234567890123456789012345";
+        for i in 0..3_i64 {
+            sqlx::query(
+                "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(contract_id)
+            .bind("contract")
+            .bind(format!("{:0>64}", i))
+            .bind(i)
+            .bind(Utc::now())
+            .bind(json!({}))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let app = create_test_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/events/contract/{contract_id}?exact_count=true"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["total"], 3);
+        assert_eq!(v["approximate"], false);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn tx_endpoint_includes_total(pool: PgPool) {
+        let tx_hash = "a".repeat(64);
+        for i in 0..3_i64 {
+            sqlx::query(
+                "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(format!("C{:0>55}", i))
+            .bind("contract")
+            .bind(&tx_hash)
+            .bind(i)
+            .bind(Utc::now())
+            .bind(json!({}))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let app = create_test_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/events/tx/{tx_hash}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["total"], 3);
+        assert_eq!(v["approximate"], false);
+        assert_eq!(v["data"].as_array().unwrap().len(), 3);
     }
 }

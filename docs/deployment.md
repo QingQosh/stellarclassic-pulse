@@ -208,6 +208,38 @@ In staging and production, setting `ALLOWED_ORIGINS=*` will cause the service to
 
 ---
 
+## Stellar RPC Endpoints
+
+### Official endpoints
+
+| Network | URL |
+| ------- | --- |
+| Testnet | `https://soroban-testnet.stellar.org` |
+| Mainnet | `https://mainnet.stellar.validationcloud.io/v1/<YOUR_API_KEY>` |
+
+The official mainnet endpoint is provided by Validation Cloud and requires a free API key for sustained access. Register at [validationcloud.io](https://validationcloud.io).
+
+### API key requirements
+
+For low-volume or development use, the testnet endpoint accepts requests without an API key. For production mainnet traffic, an API key is required to avoid rate limiting. Set it in `STELLAR_RPC_URL` as a path segment (as shown above) or as a query parameter depending on the provider.
+
+### Third-party RPC providers
+
+For high-volume production deployments, consider a dedicated RPC provider:
+
+| Provider | URL format |
+| -------- | ---------- |
+| QuickNode | `https://<endpoint>.stellar.quiknode.pro/<token>/` |
+| Ankr | `https://rpc.ankr.com/stellar_soroban/<token>` |
+
+### `ALLOW_INSECURE_RPC`
+
+> ⚠️ **Never set this in production.**
+
+Setting `ALLOW_INSECURE_RPC=true` disables the URL validation that rejects HTTP and loopback/private-network RPC URLs. It exists only for local development against a locally-run RPC node (e.g., `http://localhost:8000`). In staging and production this variable must be unset or absent.
+
+---
+
 ## Secret Management
 
 Secrets (database password, API key, RPC URL) should never be stored in plain `.env` files in production. Use one of the following patterns.
@@ -397,6 +429,18 @@ DATABASE_URL=postgres://... ./scripts/restore.sh s3://my-bucket/backups/soroban_
 ```
 
 The restore script prompts for confirmation before overwriting data.
+
+### Automated backup verification
+
+A weekly GitHub Actions workflow (`.github/workflows/backup-verify.yml`) automatically validates that backups are restorable:
+
+1. Provisions two PostgreSQL containers (source and restore target)
+2. Seeds the source database with test data
+3. Runs `scripts/backup.sh` to create a dump
+4. Restores the dump to the target database
+5. Compares `COUNT(*) FROM events` between source and target — fails if they differ
+
+The workflow runs every Sunday at 02:00 UTC (`cron: '0 2 * * 0'`) and can also be triggered manually via `workflow_dispatch`.
 
 ### WAL archiving (for sub-minute RPO)
 
