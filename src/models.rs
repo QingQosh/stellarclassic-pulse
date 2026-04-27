@@ -45,6 +45,7 @@ pub struct Event {
     pub ledger: i64,
     pub timestamp: DateTime<Utc>,
     pub event_data: Value,
+    pub event_data_normalized: Option<Value>,
     pub created_at: DateTime<Utc>,
     #[sqlx(default)]
     #[serde(skip)]
@@ -89,6 +90,31 @@ impl SearchParams {
 #[derive(Debug, Deserialize)]
 pub struct StreamParams {
     pub contract_id: Option<String>,
+    pub fields: Option<String>,
+}
+
+/// Query parameters for the multi-contract SSE stream endpoint.
+#[derive(Debug, Deserialize)]
+pub struct MultiStreamParams {
+    /// Comma-separated list of contract IDs to subscribe to.
+    pub contract_ids: Option<String>,
+}
+
+/// Standard error response body returned by all error responses.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ErrorResponse {
+    /// Human-readable error description.
+    pub error: String,
+    /// Machine-readable error code.
+    pub code: String,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct ExportParams {
+    pub event_type: Option<EventType>,
+    pub from_ledger: Option<i64>,
+    pub to_ledger: Option<i64>,
+    pub contract_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -113,6 +139,7 @@ impl PaginationParams {
         "ledger",
         "timestamp",
         "event_data",
+        "event_data_normalized",
         "created_at",
     ];
 
@@ -201,6 +228,7 @@ mod tests {
             from_ledger: None,
             to_ledger: None,
             cursor: None,
+            contract_id: None,
         }
     }
 
