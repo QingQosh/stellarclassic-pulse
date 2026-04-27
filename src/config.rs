@@ -177,6 +177,18 @@ pub struct Config {
     pub webhook_url: Option<String>,
     pub webhook_secret: Option<String>,
     pub webhook_contract_filter: Vec<String>,
+    /// Kafka broker list (e.g. "localhost:9092"). None disables Kafka publishing.
+    #[cfg(feature = "kafka")]
+    pub kafka_brokers: Option<String>,
+    /// Kafka topic to publish events to.
+    #[cfg(feature = "kafka")]
+    pub kafka_topic: Option<String>,
+    /// Kafka producer batch size in bytes (default: 16384).
+    #[cfg(feature = "kafka")]
+    pub kafka_batch_size: usize,
+    /// Kafka producer linger time in milliseconds (default: 5).
+    #[cfg(feature = "kafka")]
+    pub kafka_linger_ms: u64,
 }
 
 impl Default for Config {
@@ -213,6 +225,14 @@ impl Default for Config {
             webhook_url: None,
             webhook_secret: None,
             webhook_contract_filter: Vec::new(),
+            #[cfg(feature = "kafka")]
+            kafka_brokers: None,
+            #[cfg(feature = "kafka")]
+            kafka_topic: None,
+            #[cfg(feature = "kafka")]
+            kafka_batch_size: 16384,
+            #[cfg(feature = "kafka")]
+            kafka_linger_ms: 5,
         }
     }
 }
@@ -501,6 +521,18 @@ impl Config {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect(),
+            #[cfg(feature = "kafka")]
+            kafka_brokers: env_or_file("KAFKA_BROKERS", &file),
+            #[cfg(feature = "kafka")]
+            kafka_topic: env_or_file("KAFKA_TOPIC", &file),
+            #[cfg(feature = "kafka")]
+            kafka_batch_size: env_or_file_or("KAFKA_BATCH_SIZE", &file, "16384")
+                .parse()
+                .expect("KAFKA_BATCH_SIZE must be a number"),
+            #[cfg(feature = "kafka")]
+            kafka_linger_ms: env_or_file_or("KAFKA_LINGER_MS", &file, "5")
+                .parse()
+                .expect("KAFKA_LINGER_MS must be a number"),
         }
     }
 }

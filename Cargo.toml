@@ -35,10 +35,12 @@ base64 = "0.22"
 sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"
+rdkafka = { version = "0.36", optional = true, features = ["cmake-build"] }
 
 [features]
 otel = ["tracing-opentelemetry", "opentelemetry", "opentelemetry-otlp"]
 encryption = ["aes-gcm", "rand"]
+kafka = ["rdkafka"]
 
 [dev-dependencies]
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls", "chrono", "uuid", "json", "migrate"] }
