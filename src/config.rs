@@ -145,6 +145,8 @@ pub struct Config {
     pub archive_s3_bucket: Option<String>,
     /// Archive feature: S3 key prefix (e.g. "soroban-pulse/events").
     pub archive_s3_prefix: String,
+    /// Timeout in milliseconds for the health check DB ping.
+    pub health_check_timeout_ms: u64,
 }
 
 impl Default for Config {
@@ -178,6 +180,7 @@ impl Default for Config {
             archive_after_days: 365,
             archive_s3_bucket: None,
             archive_s3_prefix: "soroban-pulse/events".to_string(),
+            health_check_timeout_ms: 2000,
         }
     }
 }
@@ -432,6 +435,10 @@ impl Config {
                 .filter(|s| !s.is_empty()),
             archive_s3_prefix: env::var("ARCHIVE_S3_PREFIX")
                 .unwrap_or_else(|_| "soroban-pulse/events".to_string()),
+            health_check_timeout_ms: env::var("HEALTH_CHECK_TIMEOUT_MS")
+                .unwrap_or_else(|_| "2000".to_string())
+                .parse()
+                .expect("HEALTH_CHECK_TIMEOUT_MS must be a number"),
         }
     }
 }

@@ -49,6 +49,7 @@ pub struct AppState {
     pub encryption_key_old: Option<[u8; 32]>,
     pub archive_s3_bucket: Option<String>,
     pub archive_s3_prefix: String,
+    pub config: crate::config::Config,
 }
 
 /// OpenAPI spec — all paths are documented via #[utoipa::path] on handlers.
@@ -69,6 +70,7 @@ pub struct AppState {
         handlers::stream_events_by_contract,
         handlers::get_contracts,
         handlers::replay_events,
+        handlers::list_archive,
     ),
     components(schemas(
         crate::models::Event,
@@ -93,9 +95,9 @@ pub fn create_router(
     health_state: Arc<HealthState>,
     indexer_state: Arc<IndexerState>,
     prometheus_handle: PrometheusHandle,
-    health_check_timeout_ms: u64,
+    config: crate::config::Config,
 ) -> Router {
-    create_router_with_tx(pool, api_keys, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000, 1000, health_check_timeout_ms, None, None, None, "soroban-pulse/events".to_string())
+    create_router_with_tx(pool, api_keys, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000, 1000, config)
 }
 
 pub fn create_router_with_tx(
@@ -110,11 +112,7 @@ pub fn create_router_with_tx(
     event_tx: broadcast::Sender<SorobanEvent>,
     sse_keepalive_interval_ms: u64,
     sse_max_connections: usize,
-    health_check_timeout_ms: u64,
-    encryption_key: Option<[u8; 32]>,
-    encryption_key_old: Option<[u8; 32]>,
-    archive_s3_bucket: Option<String>,
-    archive_s3_prefix: String,
+    config: crate::config::Config,
 ) -> Router {
     let cors = build_cors(allowed_origins);
     let auth_state = Arc::new(middleware::AuthState { api_keys });
@@ -127,11 +125,12 @@ pub fn create_router_with_tx(
         sse_keepalive_interval_ms,
         sse_connections: Arc::new(AtomicUsize::new(0)),
         sse_max_connections,
-        health_check_timeout_ms,
-        encryption_key,
-        encryption_key_old,
-        archive_s3_bucket,
-        archive_s3_prefix,
+        health_check_timeout_ms: config.health_check_timeout_ms,
+        encryption_key: config.event_data_encryption_key,
+        encryption_key_old: config.event_data_encryption_key_old,
+        archive_s3_bucket: config.archive_s3_bucket.clone(),
+        archive_s3_prefix: config.archive_s3_prefix.clone(),
+        config,
     };
 
     // Build governor config: burst = rate_limit_per_minute, replenish 1 token per (60/rate) seconds.

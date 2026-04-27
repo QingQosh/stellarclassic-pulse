@@ -687,11 +687,15 @@ pub async fn get_events(
         let count = cq.fetch_one(&state.pool).await?;
         (count, false)
     } else {
-        match sqlx::query_scalar::<_, i64>(
+        let count = match sqlx::query_scalar::<_, i64>(
             "SELECT reltuples::bigint FROM pg_class WHERE relname = 'events'",
         )
         .fetch_one(&state.pool)
-        .await?;
+        .await
+        {
+            Ok(n) => n,
+            Err(_) => 0,
+        };
         (count, true)
     };
 
@@ -1097,7 +1101,7 @@ mod tests {
         let indexer_state = Arc::new(IndexerState::new());
         let prometheus_handle = crate::metrics::init_metrics();
         let config = crate::config::Config::default();
-        crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000, config)
+        crate::routes::create_router(pool, vec![], &[], 60, health_state, indexer_state, prometheus_handle, config)
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1519,7 +1523,7 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let prometheus_handle = crate::metrics::init_metrics();
         let indexer_state = Arc::new(IndexerState::new());
-        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000);
+        let app = crate::routes::create_router(pool, vec![], &[], 60, health_state, indexer_state, prometheus_handle, crate::config::Config::default());
 
         let response = app
             .oneshot(
@@ -1588,7 +1592,7 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let prometheus_handle = crate::metrics::init_metrics();
         let indexer_state = Arc::new(IndexerState::new());
-        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000);
+        let app = crate::routes::create_router(pool, vec![], &[], 60, health_state, indexer_state, prometheus_handle, crate::config::Config::default());
 
         let response = app
             .oneshot(
@@ -1613,7 +1617,7 @@ mod tests {
         // never updated, treated as stalled
         let prometheus_handle = crate::metrics::init_metrics();
         let indexer_state = Arc::new(IndexerState::new());
-        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000);
+        let app = crate::routes::create_router(pool, vec![], &[], 60, health_state, indexer_state, prometheus_handle, crate::config::Config::default());
 
         let response = app
             .oneshot(
@@ -2473,7 +2477,6 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000, 
             config
         );
 
@@ -2518,7 +2521,6 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000, 
             config
         );
 
@@ -2567,7 +2569,6 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000, 
             config
         );
 
@@ -2615,7 +2616,6 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000, 
             config
         );
 
@@ -2665,7 +2665,6 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000, 
             config
         );
 
@@ -2709,7 +2708,6 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000, 
             config
         );
 
