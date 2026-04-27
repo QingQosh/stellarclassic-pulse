@@ -56,6 +56,7 @@ Open the newly created `.env` file in your editor and fill in your own real valu
 | `RUST_LOG_FORMAT` | Log output format (`text` or `json`) | `text`                                   |
 | `INDEXER_LAG_WARN_THRESHOLD` | Indexer lag warning threshold (ledgers) | `100`                                   |
 | `HEALTH_CHECK_TIMEOUT_MS`   | Timeout for the health check DB ping     | `2000`                                  |
+| `INDEX_CHECK_INTERVAL_HOURS` | How often the index usage monitor runs (hours) | `24`                             |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry OTLP collector endpoint (when built with `otel` feature) | `http://localhost:4317` |
 
 > **Note on Authentication:** You can enable optional API key authentication by setting the `API_KEY` environment variable. When set, all requests (except `/health` and `/healthz/*` endpoints) will require either an `Authorization: Bearer <API_KEY>` or an `X-Api-Key: <API_KEY>` header. If `API_KEY` is unset or omitted from your configuration, authentication is bypassed and all requests pass through.
@@ -170,6 +171,19 @@ curl -N http://localhost:3000/v1/events/stream
 curl -N "http://localhost:3000/v1/events/stream?contract_id=CABC..."
 ```
 
+### `GET /v1/events/stream/multi?contract_ids=C1,C2,C3`
+Multiplexed SSE stream for multiple contracts over a single connection.
+
+- **`contract_ids`**: Required. Comma-separated list of contract IDs to subscribe to.
+- Each ID is validated; any invalid ID returns `400 Bad Request` with the list of invalid IDs.
+- An empty `contract_ids` parameter returns `400 Bad Request`.
+- Returns `Content-Type: text/event-stream`.
+
+```bash
+# Subscribe to two contracts simultaneously
+curl -N "http://localhost:3000/v1/events/stream/multi?contract_ids=CABC...,CDEF..."
+```
+
 ### Deprecated unversioned routes
 
 The unversioned paths (`/events`, `/events/{contract_id}`, `/events/tx/{tx_hash}`, `/events/stream`) continue to work but return:
@@ -224,6 +238,7 @@ The service exposes Prometheus-compatible metrics at `GET /metrics`:
 - `soroban_pulse_db_pool_size` - Current number of open database connections
 - `soroban_pulse_db_pool_idle` - Number of idle database connections
 - `soroban_pulse_db_pool_max` - Configured maximum database connections
+- `soroban_pulse_process_memory_bytes` - Process RSS memory in bytes (Linux only, updated every 30 seconds)
 
 ### Distributed Tracing
 
@@ -296,6 +311,24 @@ cargo bench --bench db_queries
 | `db/get_events_by_contract` | ~1.2 ms | ~2.0 ms |
 
 > These numbers are indicative baselines measured on a local development machine. Your results will vary based on hardware, Postgres configuration, and dataset size. Use them as a regression reference — a significant increase after a schema or query change warrants investigation.
+
+#### Compression Benchmarks
+
+A benchmark in `benches/compression.rs` measures gzip compression time and ratio for typical event list responses at 10, 100, and 1000 events.
+
+```bash
+cargo bench --bench compression
+```
+
+##### Baseline Numbers (synthetic event JSON, local machine)
+
+| Events | Uncompressed | Compressed | Ratio | Compression time |
+|--------|-------------|------------|-------|------------------|
+| 10     | ~1.5 KB     | ~0.6 KB    | ~2.5x | ~5 µs            |
+| 100    | ~15 KB      | ~2.5 KB    | ~6x   | ~30 µs           |
+| 1000   | ~150 KB     | ~12 KB     | ~12x  | ~250 µs          |
+
+**Recommendation:** The default zlib level 6 (tower-http's `CompressionLayer` default) provides a good balance between CPU overhead and bandwidth savings. For responses of 100+ events the compression ratio exceeds 6x, making it strongly worthwhile. For very small responses (< 10 events, < 1 KB) the overhead is negligible either way. No adjustment to the default compression level is recommended.
 
 ### Load Testing
 
