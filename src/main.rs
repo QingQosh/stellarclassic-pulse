@@ -20,6 +20,9 @@ mod routes;
 mod rpc_client;
 mod webhook;
 
+#[cfg(feature = "archive")]
+mod archiver;
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;

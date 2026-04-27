@@ -3399,3 +3399,43 @@ mod tests {
         assert!(response.status().is_client_error());
     }
 }
+
+// ── Archive ──────────────────────────────────────────────────────────────────
+
+/// `GET /v1/events/archive` — list available archive files in S3.
+///
+/// Only available when the `archive` feature is enabled and `ARCHIVE_S3_BUCKET`
+/// is configured. Returns 501 otherwise.
+#[utoipa::path(
+    get,
+    path = "/v1/events/archive",
+    tag = "events",
+    responses(
+        (status = 200, description = "List of archive files"),
+        (status = 501, description = "Archive feature not enabled"),
+    )
+)]
+pub async fn list_archive(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    #[cfg(feature = "archive")]
+    {
+        let (bucket, prefix) = match (&state.archive_s3_bucket, &state.archive_s3_prefix) {
+            (Some(b), p) => (b.clone(), p.clone()),
+            (None, _) => {
+                return Err(AppError::Validation(
+                    "ARCHIVE_S3_BUCKET is not configured".to_string(),
+                ))
+            }
+        };
+        let aws_cfg = aws_config::load_from_env().await;
+        let s3 = aws_sdk_s3::Client::new(&aws_cfg);
+        let files = crate::archiver::list_archive_files(&s3, &bucket, &prefix)
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        return Ok(Json(json!({ "data": files, "total": files.len() })));
+    }
+    #[cfg(not(feature = "archive"))]
+    {
+        let _ = state; // suppress unused warning
+        Err(AppError::Internal("archive feature not enabled".to_string()))
+    }
+}

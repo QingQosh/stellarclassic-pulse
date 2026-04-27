@@ -76,6 +76,7 @@ pub struct AppState {
         handlers::stream_events_multi,
         handlers::get_contracts,
         handlers::replay_events,
+        handlers::list_archive,
     ),
     components(schemas(
         crate::models::Event,
