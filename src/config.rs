@@ -139,6 +139,12 @@ pub struct Config {
     /// Previous encryption key for key rotation support.
     /// Set via EVENT_DATA_ENCRYPTION_KEY_OLD.
     pub event_data_encryption_key_old: Option<[u8; 32]>,
+    /// Archive feature: events older than this many days are moved to S3.
+    pub archive_after_days: u32,
+    /// Archive feature: S3 bucket name for archived events.
+    pub archive_s3_bucket: Option<String>,
+    /// Archive feature: S3 key prefix (e.g. "soroban-pulse/events").
+    pub archive_s3_prefix: String,
 }
 
 impl Default for Config {
@@ -169,6 +175,9 @@ impl Default for Config {
             log_sample_rate: 1,
             event_data_encryption_key: None,
             event_data_encryption_key_old: None,
+            archive_after_days: 365,
+            archive_s3_bucket: None,
+            archive_s3_prefix: "soroban-pulse/events".to_string(),
         }
     }
 }
@@ -414,6 +423,15 @@ impl Config {
                 .ok()
                 .filter(|s| !s.is_empty())
                 .map(|s| parse_hex_key("EVENT_DATA_ENCRYPTION_KEY_OLD", &s)),
+            archive_after_days: env::var("ARCHIVE_AFTER_DAYS")
+                .unwrap_or_else(|_| "365".to_string())
+                .parse()
+                .expect("ARCHIVE_AFTER_DAYS must be a positive integer"),
+            archive_s3_bucket: env::var("ARCHIVE_S3_BUCKET")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            archive_s3_prefix: env::var("ARCHIVE_S3_PREFIX")
+                .unwrap_or_else(|_| "soroban-pulse/events".to_string()),
         }
     }
 }

@@ -47,6 +47,8 @@ pub struct AppState {
     pub health_check_timeout_ms: u64,
     pub encryption_key: Option<[u8; 32]>,
     pub encryption_key_old: Option<[u8; 32]>,
+    pub archive_s3_bucket: Option<String>,
+    pub archive_s3_prefix: String,
 }
 
 /// OpenAPI spec — all paths are documented via #[utoipa::path] on handlers.
@@ -66,6 +68,7 @@ pub struct AppState {
         handlers::stream_events,
         handlers::stream_events_by_contract,
         handlers::get_contracts,
+        handlers::list_archive,
     ),
     components(schemas(
         crate::models::Event,
@@ -90,7 +93,7 @@ pub fn create_router(
     prometheus_handle: PrometheusHandle,
     health_check_timeout_ms: u64,
 ) -> Router {
-    create_router_with_tx(pool, api_keys, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000, 1000, health_check_timeout_ms, None, None)
+    create_router_with_tx(pool, api_keys, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000, 1000, health_check_timeout_ms, None, None, None, "soroban-pulse/events".to_string())
 }
 
 pub fn create_router_with_tx(
@@ -108,6 +111,8 @@ pub fn create_router_with_tx(
     health_check_timeout_ms: u64,
     encryption_key: Option<[u8; 32]>,
     encryption_key_old: Option<[u8; 32]>,
+    archive_s3_bucket: Option<String>,
+    archive_s3_prefix: String,
 ) -> Router {
     let cors = build_cors(allowed_origins);
     let auth_state = Arc::new(middleware::AuthState { api_keys });
@@ -123,6 +128,8 @@ pub fn create_router_with_tx(
         health_check_timeout_ms,
         encryption_key,
         encryption_key_old,
+        archive_s3_bucket,
+        archive_s3_prefix,
     };
 
     // Build governor config: burst = rate_limit_per_minute, replenish 1 token per (60/rate) seconds.
@@ -134,6 +141,7 @@ pub fn create_router_with_tx(
     // Versioned v1 routes
     let v1 = Router::new()
         .route("/events", get(handlers::get_events))
+        .route("/events/archive", get(handlers::list_archive))
         .route("/events/stream", get(handlers::stream_events))
         .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
         .route("/events/contract/:contract_id/stream", get(handlers::stream_events_by_contract))

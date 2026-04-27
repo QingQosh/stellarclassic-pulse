@@ -7,3 +7,6 @@ pub mod middleware;
 pub mod models;
 pub mod rpc_client;
 pub mod routes;
+
+#[cfg(feature = "archive")]
+pub mod archiver;
