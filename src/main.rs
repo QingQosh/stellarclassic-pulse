@@ -70,6 +70,9 @@ async fn main() -> anyhow::Result<()> {
     // Initialize metrics exporter
     let prometheus_handle = metrics::init_metrics();
 
+    #[cfg(target_os = "linux")]
+    metrics::spawn_memory_collector();
+
     let config = config::Config::from_env();
 
     info!(
@@ -91,6 +94,9 @@ async fn main() -> anyhow::Result<()> {
                 config.db_max_connections,
                 config.db_min_connections,
                 config.db_statement_timeout_ms,
+                config.db_idle_timeout_secs,
+                config.db_max_lifetime_secs,
+                config.db_test_before_acquire,
             )
             .await
             {

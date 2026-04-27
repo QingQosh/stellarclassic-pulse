@@ -335,34 +335,44 @@ impl<R: RpcClient> Indexer<R> {
         self.rpc_client.get_latest_ledger(&self.config.stellar_rpc_url).await
     }
 
+    /// Load the last persisted cursor from the database, if any.
+    async fn load_checkpoint(&self) -> Option<String> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT last_cursor FROM indexer_checkpoints WHERE id = 'singleton'",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// Persist the cursor atomically alongside the event inserts.
+    async fn save_checkpoint(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        cursor: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO indexer_checkpoints (id, last_cursor, updated_at)
+             VALUES ('singleton', $1, NOW())
+             ON CONFLICT (id) DO UPDATE SET last_cursor = EXCLUDED.last_cursor, updated_at = NOW()",
+        )
+        .bind(cursor)
+        .execute(&mut **tx)
+        .await
+        .map(|_| ())
+    }
+
     #[instrument(skip(self), fields(start_ledger = start_ledger))]
     async fn fetch_and_store_events(&self, start_ledger: u64) -> Result<u64, IndexerFetchError> {
-        let mut cursor: Option<String> = None;
+        // Resume from persisted cursor if available, otherwise start from ledger.
+        let mut cursor: Option<String> = self.load_checkpoint().await;
         let mut latest_ledger = start_ledger;
         let mut total_fetched = 0;
         let mut total_inserted = 0;
         let mut total_skipped = 0;
 
         loop {
-            let mut params = json!({
-                "filters": [],
-                "pagination": { "limit": 100 }
-            });
-
-            if let Some(c) = &cursor {
-                params["pagination"]["cursor"] = json!(c);
-            } else {
-                params["startLedger"] = json!(start_ledger);
-            }
-
-            let body = json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "getEvents",
-                "params": params
-            });
-
-            let result = match self.rpc_client.get_events(&self.config.stellar_rpc_url, start_ledger, cursor).await {
+            let result = match self.rpc_client.get_events(&self.config.stellar_rpc_url, start_ledger, cursor.clone()).await {
                 Ok(r) => r,
                 Err(msg) => {
                     warn!(message = %msg, "RPC error");
@@ -374,9 +384,12 @@ impl<R: RpcClient> Indexer<R> {
             latest_ledger = result.latest_ledger;
             let current_count = result.events.len();
             total_fetched += current_count;
+            let next_cursor = result.rpc_cursor.clone();
 
+            // Store events and checkpoint atomically in one transaction.
+            let mut db_tx = self.pool.begin().await?;
             for event in result.events {
-                match self.store_event(&event).await {
+                match self.store_event_in_tx(&mut db_tx, &event).await {
                     Ok(rows) => {
                         total_inserted += rows;
                         if rows == 0 {
@@ -388,18 +401,19 @@ impl<R: RpcClient> Indexer<R> {
                     }
                     Err(e) => {
                         warn!(
-                            tx_hash = %event.tx_hash,
-                            contract_id = %event.contract_id,
-                            ledger = event.ledger,
-                            event_type = %event.event_type,
                             error = %e,
                             "Failed to store event",
                         );
                     }
                 }
             }
+            // Persist the cursor that was just consumed so restarts resume correctly.
+            if let Some(ref c) = next_cursor.as_ref().or(cursor.as_ref()) {
+                let _ = Self::save_checkpoint(&mut db_tx, c).await;
+            }
+            db_tx.commit().await?;
 
-            cursor = result.rpc_cursor;
+            cursor = next_cursor;
             if cursor.is_none() {
                 break;
             }
@@ -549,6 +563,38 @@ impl<R: RpcClient> Indexer<R> {
         .await?;
 
         Ok(u64::from(inserted))
+    }
+
+    async fn store_event_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        event: &SorobanEvent,
+    ) -> Result<u64, anyhow::Error> {
+        if !Self::validate_event_data(event) {
+            return Ok(0);
+        }
+        let ledger = match i64::try_from(event.ledger) {
+            Ok(v) => v,
+            Err(_) => return Ok(0),
+        };
+        let timestamp = DateTime::parse_from_rfc3339(&event.ledger_closed_at)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .map_err(|_| anyhow::anyhow!("Unparseable ledger_closed_at"))?;
+        let event_data = json!({ "value": event.value, "topic": event.topic });
+        let result = sqlx::query(
+            r#"INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+               VALUES ($1, $2, $3, $4, $5, $6)
+               ON CONFLICT (tx_hash, contract_id, event_type) DO NOTHING"#,
+        )
+        .bind(&event.contract_id)
+        .bind(&event.event_type)
+        .bind(&event.tx_hash)
+        .bind(ledger)
+        .bind(timestamp)
+        .bind(event_data)
+        .execute(&mut **tx)
+        .await?;
+        Ok(result.rows_affected())
     }
 }
 
@@ -724,6 +770,9 @@ mod tests {
                 api_keys: Vec::new(),
                 db_max_connections: 10,
                 db_min_connections: 2,
+                db_idle_timeout_secs: 600,
+                db_max_lifetime_secs: 1800,
+                db_test_before_acquire: true,
                 allowed_origins: vec!["*".to_string()],
                 rate_limit_per_minute: 60,
                 indexer_stall_timeout_secs: 60,
@@ -821,6 +870,29 @@ mod tests {
         assert_eq!(count, 2);
     }
 
+    #[sqlx::test(migrations = "./migrations")]
+    async fn checkpoint_is_saved_and_loaded(pool: PgPool) {
+        let idx = indexer(pool.clone());
+
+        // No checkpoint initially
+        assert!(idx.load_checkpoint().await.is_none());
+
+        // Save a checkpoint inside a transaction
+        let mut tx = pool.begin().await.unwrap();
+        Indexer::<MockRpcClient>::save_checkpoint(&mut tx, "1234567-0").await.unwrap();
+        tx.commit().await.unwrap();
+
+        // Should now be readable
+        assert_eq!(idx.load_checkpoint().await.as_deref(), Some("1234567-0"));
+
+        // Overwrite with a newer cursor
+        let mut tx = pool.begin().await.unwrap();
+        Indexer::<MockRpcClient>::save_checkpoint(&mut tx, "1234568-0").await.unwrap();
+        tx.commit().await.unwrap();
+
+        assert_eq!(idx.load_checkpoint().await.as_deref(), Some("1234568-0"));
+    }
+
     #[tokio::test]
     async fn mock_rpc_client_returns_configured_responses() {
         let mock_client = MockRpcClient::with_latest_ledger_responses(vec![
@@ -882,6 +954,9 @@ mod tests {
                 api_keys: Vec::new(),
                 db_max_connections: 10,
                 db_min_connections: 2,
+                db_idle_timeout_secs: 600,
+                db_max_lifetime_secs: 1800,
+                db_test_before_acquire: true,
                 allowed_origins: vec!["*".to_string()],
                 rate_limit_per_minute: 60,
                 indexer_stall_timeout_secs: 60,

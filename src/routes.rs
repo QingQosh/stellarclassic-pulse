@@ -64,6 +64,7 @@ pub struct AppState {
         handlers::health,
         handlers::status,
         handlers::get_events,
+        handlers::export_events,
         handlers::get_events_by_contract,
         handlers::get_events_by_tx,
         handlers::stream_events,
@@ -147,6 +148,7 @@ pub fn create_router_with_tx(
     // Versioned v1 routes
     let v1 = Router::new()
         .route("/events", get(handlers::get_events))
+        .route("/events/export", get(handlers::export_events))
         .route("/events/stream", get(handlers::stream_events))
         .route("/events/contract/:contract_id", get(handlers::get_events_by_contract))
         .route("/events/contract/:contract_id/stream", get(handlers::stream_events_by_contract))
