@@ -1,5 +1,6 @@
 use sqlx::{postgres::PgPoolOptions, Executor, PgPool};
-use tracing::{debug, info, info_span, Instrument};
+use std::time::Duration;
+use tracing::info;
 
 /// Per-endpoint query timeout configuration (in milliseconds)
 pub struct QueryTimeouts {
@@ -23,17 +24,26 @@ pub async fn create_pool(
     db_max_connections: u32,
     db_min_connections: u32,
     db_statement_timeout_ms: u64,
+    db_idle_timeout_secs: u64,
+    db_max_lifetime_secs: u64,
+    db_test_before_acquire: bool,
 ) -> Result<PgPool, sqlx::Error> {
     info!(
         min_connections = db_min_connections,
         max_connections = db_max_connections,
         statement_timeout_ms = db_statement_timeout_ms,
+        idle_timeout_secs = db_idle_timeout_secs,
+        max_lifetime_secs = db_max_lifetime_secs,
+        test_before_acquire = db_test_before_acquire,
         "Configuring Postgres connection pool"
     );
 
     PgPoolOptions::new()
         .max_connections(db_max_connections)
         .min_connections(db_min_connections)
+        .idle_timeout(Duration::from_secs(db_idle_timeout_secs))
+        .max_lifetime(Duration::from_secs(db_max_lifetime_secs))
+        .test_before_acquire(db_test_before_acquire)
         .after_connect(move |conn, _| {
             Box::pin(async move {
                 conn.execute(
@@ -127,5 +137,17 @@ mod tests {
     async fn run_migrations_on_fresh_db_returns_positive_count(pool: PgPool) {
         let count = run_migrations(&pool).await.expect("migrations must succeed");
         assert!(count > 0, "fresh database should have migrations applied");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_pool_signature_accepts_new_options() {
+        // Verify the function signature compiles with all new parameters.
+        // Actual pool creation requires a live DB; this just validates types.
+        let _f: fn(&str, u32, u32, u64, u64, u64, bool) -> _ = create_pool;
     }
 }
