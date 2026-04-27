@@ -72,26 +72,72 @@ pub async fn set_query_timeout(
 /// Runs migrations under a Postgres session-level advisory lock so that
 /// concurrent replicas starting simultaneously do not race each other.
 /// The lock is always released — even if migration fails.
-pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
+/// Returns the number of migrations applied.
+pub async fn run_migrations(pool: &PgPool) -> Result<usize, sqlx::migrate::MigrateError> {
     const MIGRATION_LOCK_ID: i64 = 0xD0C0_1234_i64; // arbitrary stable key
 
-    let mut conn = pool.acquire().await.map_err(sqlx::migrate::MigrateError::from)?;
+    async move {
+        let mut conn = pool.acquire().await.map_err(sqlx::migrate::MigrateError::from)?;
 
-    sqlx::query("SELECT pg_advisory_lock($1)")
-        .bind(MIGRATION_LOCK_ID)
-        .execute(&mut *conn)
+        debug!(lock_id = MIGRATION_LOCK_ID, "Acquiring advisory lock");
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(MIGRATION_LOCK_ID)
+            .execute(&mut *conn)
+            .await
+            .map_err(sqlx::migrate::MigrateError::from)?;
+        debug!(lock_id = MIGRATION_LOCK_ID, "Advisory lock acquired");
+
+        // Record which migrations are already applied before running.
+        let before: Vec<(String,)> = sqlx::query_as(
+            "SELECT version::text FROM _sqlx_migrations WHERE success = true",
+        )
+        .fetch_all(&mut *conn)
         .await
-        .map_err(sqlx::migrate::MigrateError::from)?;
+        .unwrap_or_default();
 
-    let result = sqlx::migrate!("./migrations").run(&mut *conn).await;
+        let result = sqlx::migrate!("./migrations").run(&mut *conn).await;
 
-    // Always release — ignore unlock errors so the migration result is returned.
-    let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
-        .bind(MIGRATION_LOCK_ID)
-        .execute(&mut *conn)
-        .await;
+        // Always release — ignore unlock errors so the migration result is returned.
+        let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(MIGRATION_LOCK_ID)
+            .execute(&mut *conn)
+            .await;
+        debug!(lock_id = MIGRATION_LOCK_ID, "Advisory lock released");
 
-    result
+        result?;
+
+        // Count newly applied migrations by comparing before/after.
+        let after_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM _sqlx_migrations WHERE success = true",
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap_or(before.len() as i64);
+
+        let newly_applied = (after_count as usize).saturating_sub(before.len());
+        info!(count = newly_applied, "Migrations applied");
+        Ok(newly_applied)
+    }
+    .instrument(info_span!("db.run_migrations"))
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[sqlx::test]
+    async fn run_migrations_returns_nonnegative_count(pool: PgPool) {
+        // sqlx::test already runs migrations; calling again should return 0 (nothing new).
+        let count = run_migrations(&pool).await.expect("migrations must succeed");
+        assert_eq!(count, 0, "re-running migrations on an up-to-date schema should apply 0");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn run_migrations_on_fresh_db_returns_positive_count(pool: PgPool) {
+        let count = run_migrations(&pool).await.expect("migrations must succeed");
+        assert!(count > 0, "fresh database should have migrations applied");
+    }
 }
 
 #[cfg(test)]

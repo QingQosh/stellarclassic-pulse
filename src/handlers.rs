@@ -88,7 +88,7 @@ fn resolve_columns<'a>(params: &'a PaginationParams) -> Result<Vec<&'a str>, App
     })
 }
 
-fn validate_contract_id(contract_id: &str) -> Result<(), AppError> {
+pub(crate) fn validate_contract_id(contract_id: &str) -> Result<(), AppError> {
     if contract_id.len() != 56 {
         return Err(AppError::Validation("invalid contract_id format".to_string()));
     }
@@ -101,7 +101,7 @@ fn validate_contract_id(contract_id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn validate_tx_hash(tx_hash: &str) -> Result<(), AppError> {
+pub(crate) fn validate_tx_hash(tx_hash: &str) -> Result<(), AppError> {
     if tx_hash.len() != 64 {
         return Err(AppError::Validation("invalid tx_hash format".to_string()));
     }
@@ -2293,6 +2293,73 @@ mod tests {
         );
     }
 
+    // --- Validation edge-case unit tests (discovered via fuzzing review) ---
+
+    #[test]
+    fn validate_contract_id_empty_returns_err() {
+        assert!(validate_contract_id("").is_err());
+    }
+
+    #[test]
+    fn validate_contract_id_55_chars_returns_err() {
+        let s = format!("C{}", "A".repeat(54));
+        assert!(validate_contract_id(&s).is_err());
+    }
+
+    #[test]
+    fn validate_contract_id_57_chars_returns_err() {
+        let s = format!("C{}", "A".repeat(56));
+        assert!(validate_contract_id(&s).is_err());
+    }
+
+    #[test]
+    fn validate_contract_id_starts_with_lowercase_c_returns_err() {
+        let s = format!("c{}", "A".repeat(55));
+        assert!(validate_contract_id(&s).is_err());
+    }
+
+    #[test]
+    fn validate_contract_id_with_special_chars_returns_err() {
+        let s = format!("C{}!", "A".repeat(54));
+        assert!(validate_contract_id(&s).is_err());
+    }
+
+    #[test]
+    fn validate_contract_id_valid_returns_ok() {
+        let s = format!("C{}", "A".repeat(55));
+        assert!(validate_contract_id(&s).is_ok());
+    }
+
+    #[test]
+    fn validate_tx_hash_empty_returns_err() {
+        assert!(validate_tx_hash("").is_err());
+    }
+
+    #[test]
+    fn validate_tx_hash_63_chars_returns_err() {
+        assert!(validate_tx_hash(&"a".repeat(63)).is_err());
+    }
+
+    #[test]
+    fn validate_tx_hash_65_chars_returns_err() {
+        assert!(validate_tx_hash(&"a".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn validate_tx_hash_non_hex_returns_err() {
+        assert!(validate_tx_hash(&"g".repeat(64)).is_err());
+    }
+
+    #[test]
+    fn validate_tx_hash_valid_lowercase_returns_ok() {
+        assert!(validate_tx_hash(&"a".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn validate_tx_hash_valid_uppercase_returns_ok() {
+        assert!(validate_tx_hash(&"A".repeat(64)).is_ok());
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn stream_events_invalid_contract_id_returns_400(pool: PgPool) {
         let app = create_test_router(pool);
@@ -2335,6 +2402,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn stream_events_invalid_topic_prefix_returns_400(pool: PgPool) {
+        let app = create_test_router(pool);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/stream?topic_prefix=not-valid-json{{{")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"], "topic_prefix must be valid JSON");
+        assert_eq!(v["code"], "VALIDATION_ERROR");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn stream_events_valid_topic_prefix_returns_sse_stream(pool: PgPool) {
+        let app = create_test_router(pool);
+
+        // URL-encoded JSON: {"sym":"swap"}
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/stream?topic_prefix=%7B%22sym%22%3A%22swap%22%7D")
+                    .header("Accept", "text/event-stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "text/event-stream"
+        );
     }
 
     // Metrics endpoint tests
