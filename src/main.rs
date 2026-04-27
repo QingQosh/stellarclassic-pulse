@@ -14,8 +14,10 @@ mod indexer;
 mod metrics;
 mod middleware;
 mod models;
+mod normalizer;
 mod routes;
 mod rpc_client;
+mod subscriptions;
 
 use std::net::SocketAddr;
 use std::sync::Arc;

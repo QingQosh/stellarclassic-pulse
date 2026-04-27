@@ -1,6 +1,7 @@
 use axum::{body::Body, routing::get, Router};
 use axum::http::{HeaderValue, Method, Request};
 use axum::extract::MatchedPath;
+use reqwest::Client as HttpClient;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -22,7 +23,7 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use uuid::Uuid;
 use utoipa::OpenApi;
 
-use crate::{config::{HealthState, IndexerState}, handlers, middleware, metrics, models::SorobanEvent};
+use crate::{config::{HealthState, IndexerState}, handlers, middleware, metrics, models::SorobanEvent, subscriptions};
 
 type ContractCountCache = moka::future::Cache<String, i64>;
 
@@ -154,7 +155,10 @@ pub fn create_router_with_tx(
         .route("/events/contract/:contract_id/stream", get(handlers::stream_events_by_contract))
         .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx))
         .route("/contracts", get(handlers::get_contracts))
-        .route("/admin/replay", axum::routing::post(handlers::replay_events));
+        .route("/admin/replay", axum::routing::post(handlers::replay_events))
+        .route("/subscriptions", axum::routing::post(subscriptions::create_subscription))
+        .route("/subscriptions/:id", get(subscriptions::get_subscription).delete(subscriptions::cancel_subscription))
+        .route("/subscriptions/:id/ack", axum::routing::post(subscriptions::ack_subscription));
 
     // Unversioned deprecated aliases (same handlers, add Deprecation header via middleware)
     let deprecated = Router::new()
