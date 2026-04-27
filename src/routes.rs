@@ -1,6 +1,7 @@
 use axum::{body::Body, routing::get, Router};
 use axum::http::{HeaderValue, Method, Request};
 use axum::extract::MatchedPath;
+use reqwest::Client as HttpClient;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -22,7 +23,7 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use uuid::Uuid;
 use utoipa::OpenApi;
 
-use crate::{config::{HealthState, IndexerState}, handlers, middleware, metrics, models::SorobanEvent};
+use crate::{config::{HealthState, IndexerState}, handlers, middleware, metrics, models::SorobanEvent, subscriptions};
 
 #[derive(Clone, Default)]
 struct UuidMakeRequestId;
@@ -45,6 +46,7 @@ pub struct AppState {
     pub sse_connections: Arc<AtomicUsize>,
     pub sse_max_connections: usize,
     pub health_check_timeout_ms: u64,
+    pub http_client: HttpClient,
 }
 
 /// OpenAPI spec — all paths are documented via #[utoipa::path] on handlers.
@@ -91,7 +93,7 @@ pub fn create_router(
     prometheus_handle: PrometheusHandle,
     health_check_timeout_ms: u64,
 ) -> Router {
-    create_router_with_tx(pool, api_keys, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000, 1000, health_check_timeout_ms)
+    create_router_with_tx(pool, api_keys, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000, 1000, health_check_timeout_ms, HttpClient::new())
 }
 
 pub fn create_router_with_tx(
@@ -107,6 +109,7 @@ pub fn create_router_with_tx(
     sse_keepalive_interval_ms: u64,
     sse_max_connections: usize,
     health_check_timeout_ms: u64,
+    http_client: HttpClient,
 ) -> Router {
     let cors = build_cors(allowed_origins);
     let auth_state = Arc::new(middleware::AuthState { api_keys });
@@ -120,6 +123,7 @@ pub fn create_router_with_tx(
         sse_connections: Arc::new(AtomicUsize::new(0)),
         sse_max_connections,
         health_check_timeout_ms,
+        http_client,
     };
 
     // Build governor config: burst = rate_limit_per_minute, replenish 1 token per (60/rate) seconds.
@@ -136,7 +140,10 @@ pub fn create_router_with_tx(
         .route("/events/contract/:contract_id/stream", get(handlers::stream_events_by_contract))
         .route("/events/tx/:tx_hash", get(handlers::get_events_by_tx))
         .route("/contracts", get(handlers::get_contracts))
-        .route("/admin/replay", axum::routing::post(handlers::replay_events));
+        .route("/admin/replay", axum::routing::post(handlers::replay_events))
+        .route("/subscriptions", axum::routing::post(subscriptions::create_subscription))
+        .route("/subscriptions/:id", get(subscriptions::get_subscription).delete(subscriptions::cancel_subscription))
+        .route("/subscriptions/:id/ack", axum::routing::post(subscriptions::ack_subscription));
 
     // Unversioned deprecated aliases (same handlers, add Deprecation header via middleware)
     let deprecated = Router::new()
