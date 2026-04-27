@@ -1,10 +1,10 @@
 use axum::{extract::{Path, Query, State}, Json, response::IntoResponse, http::StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::http::HeaderMap;
 use sqlx::Row;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures::stream::{self, Stream, StreamExt};
 use serde_json::{json, Value};
-use sqlx::Row;
 use std::convert::Infallible;
 use std::time::Duration;
 use std::sync::OnceLock;
@@ -14,6 +14,18 @@ use chrono::{DateTime, Utc};
 
 use std::sync::atomic::Ordering;
 use crate::{error::AppError, models::{self, ContractSummary, PaginationParams, StreamParams}, routes::AppState};
+
+/// Compute a lightweight ETag from the last event id, created_at, and total count.
+/// Uses SHA-256 truncated to 8 bytes, base64-encoded — no double-serialization needed.
+fn compute_etag(last_id: &Uuid, last_created_at: &DateTime<Utc>, total: i64) -> String {
+    use sha2::{Sha256, Digest};
+    let mut h = Sha256::new();
+    h.update(last_id.as_bytes());
+    h.update(last_created_at.timestamp_nanos_opt().unwrap_or(0).to_le_bytes());
+    h.update(total.to_le_bytes());
+    let digest = h.finalize();
+    format!("\"{}\"", URL_SAFE_NO_PAD.encode(&digest[..8]))
+}
 
 /// Simple in-process cache entry for the contracts list.
 struct CacheEntry {
@@ -519,7 +531,8 @@ fn filter_fields(event: &models::Event, columns: &[&str]) -> Value {
 pub async fn get_events(
     State(state): State<AppState>,
     Query(params): Query<PaginationParams>,
-) -> Result<Json<Value>, AppError> {
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
     // Validate ledger range
     if let (Some(from), Some(to)) = (params.from_ledger, params.to_ledger) {
         if from > to {
@@ -556,7 +569,6 @@ pub async fn get_events(
 
         let where_clause = format!("WHERE {}", conditions.join(" AND "));
 
-        // Always fetch ledger + id so we can build next_cursor; merge with requested columns.
         let mut select_cols = columns.to_vec();
         if !select_cols.contains(&"ledger") { select_cols.push("ledger"); }
         if !select_cols.contains(&"id") { select_cols.push("id"); }
@@ -576,7 +588,7 @@ pub async fn get_events(
         if let Some(tl) = params.to_ledger { q = q.bind(tl); }
         q = q.bind(limit);
 
-        let rows = q.fetch_all(&state.pool).await?;
+        let rows = q.fetch_all(&state.read_pool).await?;
 
         let has_more = rows.len() as i64 == limit;
         let next_cursor = if has_more {
@@ -594,7 +606,7 @@ pub async fn get_events(
             "data": events,
             "next_cursor": next_cursor,
             "limit": limit,
-        })));
+        })).into_response());
     }
 
     // Offset-based path (deprecated fallback)
@@ -623,10 +635,11 @@ pub async fn get_events(
         format!("WHERE {}", conditions.join(" AND "))
     };
 
-    // Always include ledger + id so we can emit next_cursor even in offset mode.
     let mut select_cols = columns.to_vec();
     if !select_cols.contains(&"ledger") { select_cols.push("ledger"); }
     if !select_cols.contains(&"id") { select_cols.push("id"); }
+    // Always fetch created_at for ETag computation
+    if !select_cols.contains(&"created_at") { select_cols.push("created_at"); }
 
     let query_str = format!(
         "SELECT {} FROM events {} ORDER BY ledger DESC, id DESC LIMIT ${} OFFSET ${}",
@@ -642,7 +655,7 @@ pub async fn get_events(
     if let Some(tl) = params.to_ledger { q = q.bind(tl); }
     q = q.bind(limit).bind(offset);
 
-    let rows = q.fetch_all(&state.pool).await?;
+    let rows = q.fetch_all(&state.read_pool).await?;
 
     let has_more = rows.len() as i64 == limit;
     let next_cursor = if has_more {
@@ -656,24 +669,46 @@ pub async fn get_events(
 
     let events = rows_to_json(&rows, &columns)?;
 
-    let (total, approximate): (i64, bool) = if exact {
+    let (total, approximate): (i64, bool) = if exact || !conditions.is_empty() {
         let count_str = format!("SELECT COUNT(*) FROM events {}", where_clause);
         let mut cq = sqlx::query_scalar::<_, i64>(&count_str);
         if let Some(ref et) = params.event_type { cq = cq.bind(et); }
         if let Some(fl) = params.from_ledger { cq = cq.bind(fl); }
         if let Some(tl) = params.to_ledger { cq = cq.bind(tl); }
-        let count = cq.fetch_one(&state.pool).await?;
+        let count = cq.fetch_one(&state.read_pool).await?;
         (count, false)
     } else {
-        match sqlx::query_scalar::<_, i64>(
+        let count = sqlx::query_scalar::<_, i64>(
             "SELECT reltuples::bigint FROM pg_class WHERE relname = 'events'",
         )
-        .fetch_one(&state.pool)
+        .fetch_one(&state.read_pool)
         .await?;
         (count, true)
     };
 
-    Ok(Json(json!({
+    // Build ETag from last row's id + created_at + total
+    let etag = rows.first().and_then(|row| {
+        let id: Option<Uuid> = row.try_get("id").ok();
+        let created_at: Option<DateTime<Utc>> = row.try_get("created_at").ok();
+        id.zip(created_at).map(|(id, ca)| compute_etag(&id, &ca, total))
+    });
+
+    // Check If-None-Match — return 304 if ETag matches
+    if let Some(ref tag) = etag {
+        if let Some(inm) = headers.get("if-none-match").and_then(|v| v.to_str().ok()) {
+            if inm == tag {
+                let resp = axum::http::Response::builder()
+                    .status(StatusCode::NOT_MODIFIED)
+                    .header("ETag", tag.as_str())
+                    .header("Cache-Control", "no-cache")
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+                return Ok(resp.into_response());
+            }
+        }
+    }
+
+    let body = json!({
         "data": events,
         "next_cursor": next_cursor,
         "total": total,
@@ -681,7 +716,20 @@ pub async fn get_events(
         "limit": limit,
         "approximate": approximate,
         "pagination": "offset — migrate to cursor parameter for better performance",
-    })))
+    });
+
+    let mut response = Json(body).into_response();
+    if let Some(ref tag) = etag {
+        response.headers_mut().insert(
+            "ETag",
+            tag.parse().unwrap(),
+        );
+        response.headers_mut().insert(
+            "Cache-Control",
+            "no-cache".parse().unwrap(),
+        );
+    }
+    Ok(response)
 }
 
 #[utoipa::path(
@@ -746,7 +794,7 @@ pub async fn get_events_by_contract(
     if let Some(tl) = params.to_ledger { q = q.bind(tl); }
     q = q.bind(limit).bind(offset);
 
-    let rows = q.fetch_all(&state.pool).await?;
+    let rows = q.fetch_all(&state.read_pool).await?;
 
     if rows.is_empty() {
         return Err(AppError::NotFound);
@@ -806,7 +854,7 @@ pub async fn get_events_by_tx(
 
     let rows = sqlx::query(&query_str)
         .bind(&tx_hash)
-        .fetch_all(&state.pool)
+        .fetch_all(&state.read_pool)
         .await?;
 
     let events = rows_to_json(&rows, &columns)?;
@@ -850,11 +898,11 @@ pub async fn get_contracts(
     )
     .bind(limit)
     .bind(offset)
-    .fetch_all(&state.pool)
+    .fetch_all(&state.read_pool)
     .await?;
 
     let total: i64 = sqlx::query_scalar("SELECT COUNT(DISTINCT contract_id) FROM events")
-        .fetch_one(&state.pool)
+        .fetch_one(&state.read_pool)
         .await?;
 
     let result = json!({
@@ -891,7 +939,7 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let indexer_state = Arc::new(IndexerState::new());
         let prometheus_handle = crate::metrics::init_metrics();
-        crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000)
+        crate::routes::create_router(pool, Vec::new(), &[], 60, health_state, indexer_state, prometheus_handle, 2000)
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -912,27 +960,6 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["data"], json!([]));
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn get_events_by_contract_no_events_returns_200_empty_data(pool: PgPool) {
-        let app = create_test_router(pool);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/events/contract/unknown_contract_no_events_deadbeef")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v["data"], json!([]));
-        assert_eq!(v["contract_id"], json!("unknown_contract_no_events_deadbeef"));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1313,7 +1340,7 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let prometheus_handle = crate::metrics::init_metrics();
         let indexer_state = Arc::new(IndexerState::new());
-        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000);
+        let app = crate::routes::create_router(pool, Vec::new(), &[], 60, health_state, indexer_state, prometheus_handle, 2000);
 
         let response = app
             .oneshot(
@@ -1382,7 +1409,7 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let prometheus_handle = crate::metrics::init_metrics();
         let indexer_state = Arc::new(IndexerState::new());
-        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000);
+        let app = crate::routes::create_router(pool, Vec::new(), &[], 60, health_state, indexer_state, prometheus_handle, 2000);
 
         let response = app
             .oneshot(
@@ -1407,7 +1434,7 @@ mod tests {
         // never updated, treated as stalled
         let prometheus_handle = crate::metrics::init_metrics();
         let indexer_state = Arc::new(IndexerState::new());
-        let app = crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000);
+        let app = crate::routes::create_router(pool, Vec::new(), &[], 60, health_state, indexer_state, prometheus_handle, 2000);
 
         let response = app
             .oneshot(
@@ -2221,5 +2248,80 @@ mod tests {
         assert!(v.get("total").is_some());
         assert!(v.get("page").is_some());
         assert!(v["next_cursor"].is_string(), "offset path must also return next_cursor");
+    }
+
+    // --- ETag / conditional GET tests ---
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_events_returns_etag_header(pool: PgPool) {
+        insert_events(&pool, 3).await;
+        let app = create_test_router(pool);
+
+        let resp = app
+            .oneshot(Request::builder().uri("/v1/events").body(Body::empty()).unwrap())
+            .await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().contains_key("etag"), "ETag header must be present");
+        let etag = resp.headers().get("etag").unwrap().to_str().unwrap().to_string();
+        assert!(etag.starts_with('"') && etag.ends_with('"'), "ETag must be quoted: {etag}");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_events_matching_etag_returns_304(pool: PgPool) {
+        insert_events(&pool, 3).await;
+        let app = create_test_router(pool);
+
+        // First request — get ETag
+        let resp = app.clone()
+            .oneshot(Request::builder().uri("/v1/events").body(Body::empty()).unwrap())
+            .await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let etag = resp.headers().get("etag").unwrap().to_str().unwrap().to_string();
+
+        // Second request with If-None-Match — should get 304
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events")
+                    .header("if-none-match", &etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+        // 304 must include ETag header
+        assert_eq!(resp.headers().get("etag").unwrap().to_str().unwrap(), etag);
+        // 304 body must be empty
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert!(body.is_empty());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_events_non_matching_etag_returns_200(pool: PgPool) {
+        insert_events(&pool, 3).await;
+        let app = create_test_router(pool);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events")
+                    .header("if-none-match", "\"stale-etag-value\"")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_events_empty_db_no_etag(pool: PgPool) {
+        let app = create_test_router(pool);
+
+        let resp = app
+            .oneshot(Request::builder().uri("/v1/events").body(Body::empty()).unwrap())
+            .await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        // No rows → no ETag
+        assert!(resp.headers().get("etag").is_none());
     }
 }

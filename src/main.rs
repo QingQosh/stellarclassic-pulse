@@ -73,11 +73,13 @@ async fn main() -> anyhow::Result<()> {
 
     info!(
         rpc_url = %config.stellar_rpc_url,
+        rpc_headers = ?config.safe_rpc_headers(),
         start_ledger = config.start_ledger,
         port = config.port,
         db_url = %config.safe_db_url(),
         db_max_connections = config.db_max_connections,
         db_min_connections = config.db_min_connections,
+        indexer_event_types = ?config.indexer_event_types,
         "Resolved configuration",
     );
 
@@ -107,6 +109,27 @@ async fn main() -> anyhow::Result<()> {
     };
     
     let _ = db::run_migrations(&pool).await;
+
+    // Create read pool: use replica URL if configured, otherwise reuse primary pool.
+    let read_pool = if let Some(ref replica_url) = config.database_replica_url {
+        info!("DATABASE_REPLICA_URL set — HTTP handlers will use read replica");
+        match db::create_pool(
+            replica_url,
+            config.db_max_connections,
+            config.db_min_connections,
+            config.db_statement_timeout_ms,
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to connect to read replica, falling back to primary");
+                pool.clone()
+            }
+        }
+    } else {
+        pool.clone()
+    };
 
     info!("Migrations applied successfully");
     info!(url = %config.stellar_rpc_url, "Soroban RPC URL");
@@ -166,7 +189,7 @@ async fn main() -> anyhow::Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     info!(origins = ?config.allowed_origins, "Allowed CORS origins");
     info!(rate_limit = config.rate_limit_per_minute, "Rate limit per IP");
-    let router = routes::create_router_with_tx(pool, config.api_keys.clone(), &config.allowed_origins, config.rate_limit_per_minute, config.behind_proxy, health_state, indexer_state, prometheus_handle, event_tx, config.sse_keepalive_interval_ms, config.sse_max_connections, 2000);
+    let router = routes::create_router_with_tx(pool, read_pool, config.api_keys.clone(), &config.allowed_origins, config.rate_limit_per_minute, config.behind_proxy, health_state, indexer_state, prometheus_handle, event_tx, config.sse_keepalive_interval_ms, config.sse_max_connections, 2000);
 
     info!(addr = %addr, "Soroban Pulse listening");
 
