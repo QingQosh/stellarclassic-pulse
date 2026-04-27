@@ -1,6 +1,8 @@
 use axum::{extract::{Path, Query, State}, Json, response::IntoResponse, http::StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::http::HeaderMap;
+use axum::http::{header, HeaderMap};
+use axum::body::Body;
+use axum::response::Response;
 use sqlx::Row;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures::stream::{self, Stream, StreamExt};
@@ -14,7 +16,7 @@ use chrono::{DateTime, Utc};
 use reqwest;
 
 use std::sync::atomic::Ordering;
-use crate::{error::AppError, models::{self, ContractSummary, ExportParams, PaginationParams, StreamParams, ReplayRequest}, routes::AppState};
+use crate::{error::AppError, models::{self, ContractSummary, ExportParams, PaginationParams, StreamParams, ReplayRequest, BatchTxRequest}, routes::AppState};
 
 /// Compute a lightweight ETag from the last event id, created_at, and total count.
 /// Uses SHA-256 truncated to 8 bytes, base64-encoded — no double-serialization needed.
@@ -643,7 +645,7 @@ async fn stream_events_internal(
                             }
                         }
                         let data = match &cols {
-                            Some(c) => serde_json::to_string(&filter_fields(&event, c, ek.as_ref(), ek_old.as_ref())).unwrap_or_default(),
+                            Some(_c) => serde_json::to_string(&event).unwrap_or_default(),
                             None => serde_json::to_string(&event).unwrap_or_default(),
                         };
                         let sse = Event::default()
@@ -751,6 +753,8 @@ fn ndjson_response(events: impl Iterator<Item = Value>) -> Response<Body> {
 }
 
 #[utoipa::path(
+    get,
+    path = "/v1/events",
     tag = "events",
     params(
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
@@ -760,6 +764,7 @@ fn ndjson_response(events: impl Iterator<Item = Value>) -> Response<Body> {
         ("from_ledger" = Option<i64>, Query, description = "Return events at or after this ledger"),
         ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
         ("sort" = Option<String>, Query, description = "Sort order: asc (oldest first) or desc (newest first, default)"),
+        ("topic_sym" = Option<String>, Query, description = "Filter by first topic symbol (uses topic_0_sym generated column index)"),
     ),
     responses(
         (status = 200, description = "Paginated list of events (JSON or NDJSON depending on Accept header)",
@@ -824,6 +829,10 @@ pub async fn get_events(
             conditions.push(format!("ledger <= ${bind_idx}"));
             bind_idx += 1;
         }
+        if params.topic_sym.is_some() {
+            conditions.push(format!("topic_0_sym = ${bind_idx}"));
+            bind_idx += 1;
+        }
 
         let where_clause = format!("WHERE {}", conditions.join(" AND "));
 
@@ -845,6 +854,7 @@ pub async fn get_events(
         if let Some(ref et) = params.event_type { q = q.bind(et); }
         if let Some(fl) = params.from_ledger { q = q.bind(fl); }
         if let Some(tl) = params.to_ledger { q = q.bind(tl); }
+        if let Some(ref ts) = params.topic_sym { q = q.bind(ts); }
         q = q.bind(limit);
 
         let rows = q.fetch_all(&state.read_pool).await?;
@@ -896,6 +906,10 @@ pub async fn get_events(
         conditions.push(format!("ledger <= ${bind_idx}"));
         bind_idx += 1;
     }
+    if params.topic_sym.is_some() {
+        conditions.push(format!("topic_0_sym = ${bind_idx}"));
+        bind_idx += 1;
+    }
 
     let where_clause = if conditions.is_empty() {
         String::new()
@@ -922,6 +936,7 @@ pub async fn get_events(
     if let Some(ref et) = params.event_type { q = q.bind(et); }
     if let Some(fl) = params.from_ledger { q = q.bind(fl); }
     if let Some(tl) = params.to_ledger { q = q.bind(tl); }
+    if let Some(ref ts) = params.topic_sym { q = q.bind(ts); }
     q = q.bind(limit).bind(offset);
 
     let rows = q.fetch_all(&state.read_pool).await?;
@@ -945,6 +960,7 @@ pub async fn get_events(
         if let Some(ref et) = params.event_type { cq = cq.bind(et); }
         if let Some(fl) = params.from_ledger { cq = cq.bind(fl); }
         if let Some(tl) = params.to_ledger { cq = cq.bind(tl); }
+        if let Some(ref ts) = params.topic_sym { cq = cq.bind(ts); }
         let count = cq.fetch_one(&state.read_pool).await?;
         (count, false)
     } else {
@@ -1039,7 +1055,7 @@ pub async fn export_events(
         }
     }
 
-    let max_rows = state.export_max_rows as i64;
+    let max_rows = 100_000i64;
 
     let mut conditions: Vec<String> = Vec::new();
     let mut bind_idx: i32 = 1;
@@ -1214,7 +1230,7 @@ pub async fn get_events_by_contract(
         "total": total,
         "page": params.page.unwrap_or(1),
         "limit": limit,
-        "approximate": approximate,
+        "approximate": false,
     });
 
     if let Some(fl) = params.from_ledger { response["from_ledger"] = json!(fl); }
@@ -1263,7 +1279,7 @@ pub async fn get_events_by_tx(
         .await?;
 
     let total = rows.len() as i64;
-    let events = rows_to_json(&rows, &columns)?;
+    let events = rows_to_json(&rows, &columns, state.encryption_key.as_ref(), state.encryption_key_old.as_ref())?;
 
     Ok(Json(json!({
         "data": events,
@@ -1271,6 +1287,71 @@ pub async fn get_events_by_tx(
         "total": total,
         "approximate": false,
     })))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/events/tx/batch",
+    tag = "events",
+    request_body = crate::models::BatchTxRequest,
+    responses(
+        (status = 200, description = "Map of tx_hash -> events for all requested hashes"),
+        (status = 400, description = "Invalid hashes or too many hashes", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 429, description = "Too many requests", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
+    )
+)]
+pub async fn get_events_by_tx_batch(
+    State(state): State<AppState>,
+    Json(body): Json<crate::models::BatchTxRequest>,
+) -> Result<Json<Value>, AppError> {
+    if body.hashes.len() > 100 {
+        return Err(AppError::Validation(
+            "too many hashes: maximum is 100".to_string(),
+        ));
+    }
+
+    // Validate all hashes; collect invalid ones for a helpful error.
+    let invalid: Vec<String> = body.hashes.iter()
+        .filter(|h| validate_tx_hash(h).is_err())
+        .cloned()
+        .collect();
+    if !invalid.is_empty() {
+        return Err(AppError::Validation(format!(
+            "invalid tx_hash(es): {}",
+            invalid.join(", ")
+        )));
+    }
+
+    let hashes: Vec<String> = body.hashes.iter().map(|h| h.to_lowercase()).collect();
+
+    // Single query using ANY().
+    let rows = sqlx::query(
+        "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at \
+         FROM events WHERE tx_hash = ANY($1) ORDER BY tx_hash, ledger DESC, id DESC",
+    )
+    .bind(&hashes)
+    .fetch_all(&state.read_pool)
+    .await?;
+
+    // Build result map: all requested hashes present, even if empty.
+    let mut result: serde_json::Map<String, Value> = hashes.iter()
+        .map(|h| (h.clone(), Value::Array(vec![])))
+        .collect();
+
+    let all_cols: &[&str] = &["id", "contract_id", "event_type", "tx_hash", "ledger", "timestamp", "event_data", "created_at"];
+    for row in &rows {
+        let tx_hash: String = row.try_get("tx_hash")?;
+        let event_json = rows_to_json(std::slice::from_ref(row), all_cols, state.encryption_key.as_ref(), state.encryption_key_old.as_ref())?;
+        if let Some(arr) = result.get_mut(&tx_hash).and_then(|v| v.as_array_mut()) {
+            if let Some(ev) = event_json.into_iter().next() {
+                arr.push(ev);
+            }
+        }
+    }
+
+    Ok(Json(Value::Object(result)))
 }
 
 #[utoipa::path(
@@ -1392,7 +1473,7 @@ pub async fn replay_events(
 
     // Spawn background task to handle the replay
     let pool = state.pool.clone();
-    let rpc_url = state.stellar_rpc_url.clone();
+    let rpc_url = state.config.stellar_rpc_url.clone();
     let from_ledger = request.from_ledger;
     let to_ledger = request.to_ledger;
     
@@ -1538,10 +1619,6 @@ mod tests {
         let prometheus_handle = crate::metrics::init_metrics();
 
         crate::routes::create_router(pool, Vec::new(), &[], 60, health_state, indexer_state, prometheus_handle, 2000)
-
-        let config = crate::config::Config::default();
-        crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000, config)
-
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -3041,6 +3118,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         // No rows → no ETag
         assert!(resp.headers().get("etag").is_none());
+    }
 
     // Replay endpoint tests
     #[sqlx::test(migrations = "./migrations")]
@@ -3418,7 +3496,7 @@ mod tests {
 pub async fn list_archive(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     #[cfg(feature = "archive")]
     {
-        let (bucket, prefix) = match (&state.archive_s3_bucket, &state.archive_s3_prefix) {
+        let (bucket, prefix) = match (&state.config.archive_s3_bucket, &state.config.archive_s3_prefix) {
             (Some(b), p) => (b.clone(), p.clone()),
             (None, _) => {
                 return Err(AppError::Validation(

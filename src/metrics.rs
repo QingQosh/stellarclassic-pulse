@@ -62,9 +62,8 @@ pub fn record_webhook_failure() {
     m::counter!("soroban_pulse_webhook_failures_total", 1u64);
 }
 
-/// Record a Kafka publish failure.
-pub fn record_kafka_publish_error() {
-    m::counter!("soroban_pulse_kafka_publish_errors_total", 1u64);
+pub fn record_replay_job() {
+    m::counter!("soroban_pulse_replay_jobs_total", 1u64);
 }
 
 /// Record HTTP request duration
