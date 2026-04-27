@@ -106,9 +106,13 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     
-    let _ = db::run_migrations(&pool).await;
-
-    info!("Migrations applied successfully");
+    match db::run_migrations(&pool).await {
+        Ok(n) => info!(migrations_applied = n, "Migrations applied successfully"),
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to run migrations");
+            std::process::exit(1);
+        }
+    }
     info!(url = %config.stellar_rpc_url, "Soroban RPC URL");
     info!(environment = ?config.environment, "Running environment");
 
