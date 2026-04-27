@@ -47,6 +47,9 @@ pub struct Event {
     pub event_data: Value,
     pub event_data_normalized: Option<Value>,
     pub created_at: DateTime<Utc>,
+    /// Schema version of the Soroban protocol used when this event was indexed.
+    #[sqlx(default)]
+    pub schema_version: i32,
     #[sqlx(default)]
     #[serde(skip)]
     pub total_count: i64,
@@ -197,6 +200,7 @@ impl PaginationParams {
         "event_data",
         "event_data_normalized",
         "created_at",
+        "schema_version",
     ];
 
     pub fn columns(&self) -> Result<Vec<&str>, (Vec<String>, Vec<&'static str>)> {
@@ -253,6 +257,9 @@ pub struct GetEventsResult {
     pub latest_ledger: u64,
     #[serde(rename = "cursor")]
     pub rpc_cursor: Option<String>,
+    /// Soroban protocol version returned by the RPC (used as schema_version).
+    #[serde(rename = "latestLedgerCloseTime", default)]
+    pub protocol_version: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -286,7 +293,7 @@ mod tests {
             to_ledger: None,
             cursor: None,
             sort: None,
-            topic_sym: None,
+            contract_id: None,
         }
     }
 

@@ -3,6 +3,7 @@ pub mod db;
 pub mod encryption;
 pub mod error;
 pub mod handlers;
+pub mod indexer;
 pub mod metrics;
 pub mod middleware;
 pub mod models;

@@ -177,7 +177,12 @@ pub struct Config {
     pub webhook_url: Option<String>,
     pub webhook_secret: Option<String>,
     pub webhook_contract_filter: Vec<String>,
-    pub max_event_data_bytes: usize,
+    /// AES-256-GCM key for encrypting event_data at the application level.
+    /// Set via EVENT_DATA_ENCRYPTION_KEY (64 hex chars = 32 bytes).
+    pub event_data_encryption_key: Option<[u8; 32]>,
+    /// Previous encryption key for key rotation support.
+    /// Set via EVENT_DATA_ENCRYPTION_KEY_OLD.
+    pub event_data_encryption_key_old: Option<[u8; 32]>,
 }
 
 impl Default for Config {
@@ -214,7 +219,8 @@ impl Default for Config {
             webhook_url: None,
             webhook_secret: None,
             webhook_contract_filter: Vec::new(),
-            max_event_data_bytes: 65536,
+            event_data_encryption_key: None,
+            event_data_encryption_key_old: None,
         }
     }
 }
@@ -729,12 +735,14 @@ impl Config {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect(),
-            max_event_data_bytes: parse_int::<usize>(
-                "MAX_EVENT_DATA_BYTES",
-                &env_or_file_or("MAX_EVENT_DATA_BYTES", &file, "65536"),
-                "65536",
-                &mut errors,
-            ).unwrap_or(65536),
+            event_data_encryption_key: env::var("EVENT_DATA_ENCRYPTION_KEY")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map(|s| parse_hex_key("EVENT_DATA_ENCRYPTION_KEY", &s)),
+            event_data_encryption_key_old: env::var("EVENT_DATA_ENCRYPTION_KEY_OLD")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map(|s| parse_hex_key("EVENT_DATA_ENCRYPTION_KEY_OLD", &s)),
         }
     }
 }

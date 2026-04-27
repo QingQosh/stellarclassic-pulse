@@ -454,16 +454,35 @@ impl<R: RpcClient> Indexer<R> {
         .map(|_| ())
     }
 
+    /// Public wrapper around `fetch_and_store_events` for integration/resilience tests.
+    pub async fn fetch_and_store_events_pub(&self, start_ledger: u64) -> Result<u64, String> {
+        self.fetch_and_store_events(start_ledger)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     #[instrument(skip(self), fields(start_ledger = start_ledger))]
     async fn fetch_and_store_events(&self, start_ledger: u64) -> Result<u64, IndexerFetchError> {
+        let cycle_start = std::time::Instant::now();
         // Resume from persisted cursor if available, otherwise start from ledger.
         let mut cursor: Option<String> = self.load_checkpoint().await;
         let mut latest_ledger = start_ledger;
         let mut total_fetched = 0;
         let mut total_inserted = 0;
         let mut total_skipped = 0;
+        let mut total_pages = 0u32;
+        let mut total_rpc_ms = 0u128;
+        let mut total_db_ms = 0u128;
+        let start_ledger_for_log = start_ledger;
+
+        tracing::debug!(
+            start_ledger = start_ledger,
+            cursor = cursor.as_deref().unwrap_or("<none>"),
+            "Indexer cycle starting",
+        );
 
         loop {
+            let rpc_start = std::time::Instant::now();
             let result = match self.rpc_client.get_events(
                 &self.config.stellar_rpc_url,
                 start_ledger,
@@ -477,16 +496,20 @@ impl<R: RpcClient> Indexer<R> {
                     return Err(IndexerFetchError::Rpc(msg));
                 }
             };
+            total_rpc_ms += rpc_start.elapsed().as_millis();
+            total_pages += 1;
 
             latest_ledger = result.latest_ledger;
             let current_count = result.events.len();
             total_fetched += current_count;
+            let schema_version = result.protocol_version.unwrap_or(1) as i32;
             let next_cursor = result.rpc_cursor.clone();
 
             // Store events and checkpoint atomically in one transaction.
             let mut db_tx = self.pool.begin().await?;
+            let db_start = std::time::Instant::now();
             for event in result.events {
-                match self.store_event_in_tx(&mut db_tx, &event).await {
+                match self.store_event_in_tx(&mut db_tx, &event, schema_version).await {
                     Ok(rows) => {
                         total_inserted += rows;
                         if rows == 0 {
@@ -523,18 +546,39 @@ impl<R: RpcClient> Indexer<R> {
             let _ = Self::save_indexer_state(&mut db_tx, start_ledger, latest_ledger).await;
             db_tx.commit().await?;
 
+            total_db_ms += db_start.elapsed().as_millis();
             cursor = next_cursor;
             if cursor.is_none() {
                 break;
             }
         }
 
-        info!(
-            fetched = total_fetched,
-            inserted = total_inserted,
-            ledger = latest_ledger,
-            "Indexed ledger range"
-        );
+        let cycle_ms = cycle_start.elapsed().as_millis();
+        if total_inserted > 0 {
+            info!(
+                fetched = total_fetched,
+                inserted = total_inserted,
+                start_ledger = start_ledger_for_log,
+                end_ledger = latest_ledger,
+                pages = total_pages,
+                cycle_ms = cycle_ms,
+                rpc_ms = total_rpc_ms,
+                db_ms = total_db_ms,
+                "Indexed ledger range",
+            );
+        } else {
+            tracing::debug!(
+                fetched = total_fetched,
+                inserted = total_inserted,
+                start_ledger = start_ledger_for_log,
+                end_ledger = latest_ledger,
+                pages = total_pages,
+                cycle_ms = cycle_ms,
+                rpc_ms = total_rpc_ms,
+                db_ms = total_db_ms,
+                "Indexed ledger range (no new events)",
+            );
+        }
         metrics::record_events_indexed(total_inserted as u64);
 
         if total_fetched > 0 {
@@ -596,7 +640,7 @@ impl<R: RpcClient> Indexer<R> {
     }
 
     #[instrument(skip(self, event), fields(tx_hash = %event.tx_hash, contract_id = %event.contract_id, ledger = event.ledger))]
-    async fn store_event(&self, event: &SorobanEvent) -> Result<u64, anyhow::Error> {
+    async fn store_event(&self, event: &SorobanEvent, schema_version: i32) -> Result<u64, anyhow::Error> {
         if self.should_log_debug() {
             tracing::debug!(
                 tx_hash = %event.tx_hash,
@@ -656,8 +700,8 @@ impl<R: RpcClient> Indexer<R> {
         // RETURNING (xmax = 0) distinguishes a true INSERT (xmax=0) from an UPDATE (xmax≠0).
         let inserted: bool = sqlx::query_scalar(
             r#"
-            INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data, schema_version)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (tx_hash, contract_id, event_type)
             DO UPDATE SET event_data = events.event_data || EXCLUDED.event_data
             RETURNING (xmax = 0)
@@ -669,6 +713,7 @@ impl<R: RpcClient> Indexer<R> {
         .bind(ledger)
         .bind(timestamp)
         .bind(event_data)
+        .bind(schema_version)
         .fetch_one(&self.pool)
         .await?;
 
@@ -679,6 +724,7 @@ impl<R: RpcClient> Indexer<R> {
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         event: &SorobanEvent,
+        schema_version: i32,
     ) -> Result<u64, anyhow::Error> {
         if !Self::validate_event_data(event) {
             return Ok(0);
@@ -788,6 +834,7 @@ mod tests {
                 events: vec![],
                 latest_ledger: 100,
                 rpc_cursor: None,
+                protocol_version: None,
             }))
         }
     }
@@ -868,7 +915,7 @@ mod tests {
         let mut event = make_event(1);
         event.value = Value::String("invalid".to_string());
 
-        let result = indexer.store_event(&event).await.unwrap();
+        let result = indexer.store_event(&event, 1).await.unwrap();
         assert_eq!(result, 0); // Event should be skipped
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
@@ -978,8 +1025,8 @@ mod tests {
         let indexer = indexer(pool.clone());
         let event = make_event(1);
 
-        indexer.store_event(&event).await.unwrap();
-        indexer.store_event(&event).await.unwrap(); // must not error
+        indexer.store_event(&event, 1).await.unwrap();
+        indexer.store_event(&event, 1).await.unwrap(); // must not error
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
             .fetch_one(&pool)
@@ -995,8 +1042,8 @@ mod tests {
         let mut e2 = make_event(1);
         e2.event_type = "system".into();
 
-        indexer.store_event(&e1).await.unwrap();
-        indexer.store_event(&e2).await.unwrap();
+        indexer.store_event(&e1, 1).await.unwrap();
+        indexer.store_event(&e2, 1).await.unwrap();
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
             .fetch_one(&pool)
@@ -1049,6 +1096,7 @@ mod tests {
                 events: vec![test_event.clone()],
                 latest_ledger: 50,
                 rpc_cursor: None,
+                protocol_version: None,
             }),
             Err("Network error".to_string()),
         ]);
@@ -1099,6 +1147,7 @@ mod tests {
             events: vec![test_event],
             latest_ledger: 100,
             rpc_cursor: None,
+            protocol_version: None,
         }));
 
         let (_, shutdown_rx) = watch::channel(false);

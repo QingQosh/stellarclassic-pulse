@@ -84,6 +84,7 @@ fn rows_to_json(rows: &[sqlx::postgres::PgRow], columns: &[&str], enc_key: Optio
                     event.insert(col.to_string(), decrypted);
                 }
                 "created_at" => { event.insert(col.to_string(), json!(row.try_get::<DateTime<Utc>, _>(col)?)); }
+                "schema_version" => { event.insert(col.to_string(), json!(row.try_get::<i32, _>(col)?)); }
                 _ => {}
             }
         }
@@ -91,8 +92,6 @@ fn rows_to_json(rows: &[sqlx::postgres::PgRow], columns: &[&str], enc_key: Optio
     }
     Ok(events)
 }
-
-/// Resolve requested columns or return a 400 with unknown field names.
 fn resolve_columns<'a>(params: &'a PaginationParams) -> Result<Vec<&'a str>, AppError> {
     params.columns().map_err(|(unknown, allowed)| {
         AppError::Validation(format!(
@@ -669,7 +668,7 @@ async fn stream_events_internal(
     let replay: Vec<crate::models::Event> = if let Some(last_id) = last_event_id {
         let q = if let Some(ref cid) = contract_filter {
             sqlx::query_as::<_, crate::models::Event>(
-                "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, event_data_normalized, created_at, 0::bigint AS total_count \
+                "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, event_data_normalized, created_at, schema_version, 0::bigint AS total_count \
                  FROM events WHERE created_at > (SELECT created_at FROM events WHERE id = $1) \
                  AND contract_id = $2 ORDER BY created_at ASC",
             )
@@ -679,7 +678,7 @@ async fn stream_events_internal(
             .await
         } else {
             sqlx::query_as::<_, crate::models::Event>(
-                "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, event_data_normalized, created_at, 0::bigint AS total_count \
+                "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, event_data_normalized, created_at, schema_version, 0::bigint AS total_count \
                  FROM events WHERE created_at > (SELECT created_at FROM events WHERE id = $1) \
                  ORDER BY created_at ASC",
             )
@@ -790,6 +789,7 @@ fn filter_fields(event: &models::Event, columns: &[&str], enc_key: Option<&[u8; 
                 map.insert(col.to_string(), decrypted);
             }
             "created_at"  => { map.insert(col.to_string(), json!(event.created_at)); }
+            "schema_version" => { map.insert(col.to_string(), json!(event.schema_version)); }
             _ => {}
         }
     }
@@ -836,7 +836,7 @@ fn ndjson_response(events: impl Iterator<Item = Value>) -> Response<Body> {
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
         ("limit" = Option<i64>, Query, description = "Results per page, 1–100 (default: 20)"),
         ("exact_count" = Option<bool>, Query, description = "Use exact COUNT(*) instead of approximate"),
-        ("event_type" = Option<EventType>, Query, description = "Filter by event type: contract, diagnostic, system"),
+        ("event_type" = Option<crate::models::EventType>, Query, description = "Filter by event type: contract, diagnostic, system"),
         ("from_ledger" = Option<i64>, Query, description = "Return events at or after this ledger"),
         ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
         ("sort" = Option<String>, Query, description = "Sort order: asc (oldest first) or desc (newest first, default)"),
@@ -1198,6 +1198,88 @@ pub async fn export_events(
         ],
         csv,
     ))
+}
+
+/// Query parameters for the /v1/events/recent endpoint.
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+pub struct RecentParams {
+    pub limit: Option<i64>,
+    pub event_type: Option<crate::models::EventType>,
+    pub contract_id: Option<String>,
+    /// Not supported — returns 400 if provided.
+    pub from_ledger: Option<i64>,
+    /// Not supported — returns 400 if provided.
+    pub to_ledger: Option<i64>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/events/recent",
+    tag = "events",
+    params(
+        ("limit" = Option<i64>, Query, description = "Number of most-recent events to return, 1–100 (default: 20)"),
+        ("event_type" = Option<crate::models::EventType>, Query, description = "Filter by event type: contract, diagnostic, system"),
+        ("contract_id" = Option<String>, Query, description = "Filter by contract ID"),
+    ),
+    responses(
+        (status = 200, description = "Most recently indexed events in descending ledger order"),
+        (status = 400, description = "Invalid query parameters or unsupported ledger range filter"),
+    )
+)]
+pub async fn get_recent_events(
+    State(state): State<AppState>,
+    Query(params): Query<RecentParams>,
+) -> Result<Json<Value>, AppError> {
+    if params.from_ledger.is_some() || params.to_ledger.is_some() {
+        return Err(AppError::Validation(
+            "from_ledger and to_ledger are not supported on /v1/events/recent".to_string(),
+        ));
+    }
+    if let Some(ref cid) = params.contract_id {
+        validate_contract_id(cid)?;
+    }
+
+    let limit = params.limit.unwrap_or(20).clamp(1, 100);
+
+    let mut conditions: Vec<String> = Vec::new();
+    let mut bind_idx: i32 = 1;
+
+    if params.contract_id.is_some() {
+        conditions.push(format!("contract_id = ${bind_idx}"));
+        bind_idx += 1;
+    }
+    if params.event_type.is_some() {
+        conditions.push(format!("event_type = ${bind_idx}"));
+        bind_idx += 1;
+    }
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    let query_str = format!(
+        "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at, schema_version, 0::bigint AS total_count \
+         FROM events {} ORDER BY ledger DESC, id DESC LIMIT ${}",
+        where_clause, bind_idx,
+    );
+
+    let mut q = sqlx::query_as::<_, crate::models::Event>(&query_str);
+    if let Some(ref cid) = params.contract_id { q = q.bind(cid); }
+    if let Some(ref et) = params.event_type { q = q.bind(et); }
+    q = q.bind(limit);
+
+    let rows = q.fetch_all(&state.pool).await?;
+    let events: Vec<Value> = rows
+        .iter()
+        .map(|e| filter_fields(e, crate::models::PaginationParams::ALLOWED_FIELDS, state.encryption_key.as_ref(), state.encryption_key_old.as_ref()))
+        .collect();
+
+    Ok(Json(json!({
+        "data": events,
+        "limit": limit,
+    })))
 }
 
 #[utoipa::path(
@@ -2378,6 +2460,85 @@ mod tests {
         assert!(v["error"].as_str().unwrap().contains("from_ledger must be <= to_ledger"));
         assert_eq!(v["code"], "VALIDATION_ERROR");
         assert!(v["correlation_id"].as_str().is_some());
+    }
+
+    // /v1/events/recent tests
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_recent_events_returns_events_in_desc_order(pool: PgPool) {
+        let app = create_test_router(pool.clone());
+
+        for i in 0..5_i64 {
+            sqlx::query(
+                "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(format!("C{:0>55}", i))
+            .bind("contract")
+            .bind(format!("{:0>64}", i))
+            .bind(i)
+            .bind(Utc::now())
+            .bind(json!({}))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let response = app
+            .oneshot(Request::builder().uri("/v1/events/recent?limit=3").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let data = v["data"].as_array().unwrap();
+        assert_eq!(data.len(), 3);
+        // Verify descending ledger order
+        let ledgers: Vec<i64> = data.iter().map(|e| e["ledger"].as_i64().unwrap()).collect();
+        assert!(ledgers.windows(2).all(|w| w[0] >= w[1]), "events must be in descending ledger order");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_recent_events_rejects_from_ledger(pool: PgPool) {
+        let app = create_test_router(pool);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/recent?from_ledger=100")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert!(v["error"].as_str().unwrap().contains("from_ledger"));
+        assert_eq!(v["code"], "VALIDATION_ERROR");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_recent_events_rejects_to_ledger(pool: PgPool) {
+        let app = create_test_router(pool);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/recent?to_ledger=400")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert!(v["error"].as_str().unwrap().contains("to_ledger"));
+        assert_eq!(v["code"], "VALIDATION_ERROR");
     }
 
     // Events by contract tests - Happy path
