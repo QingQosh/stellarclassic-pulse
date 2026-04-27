@@ -69,6 +69,7 @@ pub struct AppState {
         handlers::status,
         handlers::get_events,
         handlers::export_events,
+        handlers::get_recent_events,
         handlers::get_events_by_contract,
         handlers::get_events_by_tx,
         handlers::stream_events,
@@ -106,11 +107,7 @@ pub fn create_router(
     health_check_timeout_ms: u64,
     config: crate::config::Config,
 ) -> Router {
-
-    create_router_with_tx(pool.clone(), pool, api_keys, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000, 1000, health_check_timeout_ms)
-
-    create_router_with_tx(pool, api_keys, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000, 1000, health_check_timeout_ms, None, None)
-
+    create_router_with_tx(pool.clone(), pool, api_keys, allowed_origins, rate_limit_per_minute, false, health_state, indexer_state, prometheus_handle, broadcast::channel(256).0, 15000, 1000, health_check_timeout_ms, None, None, crate::config::Config::default())
 }
 
 pub fn create_router_with_tx(
@@ -164,6 +161,7 @@ pub fn create_router_with_tx(
     let v1 = Router::new()
         .route("/events", get(handlers::get_events))
         .route("/events/export", get(handlers::export_events))
+        .route("/events/recent", get(handlers::get_recent_events))
         .route("/events/stream", get(handlers::stream_events))
 
         .route("/events/contract/{contract_id}", get(handlers::get_events_by_contract))
