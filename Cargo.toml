@@ -38,10 +38,12 @@ hex = "0.4"
 jsonschema = "0.18"
 aes-gcm = { version = "0.10", optional = true }
 rand = { version = "0.8", optional = true }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"], optional = true }
 
 [features]
 otel = ["tracing-opentelemetry", "opentelemetry", "opentelemetry-otlp"]
 encryption = ["aes-gcm", "rand"]
+redis-queue = ["redis"]
 
 [dev-dependencies]
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls", "chrono", "uuid", "json", "migrate"] }

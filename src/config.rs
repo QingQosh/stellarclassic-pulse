@@ -177,6 +177,8 @@ pub struct Config {
     pub webhook_url: Option<String>,
     pub webhook_secret: Option<String>,
     pub webhook_contract_filter: Vec<String>,
+    pub redis_url: Option<String>,
+    pub redis_stream_key: Option<String>,
 }
 
 impl Default for Config {
@@ -213,6 +215,8 @@ impl Default for Config {
             webhook_url: None,
             webhook_secret: None,
             webhook_contract_filter: Vec::new(),
+            redis_url: None,
+            redis_stream_key: None,
         }
     }
 }
@@ -501,6 +505,9 @@ impl Config {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect(),
+            redis_url: env_or_file("REDIS_URL", &file),
+            redis_stream_key: env_or_file("REDIS_STREAM_KEY", &file)
+                .or_else(|| Some("soroban_pulse_events".to_string())),
         }
     }
 }

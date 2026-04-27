@@ -57,6 +57,11 @@ pub fn record_schema_validation_failure() {
     m::counter!("soroban_pulse_events_schema_invalid_total", 1u64);
 }
 
+/// Record a queue publish failure
+pub fn record_queue_publish_failure() {
+    m::counter!("soroban_pulse_queue_publish_failures_total", 1u64);
+}
+
 /// Record a duplicate event
 pub fn record_duplicate_event() {
     m::counter!("soroban_pulse_events_duplicate_total", 1u64);

@@ -16,6 +16,7 @@ mod metrics;
 mod middleware;
 mod models;
 mod normalizer;
+mod queue_publisher;
 mod routes;
 mod rpc_client;
 mod schema_validator;
@@ -203,6 +204,19 @@ async fn main() -> anyhow::Result<()> {
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
+        });
+    }
+
+    // Spawn Redis publisher if configured
+    if let (Some(redis_url), Some(redis_stream_key)) = (&config.redis_url, &config.redis_stream_key) {
+        let redis_rx = event_tx.subscribe();
+        let redis_url = redis_url.clone();
+        let redis_stream_key = redis_stream_key.clone();
+
+        info!(stream_key = %redis_stream_key, "Redis publisher enabled");
+
+        tokio::spawn(async move {
+            queue_publisher::spawn_redis_publisher(redis_url, redis_stream_key, redis_rx).await;
         });
     }
 
