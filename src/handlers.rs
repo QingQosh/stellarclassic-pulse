@@ -81,6 +81,10 @@ fn rows_to_json(rows: &[sqlx::postgres::PgRow], columns: &[&str], enc_key: Optio
                     let decrypted = decrypt_event_data(&raw, enc_key, enc_key_old);
                     event.insert(col.to_string(), decrypted);
                 }
+                "event_data_normalized" => { event.insert(col.to_string(), json!(row.try_get::<Option<Value>, _>(col)?)); }
+                "event_data_decoded" => { event.insert(col.to_string(), json!(row.try_get::<Option<Value>, _>(col)?)); }
+                "ledger_hash" => { event.insert(col.to_string(), json!(row.try_get::<Option<String>, _>(col)?)); }
+                "in_successful_call" => { event.insert(col.to_string(), json!(row.try_get::<bool, _>(col)?)); }
                 "created_at" => { event.insert(col.to_string(), json!(row.try_get::<DateTime<Utc>, _>(col)?)); }
                 _ => {}
             }
@@ -711,6 +715,10 @@ fn filter_fields(event: &models::Event, columns: &[&str], enc_key: Option<&[u8; 
                 let decrypted = decrypt_event_data(&event.event_data, enc_key, enc_key_old);
                 map.insert(col.to_string(), decrypted);
             }
+            "event_data_normalized" => { map.insert(col.to_string(), json!(event.event_data_normalized)); }
+            "event_data_decoded"    => { map.insert(col.to_string(), json!(event.event_data_decoded)); }
+            "ledger_hash"           => { map.insert(col.to_string(), json!(event.ledger_hash)); }
+            "in_successful_call"    => { map.insert(col.to_string(), json!(event.in_successful_call)); }
             "created_at"  => { map.insert(col.to_string(), json!(event.created_at)); }
             _ => {}
         }
@@ -824,6 +832,10 @@ pub async fn get_events(
             conditions.push(format!("ledger <= ${bind_idx}"));
             bind_idx += 1;
         }
+        if params.in_successful_call.is_some() {
+            conditions.push(format!("in_successful_call = ${bind_idx}"));
+            bind_idx += 1;
+        }
 
         let where_clause = format!("WHERE {}", conditions.join(" AND "));
 
@@ -845,6 +857,7 @@ pub async fn get_events(
         if let Some(ref et) = params.event_type { q = q.bind(et); }
         if let Some(fl) = params.from_ledger { q = q.bind(fl); }
         if let Some(tl) = params.to_ledger { q = q.bind(tl); }
+        if let Some(isc) = params.in_successful_call { q = q.bind(isc); }
         q = q.bind(limit);
 
         let rows = q.fetch_all(&state.read_pool).await?;
@@ -896,6 +909,10 @@ pub async fn get_events(
         conditions.push(format!("ledger <= ${bind_idx}"));
         bind_idx += 1;
     }
+    if params.in_successful_call.is_some() {
+        conditions.push(format!("in_successful_call = ${bind_idx}"));
+        bind_idx += 1;
+    }
 
     let where_clause = if conditions.is_empty() {
         String::new()
@@ -922,6 +939,7 @@ pub async fn get_events(
     if let Some(ref et) = params.event_type { q = q.bind(et); }
     if let Some(fl) = params.from_ledger { q = q.bind(fl); }
     if let Some(tl) = params.to_ledger { q = q.bind(tl); }
+    if let Some(isc) = params.in_successful_call { q = q.bind(isc); }
     q = q.bind(limit).bind(offset);
 
     let rows = q.fetch_all(&state.read_pool).await?;
@@ -945,6 +963,7 @@ pub async fn get_events(
         if let Some(ref et) = params.event_type { cq = cq.bind(et); }
         if let Some(fl) = params.from_ledger { cq = cq.bind(fl); }
         if let Some(tl) = params.to_ledger { cq = cq.bind(tl); }
+        if let Some(isc) = params.in_successful_call { cq = cq.bind(isc); }
         let count = cq.fetch_one(&state.read_pool).await?;
         (count, false)
     } else {
@@ -1214,7 +1233,7 @@ pub async fn get_events_by_contract(
         "total": total,
         "page": params.page.unwrap_or(1),
         "limit": limit,
-        "approximate": approximate,
+        "approximate": false,
     });
 
     if let Some(fl) = params.from_ledger { response["from_ledger"] = json!(fl); }
@@ -1263,7 +1282,7 @@ pub async fn get_events_by_tx(
         .await?;
 
     let total = rows.len() as i64;
-    let events = rows_to_json(&rows, &columns)?;
+    let events = rows_to_json(&rows, &columns, state.encryption_key.as_ref(), state.encryption_key_old.as_ref())?;
 
     Ok(Json(json!({
         "data": events,
@@ -1275,7 +1294,80 @@ pub async fn get_events_by_tx(
 
 #[utoipa::path(
     get,
-    path = "/v1/contracts",
+    path = "/v1/events/ledger-hash/{hash}",
+    tag = "events",
+    params(
+        ("hash" = String, Path, description = "Ledger hash"),
+    ),
+    responses(
+        (status = 200, description = "Events for the given ledger hash"),
+        (status = 400, description = "Invalid parameters", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    )
+)]
+pub async fn get_events_by_ledger_hash(
+    State(state): State<AppState>,
+    Path(hash): Path<String>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<Value>, AppError> {
+    let columns = resolve_columns(&params)?;
+    let mut select_cols = columns.to_vec();
+    if !select_cols.contains(&"ledger") { select_cols.push("ledger"); }
+    if !select_cols.contains(&"id") { select_cols.push("id"); }
+
+    let query_str = format!(
+        "SELECT {} FROM events WHERE ledger_hash = $1 ORDER BY ledger DESC, id DESC",
+        select_cols.join(", "),
+    );
+    let rows = sqlx::query(&query_str)
+        .bind(&hash)
+        .fetch_all(&state.read_pool)
+        .await?;
+
+    let events = rows_to_json(&rows, &columns, state.encryption_key.as_ref(), state.encryption_key_old.as_ref())?;
+    Ok(Json(json!({
+        "data": events,
+        "ledger_hash": hash,
+        "total": rows.len() as i64,
+        "approximate": false,
+    })))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/admin/contracts/{contract_id}/abi",
+    tag = "admin",
+    params(
+        ("contract_id" = String, Path, description = "Stellar contract ID"),
+    ),
+    request_body(content = Value, description = "ABI JSON array", content_type = "application/json"),
+    responses(
+        (status = 200, description = "ABI registered"),
+        (status = 400, description = "Invalid contract_id or ABI", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    )
+)]
+pub async fn register_contract_abi(
+    State(state): State<AppState>,
+    Path(contract_id): Path<String>,
+    Json(abi): Json<Value>,
+) -> Result<Json<Value>, AppError> {
+    validate_contract_id(&contract_id)?;
+    if !abi.is_array() {
+        return Err(AppError::Validation("ABI must be a JSON array".to_string()));
+    }
+    sqlx::query(
+        "INSERT INTO contract_abis (contract_id, abi, updated_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (contract_id) DO UPDATE SET abi = EXCLUDED.abi, updated_at = NOW()",
+    )
+    .bind(&contract_id)
+    .bind(&abi)
+    .execute(&state.pool)
+    .await?;
+
+    Ok(Json(json!({ "contract_id": contract_id, "status": "registered" })))
+}
     tag = "events",
     params(
         ("page" = Option<i64>, Query, description = "Page number (default 1)"),
@@ -1536,12 +1628,8 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let indexer_state = Arc::new(IndexerState::new());
         let prometheus_handle = crate::metrics::init_metrics();
-
-        crate::routes::create_router(pool, Vec::new(), &[], 60, health_state, indexer_state, prometheus_handle, 2000)
-
         let config = crate::config::Config::default();
-        crate::routes::create_router(pool, None, &[], 60, health_state, indexer_state, prometheus_handle, 2000, config)
-
+        crate::routes::create_router(pool, Vec::new(), &[], 60, health_state, indexer_state, prometheus_handle, 2000, config)
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1942,7 +2030,7 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let prometheus_handle = crate::metrics::init_metrics();
         let indexer_state = Arc::new(IndexerState::new());
-        let app = crate::routes::create_router(pool, Vec::new(), &[], 60, health_state, indexer_state, prometheus_handle, 2000);
+        let app = crate::routes::create_router(pool, Vec::new(), &[], 60, health_state, indexer_state, prometheus_handle, 2000, crate::config::Config::default());
 
         let response = app
             .oneshot(
@@ -2011,7 +2099,7 @@ mod tests {
         let health_state = Arc::new(HealthState::new(60));
         let prometheus_handle = crate::metrics::init_metrics();
         let indexer_state = Arc::new(IndexerState::new());
-        let app = crate::routes::create_router(pool, Vec::new(), &[], 60, health_state, indexer_state, prometheus_handle, 2000);
+        let app = crate::routes::create_router(pool, Vec::new(), &[], 60, health_state, indexer_state, prometheus_handle, 2000, crate::config::Config::default());
 
         let response = app
             .oneshot(
@@ -2036,7 +2124,7 @@ mod tests {
         // never updated, treated as stalled
         let prometheus_handle = crate::metrics::init_metrics();
         let indexer_state = Arc::new(IndexerState::new());
-        let app = crate::routes::create_router(pool, Vec::new(), &[], 60, health_state, indexer_state, prometheus_handle, 2000);
+        let app = crate::routes::create_router(pool, Vec::new(), &[], 60, health_state, indexer_state, prometheus_handle, 2000, crate::config::Config::default());
 
         let response = app
             .oneshot(
@@ -3084,7 +3172,8 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000
+            2000,
+        crate::config::Config::default()
         );
 
         // Test invalid range: from_ledger > to_ledger
@@ -3126,7 +3215,8 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000
+            2000,
+        crate::config::Config::default()
         );
 
         // Test range too large: > 10,000 ledgers
@@ -3172,7 +3262,8 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000
+            2000,
+        crate::config::Config::default()
         );
 
         let replay_request = ReplayRequest {
@@ -3217,7 +3308,8 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000
+            2000,
+        crate::config::Config::default()
         );
 
         let replay_request = ReplayRequest {
@@ -3264,7 +3356,8 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000
+            2000,
+        crate::config::Config::default()
         );
 
         let replay_request = ReplayRequest {
@@ -3305,7 +3398,8 @@ mod tests {
             health_state, 
             indexer_state, 
             prometheus_handle, 
-            2000
+            2000,
+        crate::config::Config::default()
         );
 
         let replay_request = ReplayRequest {
@@ -3340,7 +3434,7 @@ mod tests {
         let indexer_state = Arc::new(IndexerState::new());
         let prometheus_handle = crate::metrics::init_metrics();
         // Export requires api_keys to be non-empty
-        crate::routes::create_router(pool, vec!["test-key".to_string()], &[], 60, health_state, indexer_state, prometheus_handle, 2000)
+        crate::routes::create_router(pool, vec!["test-key".to_string()], &[], 60, health_state, indexer_state, prometheus_handle, 2000, crate::config::Config::default())
     }
 
     #[sqlx::test(migrations = "./migrations")]

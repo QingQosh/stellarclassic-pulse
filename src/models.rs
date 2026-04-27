@@ -46,6 +46,12 @@ pub struct Event {
     pub timestamp: DateTime<Utc>,
     pub event_data: Value,
     pub event_data_normalized: Option<Value>,
+    #[sqlx(default)]
+    pub event_data_decoded: Option<Value>,
+    #[sqlx(default)]
+    pub ledger_hash: Option<String>,
+    #[sqlx(default)]
+    pub in_successful_call: bool,
     pub created_at: DateTime<Utc>,
     #[sqlx(default)]
     #[serde(skip)]
@@ -58,11 +64,13 @@ pub struct PaginationParams {
     pub limit: Option<i64>,
     pub exact_count: Option<bool>,
     pub fields: Option<String>,
+    pub contract_id: Option<String>,
     pub event_type: Option<EventType>,
     pub from_ledger: Option<i64>,
     pub to_ledger: Option<i64>,
     pub cursor: Option<String>,
     pub sort: Option<SortOrder>,
+    pub in_successful_call: Option<bool>,
 }
 
 /// Sort order for event list endpoints.
@@ -158,6 +166,9 @@ impl PaginationParams {
         "timestamp",
         "event_data",
         "event_data_normalized",
+        "event_data_decoded",
+        "ledger_hash",
+        "in_successful_call",
         "created_at",
     ];
 
@@ -228,9 +239,15 @@ pub struct SorobanEvent {
     pub ledger: u64,
     #[serde(rename = "ledgerClosedAt")]
     pub ledger_closed_at: String,
+    #[serde(rename = "ledgerHash", default)]
+    pub ledger_hash: Option<String>,
+    #[serde(rename = "inSuccessfulContractCall", default = "default_true")]
+    pub in_successful_call: bool,
     pub value: Value,
     pub topic: Option<Vec<Value>>,
 }
+
+fn default_true() -> bool { true }
 
 #[cfg(test)]
 mod tests {
@@ -242,11 +259,13 @@ mod tests {
             limit,
             exact_count: None,
             fields: None,
+            contract_id: None,
             event_type: None,
             from_ledger: None,
             to_ledger: None,
             cursor: None,
             sort: None,
+            in_successful_call: None,
         }
     }
 
