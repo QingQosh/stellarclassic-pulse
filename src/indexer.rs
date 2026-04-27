@@ -267,6 +267,21 @@ impl<R: RpcClient> Indexer<R> {
         let mut consecutive_db_errors = 0u32;
         let mut rpc_backoff_ms = 1000u64; // Start with 1 second backoff
 
+        // Restore persisted state so /status is accurate before the first poll.
+        if let Some((persisted_current, persisted_latest)) = self.load_indexer_state().await {
+            if persisted_current > 0 {
+                if current_ledger == 0 {
+                    current_ledger = persisted_current;
+                }
+                if let Some(ref s) = self.indexer_state {
+                    s.current_ledger.store(persisted_current, std::sync::atomic::Ordering::Relaxed);
+                    s.latest_ledger.store(persisted_latest, std::sync::atomic::Ordering::Relaxed);
+                }
+                metrics::update_current_ledger(persisted_current);
+                info!(current_ledger = persisted_current, latest_ledger = persisted_latest, "Restored persisted indexer state");
+            }
+        }
+
         if current_ledger == 0 {
             loop {
                 match self.rpc_client.get_latest_ledger(&self.config.stellar_rpc_url).await {
@@ -327,8 +342,7 @@ impl<R: RpcClient> Indexer<R> {
                                     "Indexer is falling behind"
                                 );
                             }
-                        }
-                    } else {
+                        }                    } else {
                         sleep(Duration::from_millis(self.config.indexer_poll_interval_ms)).await;
                     }
                 }
@@ -370,6 +384,39 @@ impl<R: RpcClient> Indexer<R> {
         .await
         .ok()
         .flatten()
+    }
+
+    /// Load the last persisted indexer state (current_ledger, latest_ledger) from the DB.
+    async fn load_indexer_state(&self) -> Option<(u64, u64)> {
+        sqlx::query_as::<_, (i64, i64)>(
+            "SELECT current_ledger, latest_ledger FROM indexer_state WHERE id = 'singleton'",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+        .map(|(c, l)| (c as u64, l as u64))
+    }
+
+    /// Persist current_ledger and latest_ledger atomically inside an existing transaction.
+    async fn save_indexer_state(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        current_ledger: u64,
+        latest_ledger: u64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO indexer_state (id, current_ledger, latest_ledger, updated_at)
+             VALUES ('singleton', $1, $2, NOW())
+             ON CONFLICT (id) DO UPDATE
+               SET current_ledger = EXCLUDED.current_ledger,
+                   latest_ledger  = EXCLUDED.latest_ledger,
+                   updated_at     = NOW()",
+        )
+        .bind(current_ledger as i64)
+        .bind(latest_ledger as i64)
+        .execute(&mut **tx)
+        .await
+        .map(|_| ())
     }
 
     /// Persist the cursor atomically alongside the event inserts.
@@ -442,6 +489,8 @@ impl<R: RpcClient> Indexer<R> {
             if let Some(ref c) = next_cursor.as_ref().or(cursor.as_ref()) {
                 let _ = Self::save_checkpoint(&mut db_tx, c).await;
             }
+            // Persist ledger state so /status is accurate after a restart.
+            let _ = Self::save_indexer_state(&mut db_tx, start_ledger, latest_ledger).await;
             db_tx.commit().await?;
 
             cursor = next_cursor;
@@ -1046,5 +1095,70 @@ mod tests {
         // Test that the indexer can use the mock client
         let latest_ledger = indexer.get_latest_ledger().await.unwrap();
         assert_eq!(latest_ledger, 100);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn indexer_state_is_saved_and_loaded(pool: PgPool) {
+        let idx = indexer(pool.clone());
+
+        // No state initially
+        assert!(idx.load_indexer_state().await.is_none());
+
+        // Save state inside a transaction
+        let mut tx = pool.begin().await.unwrap();
+        Indexer::<MockRpcClient>::save_indexer_state(&mut tx, 1000, 1050).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let (current, latest) = idx.load_indexer_state().await.unwrap();
+        assert_eq!(current, 1000);
+        assert_eq!(latest, 1050);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn indexer_state_is_overwritten_on_update(pool: PgPool) {
+        let idx = indexer(pool.clone());
+
+        let mut tx = pool.begin().await.unwrap();
+        Indexer::<MockRpcClient>::save_indexer_state(&mut tx, 1000, 1050).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        Indexer::<MockRpcClient>::save_indexer_state(&mut tx, 2000, 2100).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let (current, latest) = idx.load_indexer_state().await.unwrap();
+        assert_eq!(current, 2000);
+        assert_eq!(latest, 2100);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn persisted_state_is_restored_on_startup(pool: PgPool) {
+        // Simulate a previous run that persisted state.
+        let mut tx = pool.begin().await.unwrap();
+        Indexer::<MockRpcClient>::save_indexer_state(&mut tx, 5000, 5100).await.unwrap();
+        tx.commit().await.unwrap();
+
+        // A new indexer instance (simulating restart) should restore the persisted state.
+        let indexer_state = Arc::new(crate::config::IndexerState::new());
+        let mut idx = indexer(pool.clone());
+        idx.set_indexer_state(indexer_state.clone());
+
+        // load_indexer_state returns the persisted values
+        let (current, latest) = idx.load_indexer_state().await.unwrap();
+        assert_eq!(current, 5000);
+        assert_eq!(latest, 5100);
+
+        // Simulate what run_loop does on startup
+        if let Some((persisted_current, persisted_latest)) = idx.load_indexer_state().await {
+            if persisted_current > 0 {
+                if let Some(ref s) = idx.indexer_state {
+                    s.current_ledger.store(persisted_current, std::sync::atomic::Ordering::Relaxed);
+                    s.latest_ledger.store(persisted_latest, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+
+        assert_eq!(indexer_state.current_ledger.load(std::sync::atomic::Ordering::Relaxed), 5000);
+        assert_eq!(indexer_state.latest_ledger.load(std::sync::atomic::Ordering::Relaxed), 5100);
     }
 }
