@@ -1,5 +1,7 @@
 use axum::{extract::{Path, Query, State}, Json, response::IntoResponse, http::StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::body::Body;
+use axum::http::{header, Response};
 use sqlx::Row;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures::stream::{self, Stream, StreamExt};
@@ -705,9 +707,39 @@ fn filter_fields(event: &models::Event, columns: &[&str], enc_key: Option<&[u8; 
     Value::Object(map)
 }
 
+/// Returns true if the client prefers NDJSON via the Accept header.
+fn accepts_ndjson(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("application/x-ndjson"))
+        .unwrap_or(false)
+}
+
+/// Build a plain JSON response from a `Value`.
+fn json_response(body: Value) -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap_or_default()))
+        .unwrap()
+}
+
+/// Build an NDJSON response: one JSON object per line, no wrapping array.
+fn ndjson_response(events: impl Iterator<Item = Value>) -> Response<Body> {
+    let mut buf = String::new();
+    for ev in events {
+        buf.push_str(&serde_json::to_string(&ev).unwrap_or_default());
+        buf.push('\n');
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/x-ndjson")
+        .body(Body::from(buf))
+        .unwrap()
+}
+
 #[utoipa::path(
-    get,
-    path = "/v1/events",
     tag = "events",
     params(
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
@@ -719,18 +751,21 @@ fn filter_fields(event: &models::Event, columns: &[&str], enc_key: Option<&[u8; 
         ("contract_id" = Option<String>, Query, description = "Filter by contract ID (56-char Stellar contract address starting with C)"),
     ),
     responses(
-        (status = 200, description = "Paginated list of events"),
-        (status = 400, description = "Invalid query parameters", body = ErrorResponse),
-        (status = 401, description = "Unauthorized", body = ErrorResponse),
-        (status = 429, description = "Too many requests", body = ErrorResponse),
-        (status = 500, description = "Internal server error", body = ErrorResponse),
+        (status = 200, description = "Paginated list of events (JSON or NDJSON depending on Accept header)",
+            content(
+                ("application/json" = Value),
+                ("application/x-ndjson" = String),
+            )
+        ),
+        (status = 400, description = "Invalid query parameters"),
     )
 )]
 
 pub async fn get_events(
     State(state): State<AppState>,
     Query(params): Query<PaginationParams>,
-) -> Result<Json<Value>, AppError> {
+    headers: axum::http::HeaderMap,
+) -> Result<Response<Body>, AppError> {
     // Validate ledger range
     if let (Some(from), Some(to)) = (params.from_ledger, params.to_ledger) {
         if from > to {
@@ -811,7 +846,12 @@ pub async fn get_events(
 
         let events = rows_to_json(&rows, &columns, state.encryption_key.as_ref(), state.encryption_key_old.as_ref())?;
 
-        return Ok(Json(json!({
+        let want_ndjson = accepts_ndjson(&headers);
+        if want_ndjson {
+            return Ok(ndjson_response(events.into_iter()));
+        }
+
+        return Ok(json_response(json!({
             "data": events,
             "next_cursor": next_cursor,
             "limit": limit,
@@ -901,7 +941,12 @@ pub async fn get_events(
         (count, true)
     };
 
-    Ok(Json(json!({
+    let want_ndjson = accepts_ndjson(&headers);
+    if want_ndjson {
+        return Ok(ndjson_response(events.into_iter()));
+    }
+
+    Ok(json_response(json!({
         "data": events,
         "next_cursor": next_cursor,
         "total": total,
@@ -1026,6 +1071,7 @@ pub async fn export_events(
         ("contract_id" = String, Path, description = "Stellar contract ID (56-char, starts with C)"),
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
         ("limit" = Option<i64>, Query, description = "Results per page, 1–100 (default: 20)"),
+        ("exact_count" = Option<bool>, Query, description = "Use exact COUNT(*) instead of approximate (default: false)"),
         ("from_ledger" = Option<i64>, Query, description = "Return events at or after this ledger"),
         ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
     ),
@@ -1045,20 +1091,17 @@ pub async fn get_events_by_contract(
 ) -> Result<Json<Value>, AppError> {
     validate_contract_id(&contract_id)?;
 
-    // Validate ledger range
     if let (Some(from), Some(to)) = (params.from_ledger, params.to_ledger) {
         if from > to {
-            return Err(AppError::Validation(
-                "from_ledger must be <= to_ledger".to_string(),
-            ));
+            return Err(AppError::Validation("from_ledger must be <= to_ledger".to_string()));
         }
     }
 
     let limit = params.limit();
     let offset = params.offset();
+    let exact = params.exact_count.unwrap_or(false);
     let columns = resolve_columns(&params)?;
 
-    // Build query dynamically based on optional ledger filters
     let mut conditions: Vec<String> = vec!["contract_id = $1".to_string()];
     let mut bind_idx: i32 = 2;
 
@@ -1124,15 +1167,11 @@ pub async fn get_events_by_contract(
         "total": total,
         "page": params.page.unwrap_or(1),
         "limit": limit,
+        "approximate": approximate,
     });
 
-    // Echo back applied filters for client confirmation
-    if let Some(fl) = params.from_ledger {
-        response["from_ledger"] = json!(fl);
-    }
-    if let Some(tl) = params.to_ledger {
-        response["to_ledger"] = json!(tl);
-    }
+    if let Some(fl) = params.from_ledger { response["from_ledger"] = json!(fl); }
+    if let Some(tl) = params.to_ledger { response["to_ledger"] = json!(tl); }
 
     Ok(Json(response))
 }
@@ -1157,7 +1196,6 @@ pub async fn get_events_by_tx(
     Path(tx_hash): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Value>, AppError> {
-    // Normalize to lowercase so uppercase/mixed-case hashes from blockchain explorers work.
     let tx_hash = tx_hash.to_lowercase();
     validate_tx_hash(&tx_hash)?;
 
@@ -1177,9 +1215,15 @@ pub async fn get_events_by_tx(
         .fetch_all(&state.pool)
         .await?;
 
-    let events = rows_to_json(&rows, &columns, state.encryption_key.as_ref(), state.encryption_key_old.as_ref())?;
+    let total = rows.len() as i64;
+    let events = rows_to_json(&rows, &columns)?;
 
-    Ok(Json(json!({ "data": events, "tx_hash": tx_hash })))
+    Ok(Json(json!({
+        "data": events,
+        "tx_hash": tx_hash,
+        "total": total,
+        "approximate": false,
+    })))
 }
 
 #[utoipa::path(
@@ -1301,7 +1345,7 @@ pub async fn replay_events(
 
     // Spawn background task to handle the replay
     let pool = state.pool.clone();
-    let rpc_url = state.config.stellar_rpc_url.clone();
+    let rpc_url = state.stellar_rpc_url.clone();
     let from_ledger = request.from_ledger;
     let to_ledger = request.to_ledger;
     
@@ -1482,11 +1526,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v["data"], json!([]));
-        assert_eq!(v["contract_id"], json!("unknown_contract_no_events_deadbeef"));
+        // contract_id is not 56 chars — validation returns 400
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2186,6 +2227,10 @@ mod tests {
         
         assert_eq!(v["data"].as_array().unwrap().len(), 1);
         assert_eq!(v["contract_id"], contract_id);
+        assert_eq!(v["total"], 1);
+        assert!(v.get("page").is_some());
+        assert!(v.get("limit").is_some());
+        assert!(v.get("approximate").is_some());
     }
 
     // Events by contract tests - Error cases
