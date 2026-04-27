@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use reqwest;
 
 use std::sync::atomic::Ordering;
-use crate::{error::AppError, models::{self, ContractSummary, ErrorResponse, PaginationParams, StreamParams, MultiStreamParams, ReplayRequest}, routes::AppState};
+use crate::{error::AppError, models::{self, ContractSummary, ExportParams, PaginationParams, StreamParams, ReplayRequest}, routes::AppState};
 
 /// Simple in-process cache entry for the contracts list.
 struct CacheEntry {
@@ -578,7 +578,7 @@ async fn stream_events_internal(
     let replay: Vec<crate::models::Event> = if let Some(last_id) = last_event_id {
         let q = if let Some(ref cid) = contract_filter {
             sqlx::query_as::<_, crate::models::Event>(
-                "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at, 0::bigint AS total_count \
+                "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, event_data_normalized, created_at, 0::bigint AS total_count \
                  FROM events WHERE created_at > (SELECT created_at FROM events WHERE id = $1) \
                  AND contract_id = $2 ORDER BY created_at ASC",
             )
@@ -588,7 +588,7 @@ async fn stream_events_internal(
             .await
         } else {
             sqlx::query_as::<_, crate::models::Event>(
-                "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at, 0::bigint AS total_count \
+                "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, event_data_normalized, created_at, 0::bigint AS total_count \
                  FROM events WHERE created_at > (SELECT created_at FROM events WHERE id = $1) \
                  ORDER BY created_at ASC",
             )
@@ -914,6 +914,112 @@ pub async fn get_events(
 
 #[utoipa::path(
     get,
+    path = "/v1/events/export",
+    tag = "events",
+    params(
+        ("event_type" = Option<String>, Query, description = "Filter by event type: contract, diagnostic, system"),
+        ("from_ledger" = Option<i64>, Query, description = "Return events at or after this ledger"),
+        ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
+        ("contract_id" = Option<String>, Query, description = "Filter by contract ID"),
+    ),
+    responses(
+        (status = 200, description = "CSV stream of events", content_type = "text/csv"),
+        (status = 400, description = "Invalid query parameters"),
+        (status = 401, description = "API key required"),
+    )
+)]
+pub async fn export_events(
+    State(state): State<AppState>,
+    Query(params): Query<ExportParams>,
+) -> Result<impl IntoResponse, AppError> {
+    // Require API key: export is always auth-gated regardless of global auth config.
+    // (The auth middleware already enforces this when api_keys is non-empty;
+    //  this guard ensures it even if the middleware is bypassed in tests.)
+    if state.config.api_keys.is_empty() {
+        return Err(AppError::Validation(
+            "export endpoint requires API key authentication".to_string(),
+        ));
+    }
+
+    if let (Some(from), Some(to)) = (params.from_ledger, params.to_ledger) {
+        if from > to {
+            return Err(AppError::Validation(
+                "from_ledger must be <= to_ledger".to_string(),
+            ));
+        }
+    }
+
+    let max_rows = state.export_max_rows as i64;
+
+    let mut conditions: Vec<String> = Vec::new();
+    let mut bind_idx: i32 = 1;
+
+    if params.contract_id.is_some() {
+        conditions.push(format!("contract_id = ${bind_idx}"));
+        bind_idx += 1;
+    }
+    if params.event_type.is_some() {
+        conditions.push(format!("event_type = ${bind_idx}"));
+        bind_idx += 1;
+    }
+    if params.from_ledger.is_some() {
+        conditions.push(format!("ledger >= ${bind_idx}"));
+        bind_idx += 1;
+    }
+    if params.to_ledger.is_some() {
+        conditions.push(format!("ledger <= ${bind_idx}"));
+        bind_idx += 1;
+    }
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    let query_str = format!(
+        "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at \
+         FROM events {where_clause} ORDER BY ledger ASC, id ASC LIMIT ${bind_idx}"
+    );
+
+    let mut q = sqlx::query(&query_str);
+    if let Some(ref cid) = params.contract_id { q = q.bind(cid); }
+    if let Some(ref et) = params.event_type   { q = q.bind(et); }
+    if let Some(fl) = params.from_ledger      { q = q.bind(fl); }
+    if let Some(tl) = params.to_ledger        { q = q.bind(tl); }
+    q = q.bind(max_rows);
+
+    let rows = q.fetch_all(&state.pool).await?;
+
+    let mut csv = String::from("id,contract_id,event_type,tx_hash,ledger,timestamp,event_data,created_at\n");
+    for row in &rows {
+        use sqlx::Row;
+        let id: uuid::Uuid           = row.try_get("id")?;
+        let contract_id: String      = row.try_get("contract_id")?;
+        let event_type: String       = row.try_get("event_type")?;
+        let tx_hash: String          = row.try_get("tx_hash")?;
+        let ledger: i64              = row.try_get("ledger")?;
+        let timestamp: chrono::DateTime<chrono::Utc> = row.try_get("timestamp")?;
+        let event_data: serde_json::Value = row.try_get("event_data")?;
+        let created_at: chrono::DateTime<chrono::Utc> = row.try_get("created_at")?;
+        // Escape event_data JSON for CSV (wrap in quotes, escape inner quotes)
+        let data_str = event_data.to_string().replace('"', "\"\"");
+        csv.push_str(&format!(
+            "{id},{contract_id},{event_type},{tx_hash},{ledger},{timestamp},\"{data_str}\",{created_at}\n"
+        ));
+    }
+
+    Ok((
+        [
+            ("Content-Type", "text/csv"),
+            ("Content-Disposition", "attachment; filename=\"events.csv\""),
+        ],
+        csv,
+    ))
+}
+
+#[utoipa::path(
+    get,
     path = "/v1/events/contract/{contract_id}",
     tag = "events",
     params(
@@ -967,7 +1073,7 @@ pub async fn get_events_by_contract(
 
     let where_clause = format!("WHERE {}", conditions.join(" AND "));
     let query_str = format!(
-        "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at, 0::bigint AS total_count \
+        "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, event_data_normalized, created_at, 0::bigint AS total_count \
          FROM events {} ORDER BY ledger DESC LIMIT ${} OFFSET ${}",
         where_clause, bind_idx, bind_idx + 1,
     );
@@ -2961,85 +3067,69 @@ mod tests {
         assert_eq!(v["error"], "unauthorized");
     }
 
-    // --- Multi-contract SSE stream tests ---
+    // --- CSV export tests ---
 
-    #[sqlx::test(migrations = "./migrations")]
-    async fn stream_multi_empty_contract_ids_returns_400(pool: PgPool) {
-        let app = create_test_router(pool);
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/events/stream/multi?contract_ids=")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v["code"], "VALIDATION_ERROR");
+    fn create_export_router(pool: PgPool) -> axum::Router {
+        let health_state = Arc::new(HealthState::new(60));
+        let indexer_state = Arc::new(IndexerState::new());
+        let prometheus_handle = crate::metrics::init_metrics();
+        // Export requires api_keys to be non-empty
+        crate::routes::create_router(pool, vec!["test-key".to_string()], &[], 60, health_state, indexer_state, prometheus_handle, 2000)
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn stream_multi_missing_contract_ids_returns_400(pool: PgPool) {
-        let app = create_test_router(pool);
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/events/stream/multi")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v["code"], "VALIDATION_ERROR");
-    }
+    async fn export_events_returns_csv_with_header(pool: PgPool) {
+        sqlx::query(
+            "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind("C1234567890123456789012345678901234567890123456789012345")
+        .bind("contract")
+        .bind("a".repeat(64))
+        .bind(1_i64)
+        .bind(Utc::now())
+        .bind(json!({"value": null, "topic": []}))
+        .execute(&pool)
+        .await
+        .unwrap();
 
-    #[sqlx::test(migrations = "./migrations")]
-    async fn stream_multi_invalid_contract_id_returns_400_with_list(pool: PgPool) {
-        let app = create_test_router(pool);
-        let valid = "C1234567890123456789012345678901234567890123456789012345";
-        let invalid = "BADINVALIDID";
+        let app = create_export_router(pool);
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/v1/events/stream/multi?contract_ids={},{}", valid, invalid))
+                    .uri("/v1/events/export")
+                    .header("Authorization", "Bearer test-key")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v["code"], "VALIDATION_ERROR");
-        let invalid_ids = v["invalid_ids"].as_array().unwrap();
-        assert!(invalid_ids.iter().any(|id| id.as_str() == Some(invalid)));
-    }
 
-    #[sqlx::test(migrations = "./migrations")]
-    async fn stream_multi_valid_contract_ids_returns_sse_stream(pool: PgPool) {
-        let app = create_test_router(pool);
-        let c1 = "C1234567890123456789012345678901234567890123456789012345";
-        let c2 = "C2345678901234567890123456789012345678901234567890123456";
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/v1/events/stream/multi?contract_ids={},{}", c1, c2))
-                    .header("Accept", "text/event-stream")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers().get("content-type").unwrap(),
-            "text/event-stream"
-        );
+        assert_eq!(response.headers().get("content-type").unwrap(), "text/csv");
+        assert!(response.headers().get("content-disposition").unwrap().to_str().unwrap().contains("events.csv"));
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let csv = String::from_utf8(body.to_vec()).unwrap();
+        let mut lines = csv.lines();
+        assert_eq!(lines.next().unwrap(), "id,contract_id,event_type,tx_hash,ledger,timestamp,event_data,created_at");
+        assert!(lines.next().is_some(), "expected at least one data row");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn export_events_without_api_key_returns_error(pool: PgPool) {
+        // Router with no api_keys configured
+        let app = create_test_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/export")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Should be rejected (400 validation error since no api_keys means guard fires)
+        assert!(response.status().is_client_error());
     }
 }

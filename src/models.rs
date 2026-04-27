@@ -45,6 +45,7 @@ pub struct Event {
     pub ledger: i64,
     pub timestamp: DateTime<Utc>,
     pub event_data: Value,
+    pub event_data_normalized: Option<Value>,
     pub created_at: DateTime<Utc>,
     #[sqlx(default)]
     #[serde(skip)]
@@ -109,6 +110,14 @@ pub struct ErrorResponse {
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct ExportParams {
+    pub event_type: Option<EventType>,
+    pub from_ledger: Option<i64>,
+    pub to_ledger: Option<i64>,
+    pub contract_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ReplayRequest {
     pub from_ledger: u64,
     pub to_ledger: u64,
@@ -130,6 +139,7 @@ impl PaginationParams {
         "ledger",
         "timestamp",
         "event_data",
+        "event_data_normalized",
         "created_at",
     ];
 
