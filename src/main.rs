@@ -19,6 +19,7 @@ mod models;
 mod normalizer;
 mod routes;
 mod rpc_client;
+mod schema_validator;
 mod webhook;
 mod bloom_filter;
 mod xdr_validation;
@@ -154,6 +155,14 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Migrations applied successfully");
     info!(environment = ?config.environment, "Running environment");
+
+    // Initialize schema validator and load schemas
+    let schema_validator = Arc::new(soroban_pulse::schema_validator::SchemaValidator::new(pool.clone()));
+    if let Err(e) = schema_validator.load_schemas().await {
+        warn!(error = %e, "Failed to load schemas from database");
+    } else {
+        info!("Schema validator initialized");
+    }
 
     // Create shared health state for indexer and HTTP handlers
     let health_state = Arc::new(config::HealthState::new(config.indexer_stall_timeout_secs));
