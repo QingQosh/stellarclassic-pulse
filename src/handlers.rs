@@ -120,36 +120,13 @@ fn rows_to_json(
                     let decrypted = decrypt_event_data(&raw, enc_key, enc_key_old);
                     event.insert(col.to_string(), decrypted);
                 }
-                "event_data_normalized" => {
-                    event.insert(
-                        col.to_string(),
-                        json!(row.try_get::<Option<Value>, _>(col)?),
-                    );
-                }
-                "event_data_decoded" => {
-                    event.insert(
-                        col.to_string(),
-                        json!(row.try_get::<Option<Value>, _>(col)?),
-                    );
-                }
-                "ledger_hash" => {
-                    event.insert(
-                        col.to_string(),
-                        json!(row.try_get::<Option<String>, _>(col)?),
-                    );
-                }
-                "in_successful_call" => {
-                    event.insert(col.to_string(), json!(row.try_get::<bool, _>(col)?));
-                }
-                "created_at" => {
-                    event.insert(
-                        col.to_string(),
-                        json!(row.try_get::<DateTime<Utc>, _>(col)?),
-                    );
-                }
-                "schema_version" => {
-                    event.insert(col.to_string(), json!(row.try_get::<i32, _>(col)?));
-                }
+                "event_data_normalized" => { event.insert(col.to_string(), json!(row.try_get::<Option<Value>, _>(col)?)); }
+                "event_data_decoded" => { event.insert(col.to_string(), json!(row.try_get::<Option<Value>, _>(col)?)); }
+                "ledger_hash" => { event.insert(col.to_string(), json!(row.try_get::<Option<String>, _>(col)?)); }
+                "in_successful_call" => { event.insert(col.to_string(), json!(row.try_get::<bool, _>(col)?)); }
+                "created_at" => { event.insert(col.to_string(), json!(row.try_get::<DateTime<Utc>, _>(col)?)); }
+                "schema_version" => { event.insert(col.to_string(), json!(row.try_get::<i32, _>(col)?)); }
+                "anonymized" => { event.insert(col.to_string(), json!(row.try_get::<bool, _>(col)?)); }
                 _ => {}
             }
         }
@@ -332,6 +309,8 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
         "read_only"
     };
 
+    let indexer_paused = state.indexer_state.is_paused.load(Ordering::Relaxed);
+
     let total_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
         .fetch_one(&state.pool)
         .await
@@ -367,6 +346,7 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
         "events_by_type": events_by_type,
         "indexer_status": indexer_status,
         "indexer_mode": indexer_mode,
+        "indexer_paused": indexer_paused,
     }))
 }
 
@@ -696,6 +676,82 @@ pub async fn stream_events_multi(
     ))
 }
 
+/// WebSocket event stream. Clients receive events as JSON text frames.
+/// After connecting, a client may send `{"contract_id":"CABC..."}` to filter
+/// by contract, or `{}` / omit the field to receive all events.
+#[utoipa::path(
+    get,
+    path = "/v1/events/ws",
+    tag = "events",
+    params(
+        ("contract_id" = Option<String>, Query, description = "Initial contract ID filter (can also be set via WebSocket message)"),
+    ),
+    responses(
+        (status = 101, description = "WebSocket upgrade"),
+        (status = 400, description = "Invalid contract_id", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    )
+)]
+pub async fn ws_events(
+    State(state): State<AppState>,
+    Query(params): Query<StreamParams>,
+    ws: axum::extract::ws::WebSocketUpgrade,
+) -> Result<impl IntoResponse, AppError> {
+    if let Some(ref cid) = params.contract_id {
+        validate_contract_id(cid)?;
+    }
+
+    let initial_filter = params.contract_id.clone();
+    let event_tx = state.event_tx.clone();
+    let enc_key = state.encryption_key;
+    let enc_key_old = state.encryption_key_old;
+
+    Ok(ws.on_upgrade(move |mut socket| async move {
+        use axum::extract::ws::Message;
+
+        let mut rx = event_tx.subscribe();
+        let mut contract_filter = initial_filter;
+
+        loop {
+            tokio::select! {
+                // Incoming message from client (filter update or close)
+                msg = socket.recv() => {
+                    match msg {
+                        Some(Ok(Message::Text(text))) => {
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                                contract_filter = v.get("contract_id")
+                                    .and_then(|c| c.as_str())
+                                    .map(|s| s.to_string());
+                            }
+                        }
+                        Some(Ok(Message::Close(_))) | None => break,
+                        _ => {}
+                    }
+                }
+                // Outgoing event from broadcast channel
+                result = rx.recv() => {
+                    match result {
+                        Ok(mut event) => {
+                            if let Some(ref cid) = contract_filter {
+                                if &event.contract_id != cid {
+                                    continue;
+                                }
+                            }
+                            event.event_data = decrypt_event_data(&event.event_data, enc_key.as_ref(), enc_key_old.as_ref());
+                            let text = serde_json::to_string(&event).unwrap_or_default();
+                            if socket.send(Message::Text(text.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            }
+        }
+    }))
+}
+
 async fn stream_events_internal(
     State(state): State<AppState>,
     contract_filter: Option<String>,
@@ -918,24 +974,13 @@ fn filter_fields(
                 let decrypted = decrypt_event_data(&event.event_data, enc_key, enc_key_old);
                 map.insert(col.to_string(), decrypted);
             }
-            "event_data_normalized" => {
-                map.insert(col.to_string(), json!(event.event_data_normalized));
-            }
-            "event_data_decoded" => {
-                map.insert(col.to_string(), json!(event.event_data_decoded));
-            }
-            "ledger_hash" => {
-                map.insert(col.to_string(), json!(event.ledger_hash));
-            }
-            "in_successful_call" => {
-                map.insert(col.to_string(), json!(event.in_successful_call));
-            }
-            "created_at" => {
-                map.insert(col.to_string(), json!(event.created_at));
-            }
-            "schema_version" => {
-                map.insert(col.to_string(), json!(event.schema_version));
-            }
+            "event_data_normalized" => { map.insert(col.to_string(), json!(event.event_data_normalized)); }
+            "event_data_decoded"    => { map.insert(col.to_string(), json!(event.event_data_decoded)); }
+            "ledger_hash"           => { map.insert(col.to_string(), json!(event.ledger_hash)); }
+            "in_successful_call"    => { map.insert(col.to_string(), json!(event.in_successful_call)); }
+            "created_at"  => { map.insert(col.to_string(), json!(event.created_at)); }
+            "schema_version" => { map.insert(col.to_string(), json!(event.schema_version)); }
+            "anonymized"     => { map.insert(col.to_string(), json!(event.anonymized)); }
             _ => {}
         }
     }
@@ -1898,10 +1943,174 @@ pub async fn register_contract_abi(
     ))
 }
 
+/// Anonymize a specific event for GDPR compliance.
+/// Replaces event_data with {"anonymized": true} and hashes tx_hash with SHA-256.
+/// Idempotent: already-anonymized events return 200 without re-processing.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/events/{id}/anonymize",
+    tag = "admin",
+    params(
+        ("id" = String, Path, description = "Event UUID"),
+    ),
+    responses(
+        (status = 200, description = "Event anonymized"),
+        (status = 404, description = "Event not found", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    )
+)]
+pub async fn anonymize_event(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, AppError> {
+    use sha2::{Sha256, Digest};
+
+    // Fetch current tx_hash and anonymized flag
+    let row = sqlx::query("SELECT tx_hash, anonymized FROM events WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    let already_anonymized: bool = row.try_get("anonymized")?;
+    if already_anonymized {
+        tracing::info!(event_id = %id, "Event already anonymized, skipping");
+        return Ok(Json(json!({ "id": id, "anonymized": true })));
+    }
+
+    let tx_hash: String = row.try_get("tx_hash")?;
+    let hashed_tx = {
+        let mut h = Sha256::new();
+        h.update(tx_hash.as_bytes());
+        format!("{:x}", h.finalize())
+    };
+
+    sqlx::query(
+        "UPDATE events SET anonymized = TRUE, event_data = $1, tx_hash = $2 WHERE id = $3",
+    )
+    .bind(json!({"anonymized": true}))
+    .bind(&hashed_tx)
+    .bind(id)
+    .execute(&state.pool)
+    .await?;
+
+    tracing::info!(event_id = %id, anonymized_at = %chrono::Utc::now(), "Event anonymized");
+
+    Ok(Json(json!({ "id": id, "anonymized": true })))
+}
+
+/// Pause the indexer loop without stopping the HTTP server.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/indexer/pause",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Indexer paused"),
+        (status = 403, description = "Not the active indexer", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    )
+)]
+pub async fn pause_indexer(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if !state.indexer_state.is_active_indexer.load(Ordering::Relaxed) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "pause endpoint only available on active indexer" })),
+        ));
+    }
+    state.indexer_state.is_paused.store(true, Ordering::Relaxed);
+    tracing::info!("Indexer paused via admin API");
+    Ok(Json(json!({ "indexer_paused": true })))
+}
+
+/// Resume a previously paused indexer loop.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/indexer/resume",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Indexer resumed"),
+        (status = 403, description = "Not the active indexer", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    )
+)]
+pub async fn resume_indexer(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if !state.indexer_state.is_active_indexer.load(Ordering::Relaxed) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "resume endpoint only available on active indexer" })),
+        ));
+    }
+    state.indexer_state.is_paused.store(false, Ordering::Relaxed);
+    tracing::info!("Indexer resumed via admin API");
+    Ok(Json(json!({ "indexer_paused": false })))
+}
+
 #[utoipa::path(
     get,
-    path = "/v1/contracts",
+    path = "/v1/events/diff",
     tag = "events",
+    params(
+        ("from_ledger" = i64, Query, description = "Start ledger (inclusive, required)"),
+        ("to_ledger" = i64, Query, description = "End ledger (inclusive, required)"),
+    ),
+    responses(
+        (status = 200, description = "Event diff grouped by contract", body = crate::models::DiffResponse),
+        (status = 400, description = "Invalid or missing ledger range", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    )
+)]
+pub async fn get_events_diff(
+    State(state): State<AppState>,
+    Query(params): Query<crate::models::DiffParams>,
+) -> Result<Json<Value>, AppError> {
+    if params.from_ledger > params.to_ledger {
+        return Err(AppError::Validation(
+            "from_ledger must be <= to_ledger".to_string(),
+        ));
+    }
+
+    // Single query: count per (contract_id, event_type) in range
+    let rows = sqlx::query(
+        "SELECT contract_id, event_type, COUNT(*) AS cnt \
+         FROM events \
+         WHERE ledger >= $1 AND ledger <= $2 \
+         GROUP BY contract_id, event_type",
+    )
+    .bind(params.from_ledger)
+    .bind(params.to_ledger)
+    .fetch_all(&state.read_pool)
+    .await?;
+
+    // Aggregate into per-contract map
+    let mut map: std::collections::HashMap<String, crate::models::ContractDiff> =
+        std::collections::HashMap::new();
+    for row in &rows {
+        let contract_id: String = row.try_get("contract_id")?;
+        let event_type: String = row.try_get("event_type")?;
+        let cnt: i64 = row.try_get("cnt")?;
+        let entry = map.entry(contract_id.clone()).or_insert_with(|| crate::models::ContractDiff {
+            contract_id,
+            event_counts: std::collections::HashMap::new(),
+            total: 0,
+        });
+        entry.event_counts.insert(event_type, cnt);
+        entry.total += cnt;
+    }
+
+    let mut contracts: Vec<crate::models::ContractDiff> = map.into_values().collect();
+    contracts.sort_by(|a, b| b.total.cmp(&a.total));
+
+    Ok(Json(serde_json::to_value(crate::models::DiffResponse {
+        from_ledger: params.from_ledger,
+        to_ledger: params.to_ledger,
+        contracts,
+    }).unwrap()))
+}
+
     params(
         ("page" = Option<i64>, Query, description = "Page number (default 1)"),
         ("limit" = Option<i64>, Query, description = "Items per page (1-100, default 20)"),
@@ -4445,6 +4654,515 @@ mod tests {
             .unwrap();
         // Should be rejected (400 validation error since no api_keys means guard fires)
         assert!(response.status().is_client_error());
+    }
+
+    // ── Anonymization tests ──────────────────────────────────────────────────
+
+    fn create_admin_router(pool: PgPool) -> axum::Router {
+        let health_state = Arc::new(HealthState::new(60));
+        let indexer_state = Arc::new(IndexerState::new());
+        let prometheus_handle = crate::metrics::init_metrics();
+        let config = crate::config::Config::default();
+        crate::routes::create_router(pool, vec!["admin-key".to_string()], &[], 60, health_state, indexer_state, prometheus_handle, 2000, config)
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn anonymize_event_returns_200_and_scrubs_data(pool: PgPool) {
+        let event_id = Uuid::new_v4();
+        let original_tx = "a".repeat(64);
+        sqlx::query(
+            "INSERT INTO events (id, contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(event_id)
+        .bind("C1234567890123456789012345678901234567890123456789012345")
+        .bind("contract")
+        .bind(&original_tx)
+        .bind(1_i64)
+        .bind(Utc::now())
+        .bind(json!({"sensitive": "data"}))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let app = create_admin_router(pool.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/admin/events/{event_id}/anonymize"))
+                    .header("Authorization", "Bearer admin-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["anonymized"], true);
+
+        // Verify DB state
+        let row = sqlx::query("SELECT event_data, tx_hash, anonymized FROM events WHERE id = $1")
+            .bind(event_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let event_data: Value = row.try_get("event_data").unwrap();
+        assert_eq!(event_data, json!({"anonymized": true}));
+        let tx_hash: String = row.try_get("tx_hash").unwrap();
+        assert_ne!(tx_hash, original_tx, "tx_hash must be replaced with its hash");
+        assert_eq!(tx_hash.len(), 64, "hashed tx_hash must be 64 hex chars");
+        let anonymized: bool = row.try_get("anonymized").unwrap();
+        assert!(anonymized);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn anonymize_event_is_idempotent(pool: PgPool) {
+        let event_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO events (id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, anonymized)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)",
+        )
+        .bind(event_id)
+        .bind("C1234567890123456789012345678901234567890123456789012345")
+        .bind("contract")
+        .bind("b".repeat(64))
+        .bind(2_i64)
+        .bind(Utc::now())
+        .bind(json!({"anonymized": true}))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let app = create_admin_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/admin/events/{event_id}/anonymize"))
+                    .header("Authorization", "Bearer admin-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["anonymized"], true);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn anonymize_event_not_found_returns_404(pool: PgPool) {
+        let app = create_admin_router(pool);
+        let missing_id = Uuid::new_v4();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/admin/events/{missing_id}/anonymize"))
+                    .header("Authorization", "Bearer admin-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn anonymize_event_requires_api_key(pool: PgPool) {
+        let event_id = Uuid::new_v4();
+        let app = create_admin_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/admin/events/{event_id}/anonymize"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn anonymized_event_data_visible_in_get_events(pool: PgPool) {
+        let event_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO events (id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, anonymized)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)",
+        )
+        .bind(event_id)
+        .bind("C1234567890123456789012345678901234567890123456789012345")
+        .bind("contract")
+        .bind("c".repeat(64))
+        .bind(3_i64)
+        .bind(Utc::now())
+        .bind(json!({"anonymized": true}))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let app = create_test_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events?exact_count=true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let events = v["data"].as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["event_data"], json!({"anonymized": true}));
+    }
+
+    // ── Diff endpoint tests ──────────────────────────────────────────────────
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn diff_groups_events_by_contract_and_type(pool: PgPool) {
+        // Contract A: 3 contract events at ledger 10-12, 1 diagnostic at ledger 11
+        // Contract B: 2 contract events at ledger 10-11
+        let contract_a = "CA23456789012345678901234567890123456789012345678901234";
+        let contract_b = "CB23456789012345678901234567890123456789012345678901234";
+        for (i, (cid, etype, ledger)) in [
+            (contract_a, "contract",   10_i64),
+            (contract_a, "contract",   11_i64),
+            (contract_a, "contract",   12_i64),
+            (contract_a, "diagnostic", 11_i64),
+            (contract_b, "contract",   10_i64),
+            (contract_b, "contract",   11_i64),
+        ].iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(cid)
+            .bind(etype)
+            .bind(format!("{:0>64}", i))
+            .bind(ledger)
+            .bind(Utc::now())
+            .bind(json!({}))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let app = create_test_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/diff?from_ledger=10&to_ledger=12")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(v["from_ledger"], 10);
+        assert_eq!(v["to_ledger"], 12);
+
+        let contracts = v["contracts"].as_array().unwrap();
+        assert_eq!(contracts.len(), 2);
+
+        // First entry must be contract_a (total=4 > contract_b total=2)
+        assert_eq!(contracts[0]["contract_id"], contract_a);
+        assert_eq!(contracts[0]["event_counts"]["contract"], 3);
+        assert_eq!(contracts[0]["event_counts"]["diagnostic"], 1);
+        assert_eq!(contracts[0]["total"], 4);
+
+        assert_eq!(contracts[1]["contract_id"], contract_b);
+        assert_eq!(contracts[1]["event_counts"]["contract"], 2);
+        assert_eq!(contracts[1]["total"], 2);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn diff_empty_range_returns_empty_contracts(pool: PgPool) {
+        let app = create_test_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/diff?from_ledger=1000&to_ledger=2000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["contracts"], json!([]));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn diff_invalid_range_returns_400(pool: PgPool) {
+        let app = create_test_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/diff?from_ledger=100&to_ledger=50")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["code"], "VALIDATION_ERROR");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn diff_missing_params_returns_400(pool: PgPool) {
+        let app = create_test_router(pool);
+        // Missing to_ledger
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/diff?from_ledger=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── Pause / Resume tests ─────────────────────────────────────────────────
+
+    fn create_active_indexer_router(pool: PgPool) -> axum::Router {
+        let health_state = Arc::new(HealthState::new(60));
+        let indexer_state = Arc::new(IndexerState::new());
+        indexer_state.is_active_indexer.store(true, std::sync::atomic::Ordering::Relaxed);
+        let prometheus_handle = crate::metrics::init_metrics();
+        let config = crate::config::Config::default();
+        crate::routes::create_router(pool, vec!["admin-key".to_string()], &[], 60, health_state, indexer_state, prometheus_handle, 2000, config)
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn pause_indexer_returns_200_and_sets_paused(pool: PgPool) {
+        let app = create_active_indexer_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/indexer/pause")
+                    .header("Authorization", "Bearer admin-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["indexer_paused"], true);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn resume_indexer_returns_200_and_clears_paused(pool: PgPool) {
+        let app = create_active_indexer_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/indexer/resume")
+                    .header("Authorization", "Bearer admin-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["indexer_paused"], false);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn pause_returns_403_on_read_only_replica(pool: PgPool) {
+        // create_test_router uses IndexerState::new() which defaults is_active_indexer=false
+        let app = create_admin_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/indexer/pause")
+                    .header("Authorization", "Bearer admin-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn resume_returns_403_on_read_only_replica(pool: PgPool) {
+        let app = create_admin_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/indexer/resume")
+                    .header("Authorization", "Bearer admin-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn pause_requires_api_key(pool: PgPool) {
+        let app = create_active_indexer_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/indexer/pause")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn status_includes_indexer_paused_field(pool: PgPool) {
+        let app = create_test_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert!(v.get("indexer_paused").is_some(), "indexer_paused must be present in /status");
+        assert_eq!(v["indexer_paused"], false);
+    }
+
+    // ── WebSocket tests ──────────────────────────────────────────────────────
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn ws_events_upgrades_to_websocket(pool: PgPool) {
+        let app = create_test_router(pool);
+        // A plain GET without Upgrade header should return 400 (axum rejects non-WS requests)
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/ws")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // axum returns 400 when the request is not a valid WebSocket upgrade
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn ws_events_invalid_contract_id_returns_400(pool: PgPool) {
+        let app = create_test_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/ws?contract_id=INVALID")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"], "invalid contract_id format");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn ws_events_delivers_broadcast_events(pool: PgPool) {
+        use axum::extract::ws::Message;
+        use tokio::sync::broadcast;
+
+        let (event_tx, _) = broadcast::channel::<crate::models::SorobanEvent>(16);
+        let health_state = Arc::new(HealthState::new(60));
+        let indexer_state = Arc::new(crate::config::IndexerState::new());
+        let prometheus_handle = crate::metrics::init_metrics();
+        let config = crate::config::Config::default();
+        let app = crate::routes::create_router_with_tx(
+            pool.clone(), pool, vec![], &[], 60, false,
+            health_state, indexer_state, prometheus_handle,
+            event_tx.clone(), 15000, 1000, 2000, None, None, config,
+        );
+
+        // Publish an event before the client connects so it lands in the channel
+        let test_event = crate::models::SorobanEvent {
+            contract_id: "C1234567890123456789012345678901234567890123456789012345".to_string(),
+            event_type: "contract".to_string(),
+            tx_hash: "a".repeat(64),
+            ledger: 1,
+            ledger_closed_at: "2026-01-01T00:00:00Z".to_string(),
+            ledger_hash: None,
+            in_successful_call: true,
+            value: json!({}),
+            topic: None,
+        };
+
+        // Send the event after a short delay so the WS handler has time to subscribe
+        let tx_clone = event_tx.clone();
+        let ev_clone = test_event.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let _ = tx_clone.send(ev_clone);
+        });
+
+        // Perform a WebSocket upgrade request
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/ws")
+                    .header("connection", "upgrade")
+                    .header("upgrade", "websocket")
+                    .header("sec-websocket-version", "13")
+                    .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
     }
 }
 

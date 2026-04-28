@@ -74,6 +74,7 @@ pub struct AppState {
         handlers::status,
         handlers::get_events,
         handlers::get_event_stats,
+        handlers::get_events_diff,
         handlers::export_events,
         handlers::get_recent_events,
         handlers::get_events_by_contract,
@@ -83,9 +84,13 @@ pub struct AppState {
         handlers::stream_events,
         handlers::stream_events_by_contract,
         handlers::stream_events_multi,
+        handlers::ws_events,
         handlers::get_contracts,
         handlers::replay_events,
         handlers::register_contract_abi,
+        handlers::anonymize_event,
+        handlers::pause_indexer,
+        handlers::resume_indexer,
         handlers::list_archive,
         handlers::register_contract_schema,
         handlers::get_contract_schema,
@@ -102,7 +107,9 @@ pub struct AppState {
         crate::models::ReplayRequest,
         crate::models::BatchTxRequest,
         crate::models::ErrorResponse,
-        crate::handlers::RegisterSchemaRequest,
+        crate::models::DiffParams,
+        crate::models::ContractDiff,
+        crate::models::DiffResponse,
     )),
     tags(
         (name = "events", description = "Event indexing endpoints"),
@@ -198,48 +205,30 @@ pub fn create_router_with_tx(
     let v1 = Router::new()
         .route("/events", get(handlers::get_events))
         .route("/events/stats", get(handlers::get_event_stats))
+        .route("/events/diff", get(handlers::get_events_diff))
         .route("/events/export", get(handlers::export_events))
         .route("/events/recent", get(handlers::get_recent_events))
         .route("/events/stream", get(handlers::stream_events))
         .route("/events/stream/multi", get(handlers::stream_events_multi))
-        .route(
-            "/events/contract/{contract_id}",
-            get(handlers::get_events_by_contract),
-        )
-        .route(
-            "/events/contract/{contract_id}/stream",
-            get(handlers::stream_events_by_contract),
-        )
-        .route(
-            "/events/tx/batch",
-            axum::routing::post(handlers::get_events_by_tx_batch),
-        )
+        .route("/events/ws", get(handlers::ws_events))
+        .route("/events/contract/{contract_id}", get(handlers::get_events_by_contract))
+        .route("/events/contract/{contract_id}/stream", get(handlers::stream_events_by_contract))
+        .route("/events/tx/batch", axum::routing::post(handlers::get_events_by_tx_batch))
         .route("/events/tx/{tx_hash}", get(handlers::get_events_by_tx))
         .route(
             "/events/ledger-hash/{hash}",
             get(handlers::get_events_by_ledger_hash),
         )
         .route("/contracts", get(handlers::get_contracts))
-        .route(
-            "/admin/replay",
-            axum::routing::post(handlers::replay_events),
-        )
-        .route(
-            "/admin/contracts/{contract_id}/abi",
-            axum::routing::post(handlers::register_contract_abi),
-        )
-        .route(
-            "/subscriptions",
-            axum::routing::post(subscriptions::create_subscription),
-        )
-        .route(
-            "/subscriptions/{id}",
-            get(subscriptions::get_subscription).delete(subscriptions::cancel_subscription),
-        )
-        .route(
-            "/subscriptions/{id}/ack",
-            axum::routing::post(subscriptions::ack_subscription),
-        );
+        .route("/admin/replay", axum::routing::post(handlers::replay_events))
+        .route("/admin/contracts/{contract_id}/abi", axum::routing::post(handlers::register_contract_abi))
+        .route("/admin/events/{id}/anonymize", axum::routing::post(handlers::anonymize_event))
+        .route("/admin/indexer/pause", axum::routing::post(handlers::pause_indexer))
+        .route("/admin/indexer/resume", axum::routing::post(handlers::resume_indexer))
+        .route("/subscriptions", axum::routing::post(subscriptions::create_subscription))
+        .route("/subscriptions/{id}", get(subscriptions::get_subscription).delete(subscriptions::cancel_subscription))
+        .route("/subscriptions/{id}/ack", axum::routing::post(subscriptions::ack_subscription));
+
 
     // Unversioned deprecated aliases (same handlers, add Deprecation header via middleware)
     let deprecated = Router::new()
