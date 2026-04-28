@@ -63,23 +63,13 @@ vacuum: ## Run VACUUM ANALYZE on the events table
 	@if [ -z "$$DATABASE_URL" ]; then echo "DATABASE_URL is not set"; exit 1; fi
 	psql "$$DATABASE_URL" -c "VACUUM ANALYZE events;"
 
-.PHONY: mask-data mask-data-dry-run
-mask-data: ## Mask sensitive event data for non-production environments
-	@echo "Running data masking utility..."
-	@if [ -z "$$DATABASE_URL" ]; then \
-		echo "Error: DATABASE_URL environment variable not set"; \
-		exit 1; \
-	fi
-	@if [ "$$ENVIRONMENT" = "production" ]; then \
-		echo "WARNING: This is production! You have 5 seconds to cancel..."; \
-		sleep 5; \
-	fi
-	cargo run --bin mask_event_data
+.PHONY: run-zipkin zipkin-up zipkin-down
+run-zipkin: ## Run with Zipkin tracing
+	ZIPKIN_ENDPOINT=$${ZIPKIN_ENDPOINT:-http://localhost:9411/api/v2/spans} \
+	cargo run --features zipkin
 
-mask-data-dry-run: ## Preview data masking without applying changes
-	@echo "Dry run - previewing data masking..."
-	@if [ -z "$$DATABASE_URL" ]; then \
-		echo "Error: DATABASE_URL environment variable not set"; \
-		exit 1; \
-	fi
-	cargo run --bin mask_event_data -- --dry-run
+zipkin-up: ## Start Zipkin container
+	docker run -d -p 9411:9411 --name zipkin openzipkin/zipkin
+
+zipkin-down: ## Stop Zipkin container
+	docker stop zipkin || true && docker rm zipkin || true

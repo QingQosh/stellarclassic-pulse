@@ -83,3 +83,11 @@ harness = false
 [[bench]]
 name = "compression"
 harness = false
+
+[features]
+default = []
+otel = ["dep:opentelemetry", "dep:opentelemetry-otlp", "dep:opentelemetry_sdk"]
+zipkin = ["dep:opentelemetry", "dep:opentelemetry-zipkin", "dep:opentelemetry_sdk"]
+
+[dependencies]
+opentelemetry-zipkin = { version = "0.19", optional = true }
