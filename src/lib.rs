@@ -8,6 +8,7 @@ pub mod metrics;
 pub mod middleware;
 pub mod models;
 pub mod normalizer;
+pub mod queue_publisher;
 pub mod rpc_client;
 pub mod routes;
 pub mod subscriptions;
