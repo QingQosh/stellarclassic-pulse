@@ -89,6 +89,7 @@ fn rows_to_json(rows: &[sqlx::postgres::PgRow], columns: &[&str], enc_key: Optio
                 "in_successful_call" => { event.insert(col.to_string(), json!(row.try_get::<bool, _>(col)?)); }
                 "created_at" => { event.insert(col.to_string(), json!(row.try_get::<DateTime<Utc>, _>(col)?)); }
                 "schema_version" => { event.insert(col.to_string(), json!(row.try_get::<i32, _>(col)?)); }
+                "anonymized" => { event.insert(col.to_string(), json!(row.try_get::<bool, _>(col)?)); }
                 _ => {}
             }
         }
@@ -798,6 +799,7 @@ fn filter_fields(event: &models::Event, columns: &[&str], enc_key: Option<&[u8; 
             "in_successful_call"    => { map.insert(col.to_string(), json!(event.in_successful_call)); }
             "created_at"  => { map.insert(col.to_string(), json!(event.created_at)); }
             "schema_version" => { map.insert(col.to_string(), json!(event.schema_version)); }
+            "anonymized"     => { map.insert(col.to_string(), json!(event.anonymized)); }
             _ => {}
         }
     }
@@ -1603,7 +1605,63 @@ pub async fn register_contract_abi(
 
     Ok(Json(json!({ "contract_id": contract_id, "status": "registered" })))
 }
-    tag = "events",
+
+/// Anonymize a specific event for GDPR compliance.
+/// Replaces event_data with {"anonymized": true} and hashes tx_hash with SHA-256.
+/// Idempotent: already-anonymized events return 200 without re-processing.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/events/{id}/anonymize",
+    tag = "admin",
+    params(
+        ("id" = String, Path, description = "Event UUID"),
+    ),
+    responses(
+        (status = 200, description = "Event anonymized"),
+        (status = 404, description = "Event not found", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    )
+)]
+pub async fn anonymize_event(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, AppError> {
+    use sha2::{Sha256, Digest};
+
+    // Fetch current tx_hash and anonymized flag
+    let row = sqlx::query("SELECT tx_hash, anonymized FROM events WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    let already_anonymized: bool = row.try_get("anonymized")?;
+    if already_anonymized {
+        tracing::info!(event_id = %id, "Event already anonymized, skipping");
+        return Ok(Json(json!({ "id": id, "anonymized": true })));
+    }
+
+    let tx_hash: String = row.try_get("tx_hash")?;
+    let hashed_tx = {
+        let mut h = Sha256::new();
+        h.update(tx_hash.as_bytes());
+        format!("{:x}", h.finalize())
+    };
+
+    sqlx::query(
+        "UPDATE events SET anonymized = TRUE, event_data = $1, tx_hash = $2 WHERE id = $3",
+    )
+    .bind(json!({"anonymized": true}))
+    .bind(&hashed_tx)
+    .bind(id)
+    .execute(&state.pool)
+    .await?;
+
+    tracing::info!(event_id = %id, anonymized_at = %chrono::Utc::now(), "Event anonymized");
+
+    Ok(Json(json!({ "id": id, "anonymized": true })))
+}
+
     params(
         ("page" = Option<i64>, Query, description = "Page number (default 1)"),
         ("limit" = Option<i64>, Query, description = "Items per page (1-100, default 20)"),
@@ -3874,6 +3932,179 @@ mod tests {
             .unwrap();
         // Should be rejected (400 validation error since no api_keys means guard fires)
         assert!(response.status().is_client_error());
+    }
+
+    // ── Anonymization tests ──────────────────────────────────────────────────
+
+    fn create_admin_router(pool: PgPool) -> axum::Router {
+        let health_state = Arc::new(HealthState::new(60));
+        let indexer_state = Arc::new(IndexerState::new());
+        let prometheus_handle = crate::metrics::init_metrics();
+        let config = crate::config::Config::default();
+        crate::routes::create_router(pool, vec!["admin-key".to_string()], &[], 60, health_state, indexer_state, prometheus_handle, 2000, config)
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn anonymize_event_returns_200_and_scrubs_data(pool: PgPool) {
+        let event_id = Uuid::new_v4();
+        let original_tx = "a".repeat(64);
+        sqlx::query(
+            "INSERT INTO events (id, contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(event_id)
+        .bind("C1234567890123456789012345678901234567890123456789012345")
+        .bind("contract")
+        .bind(&original_tx)
+        .bind(1_i64)
+        .bind(Utc::now())
+        .bind(json!({"sensitive": "data"}))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let app = create_admin_router(pool.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/admin/events/{event_id}/anonymize"))
+                    .header("Authorization", "Bearer admin-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["anonymized"], true);
+
+        // Verify DB state
+        let row = sqlx::query("SELECT event_data, tx_hash, anonymized FROM events WHERE id = $1")
+            .bind(event_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let event_data: Value = row.try_get("event_data").unwrap();
+        assert_eq!(event_data, json!({"anonymized": true}));
+        let tx_hash: String = row.try_get("tx_hash").unwrap();
+        assert_ne!(tx_hash, original_tx, "tx_hash must be replaced with its hash");
+        assert_eq!(tx_hash.len(), 64, "hashed tx_hash must be 64 hex chars");
+        let anonymized: bool = row.try_get("anonymized").unwrap();
+        assert!(anonymized);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn anonymize_event_is_idempotent(pool: PgPool) {
+        let event_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO events (id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, anonymized)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)",
+        )
+        .bind(event_id)
+        .bind("C1234567890123456789012345678901234567890123456789012345")
+        .bind("contract")
+        .bind("b".repeat(64))
+        .bind(2_i64)
+        .bind(Utc::now())
+        .bind(json!({"anonymized": true}))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let app = create_admin_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/admin/events/{event_id}/anonymize"))
+                    .header("Authorization", "Bearer admin-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["anonymized"], true);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn anonymize_event_not_found_returns_404(pool: PgPool) {
+        let app = create_admin_router(pool);
+        let missing_id = Uuid::new_v4();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/admin/events/{missing_id}/anonymize"))
+                    .header("Authorization", "Bearer admin-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn anonymize_event_requires_api_key(pool: PgPool) {
+        let event_id = Uuid::new_v4();
+        let app = create_admin_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/admin/events/{event_id}/anonymize"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn anonymized_event_data_visible_in_get_events(pool: PgPool) {
+        let event_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO events (id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, anonymized)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)",
+        )
+        .bind(event_id)
+        .bind("C1234567890123456789012345678901234567890123456789012345")
+        .bind("contract")
+        .bind("c".repeat(64))
+        .bind(3_i64)
+        .bind(Utc::now())
+        .bind(json!({"anonymized": true}))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let app = create_test_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events?exact_count=true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let events = v["data"].as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["event_data"], json!({"anonymized": true}));
     }
 }
 

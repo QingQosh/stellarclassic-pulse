@@ -80,6 +80,7 @@ pub struct AppState {
         handlers::get_contracts,
         handlers::replay_events,
         handlers::register_contract_abi,
+        handlers::anonymize_event,
         handlers::list_archive,
     ),
     components(schemas(
@@ -179,6 +180,7 @@ pub fn create_router_with_tx(
         .route("/contracts", get(handlers::get_contracts))
         .route("/admin/replay", axum::routing::post(handlers::replay_events))
         .route("/admin/contracts/{contract_id}/abi", axum::routing::post(handlers::register_contract_abi))
+        .route("/admin/events/{id}/anonymize", axum::routing::post(handlers::anonymize_event))
         .route("/subscriptions", axum::routing::post(subscriptions::create_subscription))
         .route("/subscriptions/{id}", get(subscriptions::get_subscription).delete(subscriptions::cancel_subscription))
         .route("/subscriptions/{id}/ack", axum::routing::post(subscriptions::ack_subscription));
