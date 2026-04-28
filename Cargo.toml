@@ -54,12 +54,18 @@ aws-config = { version = "1", features = ["behavior-version-latest"], optional =
 # Issue #264: GCP Pub/Sub streaming (optional, behind pubsub feature flag)
 google-cloud-pubsub = { version = "0.33", optional = true }
 
+# Issue #262: Parquet export (optional, behind parquet feature flag)
+parquet = { version = "53", optional = true, default-features = false, features = ["snap"] }
+arrow-array = { version = "53", optional = true }
+arrow-schema = { version = "53", optional = true }
+
 [features]
 otel = ["tracing-opentelemetry", "opentelemetry", "opentelemetry-otlp"]
 encryption = ["aes-gcm", "rand"]
 kinesis = ["aws-sdk-kinesis", "aws-config"]
 pubsub = ["google-cloud-pubsub"]
 archive = []
+parquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema"]
 
 [dev-dependencies]
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls", "chrono", "uuid", "json", "migrate"] }
@@ -68,6 +74,8 @@ criterion = { version = "0.5", features = ["html_reports"] }
 http-body-util = "0.1"
 tempfile = "3"
 flate2 = "1"
+parquet = { version = "53", default-features = false, features = ["snap"] }
+arrow-array = { version = "53" }
 
 [[bench]]
 name = "pagination"

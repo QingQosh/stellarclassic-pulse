@@ -1282,13 +1282,14 @@ pub async fn get_events(
     path = "/v1/events/export",
     tag = "events",
     params(
+        ("format" = Option<String>, Query, description = "Output format: csv (default) or parquet"),
         ("event_type" = Option<String>, Query, description = "Filter by event type: contract, diagnostic, system"),
         ("from_ledger" = Option<i64>, Query, description = "Return events at or after this ledger"),
         ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
         ("contract_id" = Option<String>, Query, description = "Filter by contract ID"),
     ),
     responses(
-        (status = 200, description = "CSV stream of events", content_type = "text/csv"),
+        (status = 200, description = "Exported events (CSV or Parquet depending on format param)"),
         (status = 400, description = "Invalid query parameters"),
         (status = 401, description = "API key required"),
     )
@@ -1296,10 +1297,7 @@ pub async fn get_events(
 pub async fn export_events(
     State(state): State<AppState>,
     Query(params): Query<ExportParams>,
-) -> Result<impl IntoResponse, AppError> {
-    // Require API key: export is always auth-gated regardless of global auth config.
-    // (The auth middleware already enforces this when api_keys is non-empty;
-    //  this guard ensures it even if the middleware is bypassed in tests.)
+) -> Result<Response<Body>, AppError> {
     if state.config.api_keys.is_empty() {
         return Err(AppError::Validation(
             "export endpoint requires API key authentication".to_string(),
@@ -1312,6 +1310,15 @@ pub async fn export_events(
                 "from_ledger must be <= to_ledger".to_string(),
             ));
         }
+    }
+
+    let want_parquet = params.format.as_deref() == Some("parquet");
+
+    #[cfg(not(feature = "parquet"))]
+    if want_parquet {
+        return Err(AppError::Validation(
+            "parquet export requires the 'parquet' feature flag".to_string(),
+        ));
     }
 
     let max_rows = state.config.export_max_rows as i64;
@@ -1364,10 +1371,43 @@ pub async fn export_events(
 
     let rows = q.fetch_all(&state.pool).await?;
 
+    #[cfg(feature = "parquet")]
+    if want_parquet {
+        use crate::parquet_export::{write_events_parquet, EventRow};
+        let event_rows: Vec<EventRow> = rows
+            .iter()
+            .map(|row| {
+                Ok::<_, sqlx::Error>(EventRow {
+                    id: row.try_get("id")?,
+                    contract_id: row.try_get("contract_id")?,
+                    event_type: row.try_get("event_type")?,
+                    tx_hash: row.try_get("tx_hash")?,
+                    ledger: row.try_get("ledger")?,
+                    timestamp: row.try_get("timestamp")?,
+                    event_data: row.try_get("event_data")?,
+                    created_at: row.try_get("created_at")?,
+                })
+            })
+            .collect::<Result<_, _>>()?;
+
+        let bytes = write_events_parquet(&event_rows)
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/octet-stream")
+            .header(
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"events.parquet\"",
+            )
+            .body(Body::from(bytes))
+            .unwrap());
+    }
+
+    // Default: CSV
     let mut csv =
         String::from("id,contract_id,event_type,tx_hash,ledger,timestamp,event_data,created_at\n");
     for row in &rows {
-        use sqlx::Row;
         let id: uuid::Uuid = row.try_get("id")?;
         let contract_id: String = row.try_get("contract_id")?;
         let event_type: String = row.try_get("event_type")?;
@@ -1376,20 +1416,21 @@ pub async fn export_events(
         let timestamp: chrono::DateTime<chrono::Utc> = row.try_get("timestamp")?;
         let event_data: serde_json::Value = row.try_get("event_data")?;
         let created_at: chrono::DateTime<chrono::Utc> = row.try_get("created_at")?;
-        // Escape event_data JSON for CSV (wrap in quotes, escape inner quotes)
         let data_str = event_data.to_string().replace('"', "\"\"");
         csv.push_str(&format!(
             "{id},{contract_id},{event_type},{tx_hash},{ledger},{timestamp},\"{data_str}\",{created_at}\n"
         ));
     }
 
-    Ok((
-        [
-            ("Content-Type", "text/csv"),
-            ("Content-Disposition", "attachment; filename=\"events.csv\""),
-        ],
-        csv,
-    ))
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/csv")
+        .header(
+            header::CONTENT_DISPOSITION,
+            "attachment; filename=\"events.csv\"",
+        )
+        .body(Body::from(csv))
+        .unwrap())
 }
 
 /// Query parameters for the /v1/events/recent endpoint.
@@ -4578,6 +4619,149 @@ mod tests {
             .unwrap();
         // Should be rejected (400 validation error since no api_keys means guard fires)
         assert!(response.status().is_client_error());
+    }
+
+    // ── Parquet export tests ─────────────────────────────────────────────────
+
+    #[cfg(feature = "parquet")]
+    #[sqlx::test(migrations = "./migrations")]
+    async fn export_events_parquet_returns_octet_stream(pool: PgPool) {
+        sqlx::query(
+            "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+             VALUES ($1, $2, $3, $4, NOW(), $5)",
+        )
+        .bind("C1234567890123456789012345678901234567890123456789012345")
+        .bind("contract")
+        .bind("a".repeat(64))
+        .bind(1_i64)
+        .bind(json!({"value": null, "topic": []}))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let app = create_export_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/export?format=parquet")
+                    .header("Authorization", "Bearer test-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/octet-stream"
+        );
+        assert!(response
+            .headers()
+            .get("content-disposition")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("events.parquet"));
+
+        // Verify the bytes are a valid Parquet file (magic bytes PAR1)
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(body.len() > 4);
+        assert_eq!(&body[..4], b"PAR1", "Parquet magic bytes missing");
+        assert_eq!(&body[body.len() - 4..], b"PAR1", "Parquet footer magic missing");
+    }
+
+    #[cfg(feature = "parquet")]
+    #[sqlx::test(migrations = "./migrations")]
+    async fn export_events_parquet_can_be_read_back(pool: PgPool) {
+        use arrow_array::cast::AsArray;
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+        let contract_id = "C1234567890123456789012345678901234567890123456789012345";
+        sqlx::query(
+            "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+             VALUES ($1, $2, $3, $4, NOW(), $5)",
+        )
+        .bind(contract_id)
+        .bind("contract")
+        .bind("b".repeat(64))
+        .bind(42_i64)
+        .bind(json!({"value": {"amount": 100}, "topic": []}))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let app = create_export_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/export?format=parquet")
+                    .header("Authorization", "Bearer test-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+
+        // Read back with parquet reader
+        let cursor = std::io::Cursor::new(body);
+        let builder = ParquetRecordBatchReaderBuilder::try_new(cursor).unwrap();
+        let mut reader = builder.build().unwrap();
+        let batch = reader.next().unwrap().unwrap();
+
+        assert_eq!(batch.num_rows(), 1);
+
+        // Verify ledger column value
+        let ledger_col = batch.column_by_name("ledger").unwrap();
+        let ledger_val = ledger_col.as_primitive::<arrow_array::types::Int64Type>().value(0);
+        assert_eq!(ledger_val, 42);
+
+        // Verify contract_id column value
+        let cid_col = batch.column_by_name("contract_id").unwrap();
+        let cid_val = cid_col.as_string::<i32>().value(0);
+        assert_eq!(cid_val, contract_id);
+    }
+
+    #[cfg(feature = "parquet")]
+    #[sqlx::test(migrations = "./migrations")]
+    async fn export_events_parquet_empty_db_returns_valid_file(pool: PgPool) {
+        let app = create_export_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/export?format=parquet")
+                    .header("Authorization", "Bearer test-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        // Even an empty Parquet file has the PAR1 magic
+        assert_eq!(&body[..4], b"PAR1");
+    }
+
+    #[cfg(not(feature = "parquet"))]
+    #[sqlx::test(migrations = "./migrations")]
+    async fn export_events_parquet_without_feature_returns_400(pool: PgPool) {
+        let app = create_export_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events/export?format=parquet")
+                    .header("Authorization", "Bearer test-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     // ── Anonymization tests ──────────────────────────────────────────────────
