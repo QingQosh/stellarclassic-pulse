@@ -82,6 +82,11 @@ pub fn record_pubsub_publish_failure() {
     m::counter!("soroban_pulse_pubsub_publish_failures_total", 1u64);
 }
 
+/// Record a rate-limited request rejection (429 Too Many Requests)
+pub fn record_rate_limit_rejected() {
+    m::counter!("soroban_pulse_rate_limit_rejected_total", 1u64);
+}
+
 /// Record a persistent webhook delivery failure (all retries exhausted)
 pub fn record_webhook_failure() {
     m::counter!("soroban_pulse_webhook_failures_total", 1u64);
