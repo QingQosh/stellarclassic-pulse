@@ -12,3 +12,7 @@ pub mod rpc_client;
 pub mod routes;
 pub mod subscriptions;
 pub mod webhook;
+pub mod bloom_filter;
+pub mod xdr_validation;
+pub mod kinesis;
+pub mod pubsub;
