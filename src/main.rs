@@ -22,6 +22,10 @@ mod metrics;
 mod middleware;
 mod models;
 mod normalizer;
+
+#[cfg(feature = "parquet")]
+mod parquet_export;
+
 mod pubsub;
 mod routes;
 mod rpc_client;
