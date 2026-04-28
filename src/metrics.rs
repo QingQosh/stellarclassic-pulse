@@ -52,9 +52,9 @@ pub fn record_validation_failure() {
     m::counter!("soroban_pulse_events_validation_failed_total", 1u64);
 }
 
-/// Record a schema validation failure
-pub fn record_schema_validation_failure() {
-    m::counter!("soroban_pulse_events_schema_invalid_total", 1u64);
+/// Record an oversized event that was skipped due to exceeding MAX_EVENT_DATA_BYTES.
+pub fn record_oversized_event() {
+    m::counter!("soroban_pulse_events_oversized_total", 1u64);
 }
 
 /// Record a duplicate event
@@ -62,9 +62,33 @@ pub fn record_duplicate_event() {
     m::counter!("soroban_pulse_events_duplicate_total", 1u64);
 }
 
+/// Record an XDR validation failure (issue #267)
+pub fn record_xdr_invalid() {
+    m::counter!("soroban_pulse_events_xdr_invalid_total", 1u64);
+}
+
+/// Record a bloom filter hit (pre-filtered duplicate) (issue #266)
+pub fn record_bloom_filter_hit() {
+    m::counter!("soroban_pulse_bloom_filter_hits_total", 1u64);
+}
+
+/// Record a Kinesis publish failure (issue #265)
+pub fn record_kinesis_publish_failure() {
+    m::counter!("soroban_pulse_kinesis_publish_failures_total", 1u64);
+}
+
+/// Record a Pub/Sub publish failure (issue #264)
+pub fn record_pubsub_publish_failure() {
+    m::counter!("soroban_pulse_pubsub_publish_failures_total", 1u64);
+}
+
 /// Record a persistent webhook delivery failure (all retries exhausted)
 pub fn record_webhook_failure() {
     m::counter!("soroban_pulse_webhook_failures_total", 1u64);
+}
+
+pub fn record_replay_job() {
+    m::counter!("soroban_pulse_replay_jobs_total", 1u64);
 }
 
 /// Record HTTP request duration

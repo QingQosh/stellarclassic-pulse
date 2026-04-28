@@ -12,6 +12,7 @@ mod error;
 mod handlers;
 mod index_monitor;
 mod indexer;
+mod kafka;
 mod metrics;
 mod middleware;
 mod models;
@@ -20,6 +21,10 @@ mod routes;
 mod rpc_client;
 mod schema_validator;
 mod webhook;
+mod bloom_filter;
+mod xdr_validation;
+mod kinesis;
+mod pubsub;
 
 #[cfg(feature = "archive")]
 mod archiver;
@@ -132,6 +137,9 @@ async fn main() -> anyhow::Result<()> {
             config.db_max_connections,
             config.db_min_connections,
             config.db_statement_timeout_ms,
+            config.db_idle_timeout_secs,
+            config.db_max_lifetime_secs,
+            config.db_test_before_acquire,
         )
         .await
         {
@@ -212,7 +220,52 @@ async fn main() -> anyhow::Result<()> {
     indexer.set_health_state(health_state.clone());
     indexer.set_indexer_state(indexer_state.clone());
     indexer.set_event_tx(event_tx.clone());
-    indexer.set_schema_validator(schema_validator.clone());
+
+    // Issue #266: Initialize and seed bloom filter
+    {
+        let bloom = std::sync::Arc::new(bloom_filter::EventBloomFilter::new(
+            config.bloom_filter_capacity,
+            config.bloom_filter_fp_rate,
+        ));
+        match bloom_filter::seed_from_db(&bloom, &pool, 100_000).await {
+            Ok(n) => info!(seeded = n, "Bloom filter seeded from DB"),
+            Err(e) => tracing::warn!(error = %e, "Failed to seed bloom filter from DB"),
+        }
+        indexer.set_bloom_filter(bloom);
+    }
+
+    // Issue #265: Initialize Kinesis publisher if configured
+    #[cfg(feature = "kinesis")]
+    if let (Some(stream_name), Some(region)) = (config.kinesis_stream_name.clone(), config.aws_region.clone()) {
+        let publisher = kinesis::aws::AwsKinesisPublisher::from_env(stream_name, region).await;
+        indexer.set_kinesis_publisher(std::sync::Arc::new(publisher));
+        info!("Kinesis publisher enabled");
+    }
+
+    // Issue #264: Initialize Pub/Sub publisher if configured
+    #[cfg(feature = "pubsub")]
+    if let (Some(project_id), Some(topic_id)) = (config.pubsub_project_id.clone(), config.pubsub_topic_id.clone()) {
+        match pubsub::gcp::GcpPubSubPublisher::from_env(project_id, topic_id).await {
+            Ok(publisher) => {
+                indexer.set_pubsub_publisher(std::sync::Arc::new(publisher));
+                info!("Pub/Sub publisher enabled");
+            }
+            Err(e) => tracing::warn!(error = %e, "Failed to initialize Pub/Sub publisher"),
+        }
+    }
+
+    #[cfg(feature = "kafka")]
+    if let (Some(brokers), Some(topic)) = (&config.kafka_brokers, &config.kafka_topic) {
+        match crate::kafka::RdKafkaProducer::new(brokers, config.kafka_batch_size, config.kafka_linger_ms) {
+            Ok(producer) => {
+                info!(brokers = %brokers, topic = %topic, "Kafka publishing enabled");
+                indexer.set_kafka_publisher(std::sync::Arc::new(producer), topic.clone());
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to create Kafka producer — Kafka publishing disabled");
+            }
+        }
+    }
     let indexer_handle = tokio::spawn(async move {
         indexer.run().await;
     });
@@ -253,80 +306,25 @@ async fn main() -> anyhow::Result<()> {
     info!(origins = ?config.allowed_origins, "Allowed CORS origins");
     info!(rate_limit = config.rate_limit_per_minute, "Rate limit per IP");
 
-    // When TLS is enabled directly, BEHIND_PROXY is forced false — no proxy in front.
-    let behind_proxy = match (&config.tls_cert_file, &config.tls_key_file) {
-        (Some(_), Some(_)) => {
-            if config.behind_proxy {
-                warn!("TLS_CERT_FILE and TLS_KEY_FILE are set — overriding BEHIND_PROXY=false (no proxy in front of direct TLS)");
-            }
-            false
-        }
-        _ => config.behind_proxy,
-    };
+    let router = routes::create_router_with_tx(pool, read_pool, config.api_keys.clone(), &config.allowed_origins, config.rate_limit_per_minute, config.behind_proxy, health_state, indexer_state, prometheus_handle, event_tx, config.sse_keepalive_interval_ms, config.sse_max_connections, 2000, config.event_data_encryption_key, config.event_data_encryption_key_old, config.clone());
 
-    let router = routes::create_router_with_tx(
-        pool.clone(), 
-        read_pool, 
-        config.api_keys.clone(), 
-        &config.allowed_origins, 
-        config.rate_limit_per_minute, 
-        behind_proxy, 
-        health_state.clone(), 
-        indexer_state.clone(), 
-        prometheus_handle.clone(), 
-        event_tx.clone(), 
-        config.sse_keepalive_interval_ms, 
-        config.sse_max_connections, 
-        config.health_check_timeout_ms,
-        config.event_data_encryption_key,
-        config.event_data_encryption_key_old,
-        config.clone(),
-        Some(schema_validator.clone())
-    );
+    info!(addr = %addr, "Soroban Pulse listening");
 
-    match (&config.tls_cert_file, &config.tls_key_file) {
-        (Some(cert_path), Some(key_path)) => {
-            // Validate that the cert and key files exist and are readable at startup.
-            std::fs::metadata(cert_path)
-                .unwrap_or_else(|e| panic!("TLS_CERT_FILE '{}' is not accessible: {}", cert_path, e));
-            std::fs::metadata(key_path)
-                .unwrap_or_else(|e| panic!("TLS_KEY_FILE '{}' is not accessible: {}", key_path, e));
+    let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+        error!(addr = %addr, "Address already in use");
+        e
+    })?;
 
-            let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
-                .await
-                .unwrap_or_else(|e| panic!("Failed to load TLS certificate/key: {}", e));
+    info!(behind_proxy = config.behind_proxy, "Running server - trusting X-Forwarded-For");
 
-            info!(addr = %addr, cert = %cert_path, "Soroban Pulse listening (HTTPS/TLS)");
-
-            axum_server::bind_rustls(addr, tls_config)
-                .serve(router.into_make_service())
-                .await?;
-        }
-        (Some(_), None) | (None, Some(_)) => {
-            warn!("Only one of TLS_CERT_FILE / TLS_KEY_FILE is set — both are required for TLS. Falling back to plain HTTP.");
-            let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
-                error!(addr = %addr, "Address already in use");
-                e
-            })?;
-            info!(addr = %addr, "Soroban Pulse listening (HTTP)");
-            info!(behind_proxy = behind_proxy, "Running server - trusting X-Forwarded-For");
-            axum::serve(listener, router)
-                .with_graceful_shutdown(async move { let _ = shutdown_rx_axum.changed().await; })
-                .await?;
-        }
-        (None, None) => {
-            let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
-                error!(addr = %addr, "Address already in use");
-                e
-            })?;
-            info!(addr = %addr, "Soroban Pulse listening (HTTP)");
-            info!(behind_proxy = behind_proxy, "Running server - trusting X-Forwarded-For");
-            axum::serve(listener, router)
-                .with_graceful_shutdown(async move { let _ = shutdown_rx_axum.changed().await; })
-                .await?;
-        }
-    }
-
+    axum::serve(
+        listener,
+        router,
+    )
+    .with_graceful_shutdown(async move {
+        let _ = shutdown_rx_axum.changed().await;
+    })
+    .await?;
     let _ = indexer_handle.await;
 
     #[cfg(feature = "otel")]
