@@ -58,6 +58,9 @@ pub struct Event {
     /// Schema version of the Soroban protocol used when this event was indexed.
     #[sqlx(default)]
     pub schema_version: i32,
+    /// Whether this event has been anonymized for GDPR compliance.
+    #[sqlx(default)]
+    pub anonymized: bool,
     #[sqlx(default)]
     #[serde(skip)]
     pub total_count: i64,
@@ -213,6 +216,7 @@ impl PaginationParams {
         "in_successful_call",
         "created_at",
         "schema_version",
+        "anonymized",
     ];
 
     pub fn columns(&self) -> Result<Vec<&str>, (Vec<String>, Vec<&'static str>)> {

@@ -86,6 +86,7 @@ pub struct AppState {
         handlers::get_contracts,
         handlers::replay_events,
         handlers::register_contract_abi,
+        handlers::anonymize_event,
         handlers::list_archive,
         handlers::register_contract_schema,
         handlers::get_contract_schema,
@@ -220,26 +221,13 @@ pub fn create_router_with_tx(
             get(handlers::get_events_by_ledger_hash),
         )
         .route("/contracts", get(handlers::get_contracts))
-        .route(
-            "/admin/replay",
-            axum::routing::post(handlers::replay_events),
-        )
-        .route(
-            "/admin/contracts/{contract_id}/abi",
-            axum::routing::post(handlers::register_contract_abi),
-        )
-        .route(
-            "/subscriptions",
-            axum::routing::post(subscriptions::create_subscription),
-        )
-        .route(
-            "/subscriptions/{id}",
-            get(subscriptions::get_subscription).delete(subscriptions::cancel_subscription),
-        )
-        .route(
-            "/subscriptions/{id}/ack",
-            axum::routing::post(subscriptions::ack_subscription),
-        );
+        .route("/admin/replay", axum::routing::post(handlers::replay_events))
+        .route("/admin/contracts/{contract_id}/abi", axum::routing::post(handlers::register_contract_abi))
+        .route("/admin/events/{id}/anonymize", axum::routing::post(handlers::anonymize_event))
+        .route("/subscriptions", axum::routing::post(subscriptions::create_subscription))
+        .route("/subscriptions/{id}", get(subscriptions::get_subscription).delete(subscriptions::cancel_subscription))
+        .route("/subscriptions/{id}/ack", axum::routing::post(subscriptions::ack_subscription));
+
 
     // Unversioned deprecated aliases (same handlers, add Deprecation header via middleware)
     let deprecated = Router::new()
