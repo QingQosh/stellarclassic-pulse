@@ -42,6 +42,11 @@ pub fn update_indexer_lag(lag: u64) {
     m::gauge!("soroban_pulse_indexer_lag_ledgers", lag as f64);
 }
 
+/// Set the is_leader gauge: 1.0 when this replica holds the advisory lock, 0.0 otherwise.
+pub fn record_indexer_is_leader(is_leader: bool) {
+    m::gauge!("soroban_pulse_indexer_is_leader", if is_leader { 1.0 } else { 0.0 });
+}
+
 /// Record an RPC error
 pub fn record_rpc_error() {
     m::counter!("soroban_pulse_rpc_errors_total", 1u64);
@@ -82,6 +87,11 @@ pub fn record_pubsub_publish_failure() {
     m::counter!("soroban_pulse_pubsub_publish_failures_total", 1u64);
 }
 
+/// Record a rate-limited request rejection (429 Too Many Requests)
+pub fn record_rate_limit_rejected() {
+    m::counter!("soroban_pulse_rate_limit_rejected_total", 1u64);
+}
+
 /// Record a persistent webhook delivery failure (all retries exhausted)
 pub fn record_webhook_failure() {
     m::counter!("soroban_pulse_webhook_failures_total", 1u64);
@@ -108,7 +118,7 @@ pub fn record_http_request_duration(
 
 /// Update the active SSE connections count
 pub fn update_sse_connections(count: usize) {
-    m::gauge!("soroban_pulse_sse_connections_active", count as f64);
+    m::gauge!("soroban_pulse_sse_active_connections", count as f64);
 }
 
 /// Update DB connection pool metrics

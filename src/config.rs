@@ -211,8 +211,8 @@ pub struct Config {
     pub contract_count_cache_size: u64,
     /// TTL in seconds for contract count cache entries.
     pub contract_count_cache_ttl_secs: u64,
-    /// How often the materialized view stats are refreshed (seconds).
-    pub stats_refresh_interval_secs: u64,
+    /// How often standby replicas retry the advisory lock (seconds).
+    pub indexer_lock_retry_secs: u64,
 }
 
 impl Default for Config {
@@ -266,7 +266,7 @@ impl Default for Config {
             export_max_rows: 10_000,
             contract_count_cache_size: 1000,
             contract_count_cache_ttl_secs: 30,
-            stats_refresh_interval_secs: 300,
+            indexer_lock_retry_secs: 30,
         }
     }
 }
@@ -691,15 +691,22 @@ impl Config {
         )
         .unwrap_or(10000);
 
-        let sse_keepalive_interval_ms = parse_int_range::<u64>(
-            "SSE_KEEPALIVE_INTERVAL_MS",
-            &env_or_file_or("SSE_KEEPALIVE_INTERVAL_MS", &file, "15000"),
-            1000,
-            60000,
-            "15000",
-            &mut errors,
-        )
-        .unwrap_or(15000);
+        // SSE_KEEPALIVE_SECS (seconds) takes precedence over SSE_KEEPALIVE_INTERVAL_MS (ms).
+        let sse_keepalive_interval_ms = if let Some(secs_str) = env_or_file("SSE_KEEPALIVE_SECS", &file) {
+            parse_int_range::<u64>("SSE_KEEPALIVE_SECS", &secs_str, 1, 60, "15", &mut errors)
+                .map(|s| s * 1000)
+                .unwrap_or(15000)
+        } else {
+            parse_int_range::<u64>(
+                "SSE_KEEPALIVE_INTERVAL_MS",
+                &env_or_file_or("SSE_KEEPALIVE_INTERVAL_MS", &file, "15000"),
+                1000,
+                60000,
+                "15000",
+                &mut errors,
+            )
+            .unwrap_or(15000)
+        };
 
         let sse_max_connections = parse_int_range::<usize>(
             "SSE_MAX_CONNECTIONS",
@@ -745,13 +752,13 @@ impl Config {
         )
         .unwrap_or(30);
 
-        let stats_refresh_interval_secs = parse_int::<u64>(
-            "STATS_REFRESH_INTERVAL_SECS",
-            &env_or_file_or("STATS_REFRESH_INTERVAL_SECS", &file, "300"),
-            "300",
+        let indexer_lock_retry_secs = parse_int::<u64>(
+            "INDEXER_LOCK_RETRY_SECS",
+            &env_or_file_or("INDEXER_LOCK_RETRY_SECS", &file, "30"),
+            "30",
             &mut errors,
         )
-        .unwrap_or(300);
+        .unwrap_or(30);
 
         let export_max_rows = parse_int::<u64>(
             "EXPORT_MAX_ROWS",
@@ -879,7 +886,7 @@ impl Config {
             export_max_rows,
             contract_count_cache_size,
             contract_count_cache_ttl_secs,
-            stats_refresh_interval_secs,
+            indexer_lock_retry_secs,
         }
     }
 }

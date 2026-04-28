@@ -271,7 +271,8 @@ pub fn create_router_with_tx(
     let health_routes = Router::new()
         .route("/health", get(handlers::health))
         .route("/healthz/live", get(handlers::health_live))
-        .route("/healthz/ready", get(handlers::health_ready));
+        .route("/healthz/ready", get(handlers::health_ready))
+        .route("/metrics", get(handlers::metrics));
 
     // All other routes — subject to rate limiting.
     let rate_limited_routes = if behind_proxy {
@@ -285,11 +286,17 @@ pub fn create_router_with_tx(
         );
         Router::new()
             .route("/status", get(handlers::status))
-            .route("/metrics", get(handlers::metrics))
             .route("/openapi.json", get(handlers::openapi_json))
             .route("/docs", get(handlers::swagger_ui))
             .nest("/v1", v1)
             .merge(deprecated)
+            .layer(axum::middleware::from_fn(|req: Request<Body>, next: axum::middleware::Next| async move {
+                let resp = next.run(req).await;
+                if resp.status() == axum::http::StatusCode::TOO_MANY_REQUESTS {
+                    metrics::record_rate_limit_rejected();
+                }
+                resp
+            }))
             .layer(GovernorLayer::new(governor_conf))
     } else {
         let governor_conf = Arc::new(
@@ -302,11 +309,17 @@ pub fn create_router_with_tx(
         );
         Router::new()
             .route("/status", get(handlers::status))
-            .route("/metrics", get(handlers::metrics))
             .route("/openapi.json", get(handlers::openapi_json))
             .route("/docs", get(handlers::swagger_ui))
             .nest("/v1", v1)
             .merge(deprecated)
+            .layer(axum::middleware::from_fn(|req: Request<Body>, next: axum::middleware::Next| async move {
+                let resp = next.run(req).await;
+                if resp.status() == axum::http::StatusCode::TOO_MANY_REQUESTS {
+                    metrics::record_rate_limit_rejected();
+                }
+                resp
+            }))
             .layer(GovernorLayer::new(governor_conf))
     };
 
