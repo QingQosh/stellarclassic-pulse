@@ -225,6 +225,19 @@ pub struct Config {
     /// The tenant_id this indexer instance stamps on every event it inserts.
     /// Only meaningful when multi_tenant = true.  Set via INDEXER_TENANT_ID env var.
     pub indexer_tenant_id: Option<String>,
+    // Email notification fields
+    pub email_smtp_host: Option<String>,
+    pub email_smtp_port: u16,
+    pub email_smtp_user: Option<String>,
+    pub email_smtp_password: Option<String>,
+    pub email_from: Option<String>,
+    pub email_to: Vec<String>,
+    pub email_contract_filter: Vec<String>,
+    // Redis stream fields
+    pub redis_url: Option<String>,
+    pub redis_stream_key: Option<String>,
+    // Stats refresh
+    pub stats_refresh_interval_secs: u64,
 }
 
 impl Default for Config {
@@ -282,6 +295,16 @@ impl Default for Config {
             multi_tenant: false,
             tenant_contract_filter: std::collections::HashMap::new(),
             indexer_tenant_id: None,
+            email_smtp_host: None,
+            email_smtp_port: 587,
+            email_smtp_user: None,
+            email_smtp_password: None,
+            email_from: None,
+            email_to: Vec::new(),
+            email_contract_filter: Vec::new(),
+            redis_url: None,
+            redis_stream_key: None,
+            stats_refresh_interval_secs: 3600,
         }
     }
 }
@@ -934,6 +957,24 @@ impl Config {
                 .unwrap_or(false),
             tenant_contract_filter: parse_tenant_contract_filter(),
             indexer_tenant_id: env_or_file("INDEXER_TENANT_ID", &file),
+            email_smtp_host: env_or_file("EMAIL_SMTP_HOST", &file),
+            email_smtp_port: env_or_file("EMAIL_SMTP_PORT", &file)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(587),
+            email_smtp_user: env_or_file("EMAIL_SMTP_USER", &file),
+            email_smtp_password: env_or_file("EMAIL_SMTP_PASSWORD", &file),
+            email_from: env_or_file("EMAIL_FROM", &file),
+            email_to: env_or_file("EMAIL_TO", &file)
+                .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+                .unwrap_or_default(),
+            email_contract_filter: env_or_file("EMAIL_CONTRACT_FILTER", &file)
+                .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+                .unwrap_or_default(),
+            redis_url: env_or_file("REDIS_URL", &file),
+            redis_stream_key: env_or_file("REDIS_STREAM_KEY", &file),
+            stats_refresh_interval_secs: env_or_file("STATS_REFRESH_INTERVAL_SECS", &file)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3600),
         }
     }
 }

@@ -27,8 +27,10 @@ mod normalizer;
 mod parquet_export;
 
 mod pubsub;
+mod queue_publisher;
 mod routes;
 mod rpc_client;
+mod schema_validator;
 mod stats_refresh;
 mod subscriptions;
 mod webhook;
@@ -163,7 +165,7 @@ async fn main() -> anyhow::Result<()> {
     info!(environment = ?config.environment, "Running environment");
 
     // Initialize schema validator and load schemas
-    let schema_validator = Arc::new(soroban_pulse::schema_validator::SchemaValidator::new(pool.clone()));
+    let schema_validator = Arc::new(schema_validator::SchemaValidator::new(pool.clone()));
     if let Err(e) = schema_validator.load_schemas().await {
         warn!(error = %e, "Failed to load schemas from database");
     } else {

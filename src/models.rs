@@ -301,7 +301,7 @@ pub struct LatestLedgerResult {
     pub sequence: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct GetEventsResult {
     pub events: Vec<SorobanEvent>,
     #[serde(rename = "latestLedger")]
@@ -313,7 +313,7 @@ pub struct GetEventsResult {
     pub protocol_version: Option<u32>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct SorobanEvent {
     #[serde(rename = "contractId")]
     pub contract_id: String,
