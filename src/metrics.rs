@@ -77,6 +77,11 @@ pub fn record_invalid_contract_id() {
     m::counter!("soroban_pulse_events_invalid_contract_id_total").increment(1);
 }
 
+/// Record an archive integrity failure (issue #371)
+pub fn record_archive_integrity_failure() {
+    m::counter!("soroban_pulse_archive_integrity_failures_total").increment(1);
+}
+
 /// Record a bloom filter hit (pre-filtered duplicate) (issue #266)
 pub fn record_bloom_filter_hit() {
     m::counter!("soroban_pulse_bloom_filter_hits_total").increment(1);
