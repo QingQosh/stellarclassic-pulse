@@ -543,8 +543,11 @@ pub async fn stream_events(
     State(state): State<AppState>,
     Query(params): Query<StreamParams>,
     headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
-    stream_events_internal(State(state), params.contract_id, params.fields, headers).await
+    let tenant_id = extract_tenant_id(&extensions).map(|s| s.to_owned());
+    stream_events_internal(State(state), params.contract_id, params.fields, headers, tenant_id)
+        .await
 }
 
 /// Stream new events for a specific contract in real time via Server-Sent Events.
@@ -569,12 +572,15 @@ pub async fn stream_events_by_contract(
     Path(contract_id): Path<String>,
     Query(params): Query<StreamParams>,
     headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
     validate_contract_id(&contract_id).map_err(|e| {
         let (status, body) = e.into_response_parts();
         (status, body)
     })?;
-    stream_events_internal(State(state), Some(contract_id), params.fields, headers).await
+    let tenant_id = extract_tenant_id(&extensions).map(|s| s.to_owned());
+    stream_events_internal(State(state), Some(contract_id), params.fields, headers, tenant_id)
+        .await
 }
 
 /// Stream events for multiple contracts simultaneously via Server-Sent Events.
@@ -597,7 +603,9 @@ pub async fn stream_events_multi(
     State(state): State<AppState>,
     Query(params): Query<crate::models::MultiStreamParams>,
     headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
+    let tenant_id = extract_tenant_id(&extensions).map(|s| s.to_owned());
     let raw = params.contract_ids.unwrap_or_default();
     if raw.trim().is_empty() {
         return Err((
@@ -655,21 +663,31 @@ pub async fn stream_events_multi(
         .and_then(|s| uuid::Uuid::parse_str(s).ok());
 
     let replay: Vec<crate::models::Event> = if let Some(last_id) = last_event_id {
+        let base_offset = 2usize;
         let placeholders: String = ids
             .iter()
             .enumerate()
-            .map(|(i, _)| format!("${}", i + 2))
+            .map(|(i, _)| format!("${}", base_offset + i))
             .collect::<Vec<_>>()
             .join(", ");
+        let tid = tenant_id.as_deref();
+        let tenant_clause = if tid.is_some() {
+            format!(" AND tenant_id = ${}", base_offset + ids.len())
+        } else {
+            String::new()
+        };
         let sql = format!(
             "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at, 0::bigint AS total_count \
              FROM events WHERE created_at > (SELECT created_at FROM events WHERE id = $1) \
-             AND contract_id IN ({}) ORDER BY created_at ASC",
-            placeholders
+             AND contract_id IN ({}){} ORDER BY created_at ASC",
+            placeholders, tenant_clause
         );
         let mut q = sqlx::query_as::<_, crate::models::Event>(&sql).bind(last_id);
         for id in &ids {
             q = q.bind(id);
+        }
+        if let Some(tid) = tid {
+            q = q.bind(tid);
         }
         q.fetch_all(&state.pool).await.unwrap_or_default()
     } else {
@@ -690,8 +708,8 @@ pub async fn stream_events_multi(
     }));
 
     let live_stream = futures::stream::unfold(
-        (rx, ids, keepalive_ms, false),
-        move |(mut rx, filter_ids, ka, closed)| async move {
+        (rx, ids, keepalive_ms, tenant_id, false),
+        move |(mut rx, filter_ids, ka, tid, closed)| async move {
             if closed {
                 return None;
             }
@@ -705,23 +723,28 @@ pub async fn stream_events_multi(
                             if !filter_ids.contains(&event.contract_id) {
                                 continue;
                             }
+                            if let Some(ref tenant) = tid {
+                                if event.tenant_id.as_deref() != Some(tenant.as_str()) {
+                                    continue;
+                                }
+                            }
                             let data = serde_json::to_string(&event).unwrap_or_default();
                             let sse = Event::default()
                                 .id(format!("{}-{}", event.tx_hash, event.ledger))
                                 .retry(Duration::from_millis(ka))
                                 .data(data);
-                            return Some((Ok(sse), (rx, filter_ids, ka, false)));
+                            return Some((Ok(sse), (rx, filter_ids, ka, tid, false)));
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             let close_event = Event::default().event("close").data("stream closed");
-                            return Some((Ok(close_event), (rx, filter_ids, ka, true)));
+                            return Some((Ok(close_event), (rx, filter_ids, ka, tid, true)));
                         }
                     },
                     _ = interval.tick() => {
                         let ts = chrono::Utc::now().to_rfc3339();
                         let ping = Event::default().event("ping").data(ts);
-                        return Some((Ok(ping), (rx, filter_ids, ka, false)));
+                        return Some((Ok(ping), (rx, filter_ids, ka, tid, false)));
                     }
                 }
             }
@@ -827,6 +850,7 @@ async fn stream_events_internal(
     contract_filter: Option<String>,
     fields: Option<String>,
     headers: axum::http::HeaderMap,
+    tenant_id: Option<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
     // Check if we've reached the max SSE connections limit
     let current_connections = state
@@ -950,9 +974,10 @@ async fn stream_events_internal(
             field_columns,
             enc_key,
             enc_key_old,
+            tenant_id,
             false, // closed
         ),
-        move |(mut rx, filter, ka, cols, ek, ek_old, closed)| async move {
+        move |(mut rx, filter, ka, cols, ek, ek_old, tid, closed)| async move {
             if closed {
                 return None;
             }
@@ -968,23 +993,29 @@ async fn stream_events_internal(
                                     continue;
                                 }
                             }
+                            // Tenant isolation: drop events belonging to other tenants.
+                            if let Some(ref tenant) = tid {
+                                if event.tenant_id.as_deref() != Some(tenant.as_str()) {
+                                    continue;
+                                }
+                            }
                             let data = serde_json::to_string(&event).unwrap_or_default();
                             let sse = Event::default()
                                 .id(event.id.to_string())
                                 .retry(Duration::from_millis(ka))
                                 .data(data);
-                            return Some((Ok(sse), (rx, filter, ka, cols, ek, ek_old, false)));
+                            return Some((Ok(sse), (rx, filter, ka, cols, ek, ek_old, tid, false)));
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             let close_event = Event::default().event("close").data("stream closed");
-                            return Some((Ok(close_event), (rx, filter, ka, cols, ek, ek_old, true)));
+                            return Some((Ok(close_event), (rx, filter, ka, cols, ek, ek_old, tid, true)));
                         }
                     },
                     _ = interval.tick() => {
                         let ts = chrono::Utc::now().to_rfc3339();
                         let ping = Event::default().event("ping").data(ts);
-                        return Some((Ok(ping), (rx, filter, ka, cols, ek, ek_old, false)));
+                        return Some((Ok(ping), (rx, filter, ka, cols, ek, ek_old, tid, false)));
                     }
                 }
             }
@@ -1906,6 +1937,7 @@ pub async fn get_events_by_contract(
     State(state): State<AppState>,
     Path(contract_id): Path<String>,
     Query(params): Query<PaginationParams>,
+    extensions: axum::http::Extensions,
 ) -> Result<Json<Value>, AppError> {
     validate_contract_id(&contract_id)?;
 
@@ -1916,6 +1948,9 @@ pub async fn get_events_by_contract(
             ));
         }
     }
+
+    let tenant_id = extract_tenant_id(&extensions).map(|s| s.to_owned());
+    let tenant_id = tenant_id.as_deref();
 
     let limit = params.limit();
     let offset = params.offset();
@@ -1937,6 +1972,7 @@ pub async fn get_events_by_contract(
         conditions.push(format!("ledger <= ${bind_idx}"));
         bind_idx += 1;
     }
+    maybe_add_tenant_condition(&mut conditions, &mut bind_idx, tenant_id);
 
     let where_clause = format!("WHERE {}", conditions.join(" AND "));
     let query_str = format!(
@@ -1951,6 +1987,9 @@ pub async fn get_events_by_contract(
     }
     if let Some(tl) = params.to_ledger {
         q = q.bind(tl);
+    }
+    if let Some(tid) = tenant_id {
+        q = q.bind(tid);
     }
     q = q.bind(limit).bind(offset);
 
@@ -1972,8 +2011,8 @@ pub async fn get_events_by_contract(
         })
         .collect();
 
-    // Fetch total count, using the moka cache when no ledger filters are applied.
-    let total: i64 = if params.from_ledger.is_none() && params.to_ledger.is_none() {
+    // Fetch total count. Skip cache in multi-tenant mode to avoid cross-tenant leakage.
+    let total: i64 = if params.from_ledger.is_none() && params.to_ledger.is_none() && tenant_id.is_none() {
         if let Some(cached) = state.contract_count_cache.get(&contract_id).await {
             cached
         } else {
@@ -1999,7 +2038,7 @@ pub async fn get_events_by_contract(
             count_conditions.push(format!("ledger <= ${cidx}"));
             cidx += 1;
         }
-        let _ = cidx;
+        maybe_add_tenant_condition(&mut count_conditions, &mut cidx, tenant_id);
         let count_str = format!(
             "SELECT COUNT(*) FROM events WHERE {}",
             count_conditions.join(" AND ")
@@ -2010,6 +2049,9 @@ pub async fn get_events_by_contract(
         }
         if let Some(tl) = params.to_ledger {
             cq = cq.bind(tl);
+        }
+        if let Some(tid) = tenant_id {
+            cq = cq.bind(tid);
         }
         cq.fetch_one(&state.pool).await?
     };
@@ -2052,9 +2094,13 @@ pub async fn get_events_by_tx(
     State(state): State<AppState>,
     Path(tx_hash): Path<String>,
     Query(params): Query<PaginationParams>,
+    extensions: axum::http::Extensions,
 ) -> Result<Json<Value>, AppError> {
     let tx_hash = tx_hash.to_lowercase();
     validate_tx_hash(&tx_hash)?;
+
+    let tenant_id = extract_tenant_id(&extensions).map(|s| s.to_owned());
+    let tenant_id = tenant_id.as_deref();
 
     let columns = resolve_columns(&params)?;
 
@@ -2066,15 +2112,21 @@ pub async fn get_events_by_tx(
         select_cols.push("id");
     }
 
+    let mut conditions: Vec<String> = vec!["tx_hash = $1".to_string()];
+    let mut bind_idx: i32 = 2;
+    maybe_add_tenant_condition(&mut conditions, &mut bind_idx, tenant_id);
+
     let query_str = format!(
-        "SELECT {} FROM events WHERE tx_hash = $1 ORDER BY ledger DESC, id DESC",
+        "SELECT {} FROM events WHERE {} ORDER BY ledger DESC, id DESC",
         select_cols.join(", "),
+        conditions.join(" AND "),
     );
 
-    let rows = sqlx::query(&query_str)
-        .bind(&tx_hash)
-        .fetch_all(&state.read_pool)
-        .await?;
+    let mut q = sqlx::query(&query_str).bind(&tx_hash);
+    if let Some(tid) = tenant_id {
+        q = q.bind(tid);
+    }
+    let rows = q.fetch_all(&state.read_pool).await?;
 
     let total = rows.len() as i64;
     let events = rows_to_json(

@@ -238,6 +238,8 @@ pub struct Config {
     // Redis stream fields
     pub redis_url: Option<String>,
     pub redis_stream_key: Option<String>,
+    /// Maximum number of events to buffer in memory during a Redis outage (default 10 000).
+    pub redis_buffer_max_size: usize,
     // Stats refresh
     pub stats_refresh_interval_secs: u64,
     // Issue #327: Event retention and pruning
@@ -312,6 +314,7 @@ impl Default for Config {
             email_contract_filter: Vec::new(),
             redis_url: None,
             redis_stream_key: None,
+            redis_buffer_max_size: 10_000,
             stats_refresh_interval_secs: 3600,
             retention_days: 90,
             pruning_interval_hours: 24,
@@ -995,6 +998,9 @@ impl Config {
                 .unwrap_or_default(),
             redis_url: env_or_file("REDIS_URL", &file),
             redis_stream_key: env_or_file("REDIS_STREAM_KEY", &file),
+            redis_buffer_max_size: env_or_file("REDIS_BUFFER_MAX_SIZE", &file)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10_000),
             stats_refresh_interval_secs: env_or_file("STATS_REFRESH_INTERVAL_SECS", &file)
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(3600),

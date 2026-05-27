@@ -1,7 +1,7 @@
 use chrono::DateTime;
 use serde_json::json;
 use sqlx::PgPool;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -53,6 +53,12 @@ pub struct SorobanRpcClient {
     client: reqwest::Client,
     /// Custom headers injected into every RPC request. Values are never logged.
     headers: reqwest::header::HeaderMap,
+    /// All candidate URLs: primary at index 0, fallbacks at 1..
+    urls: Vec<String>,
+    /// Index of the currently active URL.
+    active_idx: std::sync::atomic::AtomicUsize,
+    /// Per-URL consecutive error count used for deprioritisation.
+    error_counts: Vec<AtomicU64>,
 }
 
 impl SorobanRpcClient {
@@ -75,13 +81,48 @@ impl SorobanRpcClient {
             headers.insert(header_name, header_value);
         }
 
-        Self { client, headers }
+        let mut urls = vec![config.stellar_rpc_url.clone()];
+        urls.extend_from_slice(&config.stellar_rpc_fallback_urls);
+        let n = urls.len();
+
+        Self {
+            client,
+            headers,
+            urls,
+            active_idx: std::sync::atomic::AtomicUsize::new(0),
+            error_counts: (0..n).map(|_| AtomicU64::new(0)).collect(),
+        }
+    }
+
+    /// Return the URL to use next, applying round-robin failover.
+    /// Updates `active_idx` and emits metrics on failover.
+    fn select_url(&self, last_failed_idx: Option<usize>) -> (&str, usize) {
+        let n = self.urls.len();
+        let current = self.active_idx.load(Ordering::Relaxed);
+
+        if let Some(failed) = last_failed_idx {
+            // Try the next URL after the failed one.
+            let next = (failed + 1) % n;
+            if next != current {
+                self.active_idx.store(next, Ordering::Relaxed);
+                metrics::record_rpc_failover();
+                metrics::set_rpc_active_endpoint(&self.urls[next]);
+                info!(
+                    from = %self.urls[failed],
+                    to = %self.urls[next],
+                    "RPC failover: switching endpoint"
+                );
+            }
+            (&self.urls[next], next)
+        } else {
+            (&self.urls[current], current)
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl RpcClient for SorobanRpcClient {
-    async fn get_latest_ledger(&self, rpc_url: &str) -> Result<u64, String> {
+    async fn get_latest_ledger(&self, _rpc_url: &str) -> Result<u64, String> {
         let body = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -118,20 +159,55 @@ impl RpcClient for SorobanRpcClient {
                 if let Some(err) = resp.error {
                     warn!(code = err.code, error = %err.message, "RPC error");
                     metrics::record_rpc_error();
+                    e.to_string()
+                });
+
+            match send_result {
+                Err(e) => {
+                    self.error_counts[idx].fetch_add(1, Ordering::Relaxed);
+                    last_err = e;
+                    self.select_url(Some(idx));
+                    continue;
                 }
-                Err("RPC returned no result".to_string())
+                Ok(response) => {
+                    let resp: RpcResponse<LatestLedgerResult> =
+                        response.json().await.map_err(|e| e.to_string())?;
+                    match resp.result {
+                        Some(r) => {
+                            self.error_counts[idx].store(0, Ordering::Relaxed);
+                            if idx != self.active_idx.load(Ordering::Relaxed) {
+                                self.active_idx.store(idx, Ordering::Relaxed);
+                                metrics::set_rpc_active_endpoint(&url);
+                            }
+                            metrics::update_latest_ledger(r.sequence);
+                            return Ok(r.sequence);
+                        }
+                        None => {
+                            if let Some(err) = resp.error {
+                                warn!(code = err.code, message = %err.message, "RPC error");
+                                metrics::record_rpc_error();
+                                last_err = err.message;
+                            } else {
+                                last_err = "RPC returned no result".to_string();
+                            }
+                            self.error_counts[idx].fetch_add(1, Ordering::Relaxed);
+                            self.select_url(Some(idx));
+                        }
+                    }
+                }
             }
         }
+
+        Err(last_err)
     }
 
     async fn get_events(
         &self,
-        rpc_url: &str,
+        _rpc_url: &str,
         start_ledger: u64,
         cursor: Option<String>,
         event_types: &[String],
     ) -> Result<GetEventsResult, String> {
-        // Build filters: one filter object per type when event_types is non-empty.
         let filters: serde_json::Value = if event_types.is_empty() {
             json!([])
         } else {
@@ -144,7 +220,6 @@ impl RpcClient for SorobanRpcClient {
             "filters": filters,
             "pagination": { "limit": 100 }
         });
-
         if let Some(c) = &cursor {
             params["pagination"]["cursor"] = json!(c);
         } else {
@@ -158,23 +233,13 @@ impl RpcClient for SorobanRpcClient {
             "params": params
         });
 
-        let resp: RpcResponse<GetEventsResult> = self
-            .client
-            .post(rpc_url)
-            .headers(self.headers.clone())
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    warn!("RPC request timeout");
-                }
-                metrics::record_rpc_error();
-                e.to_string()
-            })?
-            .json()
-            .await
-            .map_err(|e| e.to_string())?;
+        let mut last_err = String::new();
+        let n = self.urls.len();
+        let start = self.active_idx.load(Ordering::Relaxed);
+
+        for attempt in 0..n {
+            let idx = (start + attempt) % n;
+            let url = self.urls[idx].clone(); // clone to avoid holding &self borrow across await
 
         match resp.result {
             Some(r) => Ok(r),
@@ -182,12 +247,45 @@ impl RpcClient for SorobanRpcClient {
                 if let Some(err) = resp.error {
                     warn!(code = err.code, error = %err.message, "RPC error");
                     metrics::record_rpc_error();
-                    Err(err.message)
-                } else {
-                    Err("RPC returned no result".to_string())
+                    e.to_string()
+                });
+
+            match result {
+                Err(e) => {
+                    self.error_counts[idx].fetch_add(1, Ordering::Relaxed);
+                    last_err = e;
+                    self.select_url(Some(idx));
+                    continue;
+                }
+                Ok(response) => {
+                    let resp: RpcResponse<GetEventsResult> =
+                        response.json().await.map_err(|e| e.to_string())?;
+                    match resp.result {
+                        Some(r) => {
+                            self.error_counts[idx].store(0, Ordering::Relaxed);
+                            if idx != self.active_idx.load(Ordering::Relaxed) {
+                                self.active_idx.store(idx, Ordering::Relaxed);
+                                metrics::set_rpc_active_endpoint(&url);
+                            }
+                            return Ok(r);
+                        }
+                        None => {
+                            if let Some(err) = resp.error {
+                                warn!(code = err.code, message = %err.message, "RPC error");
+                                metrics::record_rpc_error();
+                                last_err = err.message;
+                            } else {
+                                last_err = "RPC returned no result".to_string();
+                            }
+                            self.error_counts[idx].fetch_add(1, Ordering::Relaxed);
+                            self.select_url(Some(idx));
+                        }
+                    }
                 }
             }
         }
+
+        Err(last_err)
     }
 }
 
@@ -701,7 +799,12 @@ impl<R: RpcClient> Indexer<R> {
                             // duplicate — skipped via ON CONFLICT DO NOTHING
                         } else {
                             if let Some(ref tx) = self.event_tx {
-                                let _ = tx.send(event.clone());
+                                let mut broadcast_event = event.clone();
+                                if self.config.multi_tenant {
+                                    broadcast_event.tenant_id =
+                                        self.config.indexer_tenant_id.clone();
+                                }
+                                let _ = tx.send(broadcast_event);
                             }
                             // Issue #265: publish to Kinesis
                             if let Some(ref publisher) = self.kinesis_publisher {
@@ -1127,6 +1230,27 @@ mod tests {
         event.value = json!({"key": "value"});
         event.topic = Some(vec![json!("topic1")]);
         assert!(Indexer::<MockRpcClient>::validate_event_data(&event));
+    }
+
+    /// Verify that a MockRpcClient simulating primary failure returns the fallback result.
+    #[tokio::test]
+    async fn mock_rpc_failover_primary_fails_fallback_succeeds() {
+        let mock = MockRpcClient::with_latest_ledger_responses(vec![
+            Err("primary down".to_string()),
+            Ok(42),
+        ]);
+        // First call returns the primary failure, second returns fallback success.
+        let result1 = mock.get_latest_ledger("http://primary").await;
+        assert!(result1.is_err());
+        let result2 = mock.get_latest_ledger("http://fallback").await;
+        assert_eq!(result2.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn mock_rpc_returns_ok_when_no_failure() {
+        let mock = MockRpcClient::with_latest_ledger_responses(vec![Ok(100)]);
+        let result = mock.get_latest_ledger("http://primary").await;
+        assert_eq!(result.unwrap(), 100);
     }
 
     #[test]

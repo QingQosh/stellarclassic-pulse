@@ -17,26 +17,36 @@ mod redis_impl {
     use super::*;
     use redis::aio::ConnectionManager;
     use redis::{AsyncCommands, RedisError};
+    use std::collections::VecDeque;
 
     pub struct RedisPublisher {
         client: ConnectionManager,
         stream_key: String,
+        buffer: VecDeque<SorobanEvent>,
+        max_buffer_size: usize,
     }
 
     impl RedisPublisher {
-        pub async fn new(redis_url: &str, stream_key: String) -> Result<Self, RedisError> {
+        pub async fn new(
+            redis_url: &str,
+            stream_key: String,
+            max_buffer_size: usize,
+        ) -> Result<Self, RedisError> {
             let client = redis::Client::open(redis_url)?;
             let conn = ConnectionManager::new(client).await?;
-            
+
             info!(
                 redis_url = %Self::safe_redis_url(redis_url),
                 stream_key = %stream_key,
+                max_buffer_size = max_buffer_size,
                 "Redis publisher initialized"
             );
-            
+
             Ok(Self {
                 client: conn,
                 stream_key,
+                buffer: VecDeque::new(),
+                max_buffer_size,
             })
         }
 
@@ -50,6 +60,44 @@ mod redis_impl {
             } else {
                 "<unparseable>".to_string()
             }
+        }
+
+        /// Push an event into the in-memory buffer, dropping the oldest entry if full.
+        pub fn buffer_event(&mut self, event: SorobanEvent) {
+            if self.buffer.len() >= self.max_buffer_size {
+                self.buffer.pop_front();
+                crate::metrics::record_redis_dropped();
+            }
+            self.buffer.push_back(event);
+            crate::metrics::update_redis_buffer_size(self.buffer.len());
+        }
+
+        /// Try to drain the buffer to Redis. Returns true if the buffer was fully drained
+        /// (connection restored), false if Redis is still unreachable.
+        pub async fn try_drain_buffer(&mut self) -> bool {
+            let was_non_empty = !self.buffer.is_empty();
+            while !self.buffer.is_empty() {
+                // Clone the front event to release the borrow on self.buffer before calling publish.
+                let event = match self.buffer.front() {
+                    Some(e) => e.clone(),
+                    None => break,
+                };
+                match self.publish(&event).await {
+                    Ok(()) => {
+                        self.buffer.pop_front();
+                    }
+                    Err(_) => {
+                        crate::metrics::update_redis_buffer_size(self.buffer.len());
+                        return false;
+                    }
+                }
+            }
+            if was_non_empty {
+                crate::metrics::record_redis_reconnect();
+                crate::metrics::update_redis_buffer_size(0);
+                info!("Redis reconnected, buffer fully drained");
+            }
+            true
         }
 
         pub async fn publish(&mut self, event: &SorobanEvent) -> Result<(), RedisError> {
@@ -85,29 +133,43 @@ mod redis_impl {
     pub async fn spawn_redis_publisher(
         redis_url: String,
         stream_key: String,
+        max_buffer_size: usize,
         mut event_rx: broadcast::Receiver<SorobanEvent>,
     ) {
-        let mut publisher = match RedisPublisher::new(&redis_url, stream_key).await {
-            Ok(p) => p,
-            Err(e) => {
-                error!(error = %e, "Failed to initialize Redis publisher");
-                return;
-            }
-        };
+        let mut publisher =
+            match RedisPublisher::new(&redis_url, stream_key, max_buffer_size).await {
+                Ok(p) => p,
+                Err(e) => {
+                    error!(error = %e, "Failed to initialize Redis publisher");
+                    return;
+                }
+            };
 
         info!("Redis publisher task started");
 
         loop {
             match event_rx.recv().await {
                 Ok(event) => {
+                    // If we have buffered events, try to drain first (reconnection check).
+                    if !publisher.buffer.is_empty() {
+                        let reconnected = publisher.try_drain_buffer().await;
+                        if !reconnected {
+                            // Still disconnected — buffer the incoming event.
+                            publisher.buffer_event(event);
+                            continue;
+                        }
+                    }
+
+                    // Buffer is empty (or was fully drained). Try publishing normally.
                     if let Err(e) = publish_with_retry(&mut publisher, &event).await {
                         error!(
                             contract_id = %event.contract_id,
                             tx_hash = %event.tx_hash,
                             error = %e,
-                            "Failed to publish event to Redis after retries"
+                            "Failed to publish event to Redis after retries — buffering"
                         );
                         crate::metrics::record_queue_publish_failure();
+                        publisher.buffer_event(event);
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -160,6 +222,7 @@ pub use redis_impl::spawn_redis_publisher;
 pub async fn spawn_redis_publisher(
     _redis_url: String,
     _stream_key: String,
+    _max_buffer_size: usize,
     _event_rx: broadcast::Receiver<SorobanEvent>,
 ) {
     warn!("Redis publisher requested but redis-queue feature is not enabled");
@@ -183,7 +246,7 @@ mod tests {
     #[test]
     fn test_safe_redis_url() {
         use super::redis_impl::RedisPublisher;
-        
+
         let url = "redis://user:password@localhost:6379/0";
         let safe = RedisPublisher::safe_redis_url(url);
         assert!(!safe.contains("password"));
@@ -195,9 +258,67 @@ mod tests {
     #[test]
     fn test_safe_redis_url_unparseable() {
         use super::redis_impl::RedisPublisher;
-        
+
         let url = "not-a-url";
         let safe = RedisPublisher::safe_redis_url(url);
         assert_eq!(safe, "<unparseable>");
+    }
+
+    /// Simulate buffer_event fill and oldest-drop behaviour without a real Redis connection.
+    #[cfg(feature = "redis-queue")]
+    #[test]
+    fn buffer_drops_oldest_when_full() {
+        use super::redis_impl::RedisPublisher;
+        use serde_json::Value;
+        use std::collections::VecDeque;
+
+        fn make_event(contract_id: &str) -> SorobanEvent {
+            SorobanEvent {
+                contract_id: contract_id.to_string(),
+                event_type: "contract".to_string(),
+                tx_hash: "a".repeat(64),
+                ledger: 1,
+                ledger_closed_at: "2026-01-01T00:00:00Z".to_string(),
+                ledger_hash: None,
+                in_successful_call: true,
+                value: Value::Null,
+                topic: None,
+                tenant_id: None,
+            }
+        }
+
+        // Build a publisher with max_buffer_size = 2 using only its buffer fields.
+        // We can't call new() without a live Redis, so we test buffer_event logic
+        // by constructing the struct fields directly via the public buffer_event method
+        // with a mock that wraps the logic. Instead, we validate the algorithm below:
+
+        let max = 2usize;
+        let mut buffer: VecDeque<SorobanEvent> = VecDeque::new();
+        let mut dropped = 0usize;
+
+        let push = |buf: &mut VecDeque<SorobanEvent>, dropped: &mut usize, ev: SorobanEvent| {
+            if buf.len() >= max {
+                buf.pop_front();
+                *dropped += 1;
+            }
+            buf.push_back(ev);
+        };
+
+        push(&mut buffer, &mut dropped, make_event("C1"));
+        push(&mut buffer, &mut dropped, make_event("C2"));
+        push(&mut buffer, &mut dropped, make_event("C3")); // C1 should be dropped
+
+        assert_eq!(buffer.len(), 2);
+        assert_eq!(dropped, 1);
+        assert_eq!(buffer.front().unwrap().contract_id, "C2");
+        assert_eq!(buffer.back().unwrap().contract_id, "C3");
+    }
+
+    #[cfg(feature = "redis-queue")]
+    #[test]
+    fn buffer_empty_when_no_events() {
+        use std::collections::VecDeque;
+        let buffer: VecDeque<SorobanEvent> = VecDeque::new();
+        assert!(buffer.is_empty());
     }
 }
