@@ -296,7 +296,7 @@ async fn build_health_response(state: &AppState) -> (StatusCode, Value) {
     path = "/health",
     tag = "system",
     responses(
-        (status = 200, description = "Service is healthy"),
+        (status = 200, description = "Service is healthy", body = serde_json::Value),
         (status = 503, description = "Service is degraded", body = ErrorResponse),
     )
 )]
@@ -310,7 +310,7 @@ pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Value>) 
     path = "/healthz/live",
     tag = "system",
     responses(
-        (status = 200, description = "Process is alive"),
+        (status = 200, description = "Process is alive", body = serde_json::Value),
     )
 )]
 pub async fn health_live() -> (StatusCode, Json<Value>) {
@@ -322,7 +322,7 @@ pub async fn health_live() -> (StatusCode, Json<Value>) {
     path = "/healthz/ready",
     tag = "system",
     responses(
-        (status = 200, description = "Service is ready"),
+        (status = 200, description = "Service is ready", body = serde_json::Value),
         (status = 503, description = "Service is not ready", body = ErrorResponse),
     )
 )]
@@ -333,10 +333,10 @@ pub async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Va
 
 #[utoipa::path(
     get,
-    path = "/status",
+    path = "/v1/status",
     tag = "system",
     responses(
-        (status = 200, description = "Indexer operational status"),
+        (status = 200, description = "Indexer operational status", body = serde_json::Value),
     )
 )]
 pub async fn status(State(state): State<AppState>) -> Json<Value> {
@@ -543,8 +543,11 @@ pub async fn stream_events(
     State(state): State<AppState>,
     Query(params): Query<StreamParams>,
     headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
-    stream_events_internal(State(state), params.contract_id, params.fields, headers).await
+    let tenant_id = extract_tenant_id(&extensions).map(|s| s.to_owned());
+    stream_events_internal(State(state), params.contract_id, params.fields, headers, tenant_id)
+        .await
 }
 
 /// Stream new events for a specific contract in real time via Server-Sent Events.
@@ -569,12 +572,15 @@ pub async fn stream_events_by_contract(
     Path(contract_id): Path<String>,
     Query(params): Query<StreamParams>,
     headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
     validate_contract_id(&contract_id).map_err(|e| {
         let (status, body) = e.into_response_parts();
         (status, body)
     })?;
-    stream_events_internal(State(state), Some(contract_id), params.fields, headers).await
+    let tenant_id = extract_tenant_id(&extensions).map(|s| s.to_owned());
+    stream_events_internal(State(state), Some(contract_id), params.fields, headers, tenant_id)
+        .await
 }
 
 /// Stream events for multiple contracts simultaneously via Server-Sent Events.
@@ -597,7 +603,9 @@ pub async fn stream_events_multi(
     State(state): State<AppState>,
     Query(params): Query<crate::models::MultiStreamParams>,
     headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
+    let tenant_id = extract_tenant_id(&extensions).map(|s| s.to_owned());
     let raw = params.contract_ids.unwrap_or_default();
     if raw.trim().is_empty() {
         return Err((
@@ -655,21 +663,31 @@ pub async fn stream_events_multi(
         .and_then(|s| uuid::Uuid::parse_str(s).ok());
 
     let replay: Vec<crate::models::Event> = if let Some(last_id) = last_event_id {
+        let base_offset = 2usize;
         let placeholders: String = ids
             .iter()
             .enumerate()
-            .map(|(i, _)| format!("${}", i + 2))
+            .map(|(i, _)| format!("${}", base_offset + i))
             .collect::<Vec<_>>()
             .join(", ");
+        let tid = tenant_id.as_deref();
+        let tenant_clause = if tid.is_some() {
+            format!(" AND tenant_id = ${}", base_offset + ids.len())
+        } else {
+            String::new()
+        };
         let sql = format!(
             "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at, 0::bigint AS total_count \
              FROM events WHERE created_at > (SELECT created_at FROM events WHERE id = $1) \
-             AND contract_id IN ({}) ORDER BY created_at ASC",
-            placeholders
+             AND contract_id IN ({}){} ORDER BY created_at ASC",
+            placeholders, tenant_clause
         );
         let mut q = sqlx::query_as::<_, crate::models::Event>(&sql).bind(last_id);
         for id in &ids {
             q = q.bind(id);
+        }
+        if let Some(tid) = tid {
+            q = q.bind(tid);
         }
         q.fetch_all(&state.pool).await.unwrap_or_default()
     } else {
@@ -690,8 +708,8 @@ pub async fn stream_events_multi(
     }));
 
     let live_stream = futures::stream::unfold(
-        (rx, ids, keepalive_ms, false),
-        move |(mut rx, filter_ids, ka, closed)| async move {
+        (rx, ids, keepalive_ms, tenant_id, false),
+        move |(mut rx, filter_ids, ka, tid, closed)| async move {
             if closed {
                 return None;
             }
@@ -705,23 +723,28 @@ pub async fn stream_events_multi(
                             if !filter_ids.contains(&event.contract_id) {
                                 continue;
                             }
+                            if let Some(ref tenant) = tid {
+                                if event.tenant_id.as_deref() != Some(tenant.as_str()) {
+                                    continue;
+                                }
+                            }
                             let data = serde_json::to_string(&event).unwrap_or_default();
                             let sse = Event::default()
                                 .id(format!("{}-{}", event.tx_hash, event.ledger))
                                 .retry(Duration::from_millis(ka))
                                 .data(data);
-                            return Some((Ok(sse), (rx, filter_ids, ka, false)));
+                            return Some((Ok(sse), (rx, filter_ids, ka, tid, false)));
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             let close_event = Event::default().event("close").data("stream closed");
-                            return Some((Ok(close_event), (rx, filter_ids, ka, true)));
+                            return Some((Ok(close_event), (rx, filter_ids, ka, tid, true)));
                         }
                     },
                     _ = interval.tick() => {
                         let ts = chrono::Utc::now().to_rfc3339();
                         let ping = Event::default().event("ping").data(ts);
-                        return Some((Ok(ping), (rx, filter_ids, ka, false)));
+                        return Some((Ok(ping), (rx, filter_ids, ka, tid, false)));
                     }
                 }
             }
@@ -827,6 +850,7 @@ async fn stream_events_internal(
     contract_filter: Option<String>,
     fields: Option<String>,
     headers: axum::http::HeaderMap,
+    tenant_id: Option<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
     // Check if we've reached the max SSE connections limit
     let current_connections = state
@@ -896,19 +920,21 @@ async fn stream_events_internal(
             sqlx::query_as::<_, crate::models::Event>(
                 "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, event_data_normalized, created_at, schema_version, 0::bigint AS total_count \
                  FROM events WHERE created_at > (SELECT created_at FROM events WHERE id = $1) \
-                 AND contract_id = $2 ORDER BY created_at ASC",
+                 AND contract_id = $2 ORDER BY created_at ASC LIMIT $3",
             )
             .bind(last_id)
             .bind(cid)
+            .bind(state.sse_replay_limit as i64)
             .fetch_all(&state.pool)
             .await
         } else {
             sqlx::query_as::<_, crate::models::Event>(
                 "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, event_data_normalized, created_at, schema_version, 0::bigint AS total_count \
                  FROM events WHERE created_at > (SELECT created_at FROM events WHERE id = $1) \
-                 ORDER BY created_at ASC",
+                 ORDER BY created_at ASC LIMIT $2",
             )
             .bind(last_id)
+            .bind(state.sse_replay_limit as i64)
             .fetch_all(&state.pool)
             .await
         };
@@ -948,9 +974,10 @@ async fn stream_events_internal(
             field_columns,
             enc_key,
             enc_key_old,
+            tenant_id,
             false, // closed
         ),
-        move |(mut rx, filter, ka, cols, ek, ek_old, closed)| async move {
+        move |(mut rx, filter, ka, cols, ek, ek_old, tid, closed)| async move {
             if closed {
                 return None;
             }
@@ -966,23 +993,29 @@ async fn stream_events_internal(
                                     continue;
                                 }
                             }
+                            // Tenant isolation: drop events belonging to other tenants.
+                            if let Some(ref tenant) = tid {
+                                if event.tenant_id.as_deref() != Some(tenant.as_str()) {
+                                    continue;
+                                }
+                            }
                             let data = serde_json::to_string(&event).unwrap_or_default();
                             let sse = Event::default()
-                                .id(format!("{}-{}", event.tx_hash, event.ledger))
+                                .id(event.id.to_string())
                                 .retry(Duration::from_millis(ka))
                                 .data(data);
-                            return Some((Ok(sse), (rx, filter, ka, cols, ek, ek_old, false)));
+                            return Some((Ok(sse), (rx, filter, ka, cols, ek, ek_old, tid, false)));
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             let close_event = Event::default().event("close").data("stream closed");
-                            return Some((Ok(close_event), (rx, filter, ka, cols, ek, ek_old, true)));
+                            return Some((Ok(close_event), (rx, filter, ka, cols, ek, ek_old, tid, true)));
                         }
                     },
                     _ = interval.tick() => {
                         let ts = chrono::Utc::now().to_rfc3339();
                         let ping = Event::default().event("ping").data(ts);
-                        return Some((Ok(ping), (rx, filter, ka, cols, ek, ek_old, false)));
+                        return Some((Ok(ping), (rx, filter, ka, cols, ek, ek_old, tid, false)));
                     }
                 }
             }
@@ -1171,6 +1204,34 @@ pub async fn get_events(
         validate_contract_id(cid)?;
     }
 
+    // Parse and validate contract_ids if provided
+    let contract_ids_list: Vec<String> = if let Some(ref cids) = params.contract_ids {
+        let ids: Vec<&str> = cids.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        
+        if ids.is_empty() {
+            return Err(AppError::Validation(
+                "contract_ids parameter is empty".to_string(),
+            ));
+        }
+        
+        if ids.len() > PaginationParams::MAX_CONTRACT_IDS_FILTER {
+            return Err(AppError::Validation(
+                format!(
+                    "contract_ids exceeds maximum of {} IDs",
+                    PaginationParams::MAX_CONTRACT_IDS_FILTER
+                ),
+            ));
+        }
+        
+        for id in &ids {
+            validate_contract_id(id)?;
+        }
+        
+        ids.iter().map(|s| s.to_string()).collect()
+    } else {
+        Vec::new()
+    };
+
     let limit = params.limit();
     let columns = resolve_columns(&params)?;
     let dir = params
@@ -1197,6 +1258,10 @@ pub async fn get_events(
             conditions.push(format!("contract_id = ${bind_idx}"));
             bind_idx += 1;
         }
+        if !contract_ids_list.is_empty() {
+            conditions.push(format!("contract_id = ANY(${bind_idx}::text[])"));
+            bind_idx += 1;
+        }
         if params.event_type.is_some() {
             conditions.push(format!("event_type = ${bind_idx}"));
             bind_idx += 1;
@@ -1215,6 +1280,10 @@ pub async fn get_events(
         }
         if params.topic_sym.is_some() {
             conditions.push(format!("topic_0_sym = ${bind_idx}"));
+            bind_idx += 1;
+        }
+        if topic_filter.is_some() {
+            conditions.push(format!("event_data->'topic' @> ${bind_idx}::jsonb"));
             bind_idx += 1;
         }
         if params.search.is_some() {
@@ -1241,6 +1310,16 @@ pub async fn get_events(
             select_cols.push("id");
         }
 
+        // Defence-in-depth: re-validate each column before SQL interpolation
+        for col in &select_cols {
+            if !models::PaginationParams::validate_column_name(col) {
+                return Err(AppError::Validation(format!(
+                    "invalid column name: {}",
+                    col
+                )));
+            }
+        }
+
         let query_str = format!(
             "SELECT {} FROM events {} ORDER BY ledger {dir}, id {dir} LIMIT ${}",
             select_cols.join(", "),
@@ -1251,6 +1330,9 @@ pub async fn get_events(
         let mut q = sqlx::query(&query_str).bind(cursor_ledger).bind(cursor_id);
         if let Some(ref cid) = params.contract_id {
             q = q.bind(cid);
+        }
+        if !contract_ids_list.is_empty() {
+            q = q.bind(&contract_ids_list);
         }
         if let Some(ref et) = params.event_type {
             q = q.bind(et);
@@ -1266,6 +1348,9 @@ pub async fn get_events(
         }
         if let Some(ref ts) = params.topic_sym {
             q = q.bind(ts);
+        }
+        if let Some(ref tf) = topic_filter {
+            q = q.bind(tf.to_string());
         }
         if let Some(ref search) = params.search {
             q = q.bind(search);
@@ -1332,6 +1417,10 @@ pub async fn get_events(
         conditions.push(format!("contract_id = ${bind_idx}"));
         bind_idx += 1;
     }
+    if !contract_ids_list.is_empty() {
+        conditions.push(format!("contract_id = ANY(${bind_idx}::text[])"));
+        bind_idx += 1;
+    }
     if params.event_type.is_some() {
         conditions.push(format!("event_type = ${bind_idx}"));
         bind_idx += 1;
@@ -1350,6 +1439,10 @@ pub async fn get_events(
     }
     if params.topic_sym.is_some() {
         conditions.push(format!("topic_0_sym = ${bind_idx}"));
+        bind_idx += 1;
+    }
+    if topic_filter.is_some() {
+        conditions.push(format!("event_data->'topic' @> ${bind_idx}::jsonb"));
         bind_idx += 1;
     }
     if params.search.is_some() {
@@ -1384,6 +1477,16 @@ pub async fn get_events(
         select_cols.push("created_at");
     }
 
+    // Defence-in-depth: re-validate each column before SQL interpolation
+    for col in &select_cols {
+        if !models::PaginationParams::validate_column_name(col) {
+            return Err(AppError::Validation(format!(
+                "invalid column name: {}",
+                col
+            )));
+        }
+    }
+
     let query_str = format!(
         "SELECT {} FROM events {} ORDER BY ledger {dir}, id {dir} LIMIT ${} OFFSET ${}",
         select_cols.join(", "),
@@ -1395,6 +1498,9 @@ pub async fn get_events(
     let mut q = sqlx::query(&query_str);
     if let Some(ref cid) = params.contract_id {
         q = q.bind(cid);
+    }
+    if !contract_ids_list.is_empty() {
+        q = q.bind(&contract_ids_list);
     }
     if let Some(ref et) = params.event_type {
         q = q.bind(et);
@@ -1410,6 +1516,9 @@ pub async fn get_events(
     }
     if let Some(ref ts) = params.topic_sym {
         q = q.bind(ts);
+    }
+    if let Some(ref tf) = topic_filter {
+        q = q.bind(tf.to_string());
     }
     if let Some(ref search) = params.search {
         q = q.bind(search);
@@ -1465,6 +1574,9 @@ pub async fn get_events(
         }
         if let Some(ref ts) = params.topic_sym {
             cq = cq.bind(ts);
+        }
+        if let Some(ref tf) = topic_filter {
+            cq = cq.bind(tf.to_string());
         }
         if let Some(ref search) = params.search {
             cq = cq.bind(search);
@@ -1825,6 +1937,7 @@ pub async fn get_events_by_contract(
     State(state): State<AppState>,
     Path(contract_id): Path<String>,
     Query(params): Query<PaginationParams>,
+    extensions: axum::http::Extensions,
 ) -> Result<Json<Value>, AppError> {
     validate_contract_id(&contract_id)?;
 
@@ -1835,6 +1948,9 @@ pub async fn get_events_by_contract(
             ));
         }
     }
+
+    let tenant_id = extract_tenant_id(&extensions).map(|s| s.to_owned());
+    let tenant_id = tenant_id.as_deref();
 
     let limit = params.limit();
     let offset = params.offset();
@@ -1856,6 +1972,7 @@ pub async fn get_events_by_contract(
         conditions.push(format!("ledger <= ${bind_idx}"));
         bind_idx += 1;
     }
+    maybe_add_tenant_condition(&mut conditions, &mut bind_idx, tenant_id);
 
     let where_clause = format!("WHERE {}", conditions.join(" AND "));
     let query_str = format!(
@@ -1870,6 +1987,9 @@ pub async fn get_events_by_contract(
     }
     if let Some(tl) = params.to_ledger {
         q = q.bind(tl);
+    }
+    if let Some(tid) = tenant_id {
+        q = q.bind(tid);
     }
     q = q.bind(limit).bind(offset);
 
@@ -1891,8 +2011,8 @@ pub async fn get_events_by_contract(
         })
         .collect();
 
-    // Fetch total count, using the moka cache when no ledger filters are applied.
-    let total: i64 = if params.from_ledger.is_none() && params.to_ledger.is_none() {
+    // Fetch total count. Skip cache in multi-tenant mode to avoid cross-tenant leakage.
+    let total: i64 = if params.from_ledger.is_none() && params.to_ledger.is_none() && tenant_id.is_none() {
         if let Some(cached) = state.contract_count_cache.get(&contract_id).await {
             cached
         } else {
@@ -1918,7 +2038,7 @@ pub async fn get_events_by_contract(
             count_conditions.push(format!("ledger <= ${cidx}"));
             cidx += 1;
         }
-        let _ = cidx;
+        maybe_add_tenant_condition(&mut count_conditions, &mut cidx, tenant_id);
         let count_str = format!(
             "SELECT COUNT(*) FROM events WHERE {}",
             count_conditions.join(" AND ")
@@ -1929,6 +2049,9 @@ pub async fn get_events_by_contract(
         }
         if let Some(tl) = params.to_ledger {
             cq = cq.bind(tl);
+        }
+        if let Some(tid) = tenant_id {
+            cq = cq.bind(tid);
         }
         cq.fetch_one(&state.pool).await?
     };
@@ -1971,9 +2094,13 @@ pub async fn get_events_by_tx(
     State(state): State<AppState>,
     Path(tx_hash): Path<String>,
     Query(params): Query<PaginationParams>,
+    extensions: axum::http::Extensions,
 ) -> Result<Json<Value>, AppError> {
     let tx_hash = tx_hash.to_lowercase();
     validate_tx_hash(&tx_hash)?;
+
+    let tenant_id = extract_tenant_id(&extensions).map(|s| s.to_owned());
+    let tenant_id = tenant_id.as_deref();
 
     let columns = resolve_columns(&params)?;
 
@@ -1985,15 +2112,21 @@ pub async fn get_events_by_tx(
         select_cols.push("id");
     }
 
+    let mut conditions: Vec<String> = vec!["tx_hash = $1".to_string()];
+    let mut bind_idx: i32 = 2;
+    maybe_add_tenant_condition(&mut conditions, &mut bind_idx, tenant_id);
+
     let query_str = format!(
-        "SELECT {} FROM events WHERE tx_hash = $1 ORDER BY ledger DESC, id DESC",
+        "SELECT {} FROM events WHERE {} ORDER BY ledger DESC, id DESC",
         select_cols.join(", "),
+        conditions.join(" AND "),
     );
 
-    let rows = sqlx::query(&query_str)
-        .bind(&tx_hash)
-        .fetch_all(&state.read_pool)
-        .await?;
+    let mut q = sqlx::query(&query_str).bind(&tx_hash);
+    if let Some(tid) = tenant_id {
+        q = q.bind(tid);
+    }
+    let rows = q.fetch_all(&state.read_pool).await?;
 
     let total = rows.len() as i64;
     let events = rows_to_json(
@@ -2290,6 +2423,67 @@ pub async fn resume_indexer(
     Ok(Json(json!({ "indexer_paused": false })))
 }
 
+/// Start a background re-encryption job to migrate events from old key to new key.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/reencrypt",
+    tag = "admin",
+    responses(
+        (status = 202, description = "Re-encryption job started"),
+        (status = 400, description = "Encryption not enabled or no old key configured", body = ErrorResponse),
+        (status = 409, description = "Re-encryption job already running", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    )
+)]
+pub async fn start_reencrypt(
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
+    #[cfg(not(feature = "encryption"))]
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "encryption feature not enabled" })),
+        ));
+    }
+
+    #[cfg(feature = "encryption")]
+    {
+        let new_key = state.encryption_key.ok_or((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "ENCRYPTION_KEY not configured" })),
+        ))?;
+
+        let old_key = state.encryption_key_old.ok_or((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "ENCRYPTION_KEY_OLD not configured" })),
+        ))?;
+
+        // Create or get the reencrypt state from app state
+        // For now, we'll create a new one per request (in production, store in AppState)
+        let reencrypt_state = crate::reencrypt::ReencryptState::new();
+
+        if reencrypt_state.is_running() {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "re-encryption job already running" })),
+            ));
+        }
+
+        let pool = state.pool.clone();
+        let batch_size = 1000;
+
+        crate::reencrypt::start_reencrypt_job(pool, new_key, old_key, batch_size, reencrypt_state);
+
+        Ok((
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "message": "re-encryption job started",
+                "batch_size": batch_size
+            })),
+        ))
+    }
+}
+
 #[utoipa::path(
     get,
     path = "/v1/events/diff",
@@ -2359,9 +2553,10 @@ pub async fn get_events_diff(
     params(
         ("page" = Option<i64>, Query, description = "Page number (default 1)"),
         ("limit" = Option<i64>, Query, description = "Items per page (1-100, default 20)"),
+        ("sort" = Option<String>, Query, description = "Sort order: event_count_desc, event_count_asc, last_seen_desc (default), first_seen_asc"),
     ),
     responses(
-        (status = 200, description = "Paginated list of indexed contract IDs"),
+        (status = 200, description = "Paginated list of indexed contract IDs with event counts and ledger info"),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 429, description = "Too many requests", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse),
@@ -2374,20 +2569,20 @@ pub async fn get_contracts(
     let limit = params.limit();
     let offset = params.offset();
 
-    // Check cache
-    {
-        let cache = contracts_cache().lock().await;
-        if let Some(ref entry) = *cache {
-            if entry.expires_at > std::time::Instant::now() {
-                return Ok(Json(entry.data.clone()));
-            }
-        }
-    }
+    // Determine sort order
+    let sort_clause = match params.sort {
+        Some(SortOrder::Asc) => "ORDER BY event_count ASC",
+        _ => "ORDER BY last_seen_ledger DESC",
+    };
 
     let rows = sqlx::query_as::<_, ContractSummary>(
-        "SELECT contract_id, COUNT(*) AS event_count, MAX(ledger) AS latest_ledger \
-         FROM events GROUP BY contract_id ORDER BY latest_ledger DESC \
-         LIMIT $1 OFFSET $2",
+        &format!(
+            "SELECT contract_id, COUNT(*) AS event_count, MIN(ledger) AS first_seen_ledger, \
+             MAX(ledger) AS last_seen_ledger, MAX(timestamp) AS last_event_at \
+             FROM events GROUP BY contract_id {} \
+             LIMIT $1 OFFSET $2",
+            sort_clause
+        ),
     )
     .bind(limit)
     .bind(offset)
@@ -2404,15 +2599,6 @@ pub async fn get_contracts(
         "page": params.page.unwrap_or(1),
         "limit": limit,
     });
-
-    // Store in cache with 30-second TTL
-    {
-        let mut cache = contracts_cache().lock().await;
-        *cache = Some(CacheEntry {
-            data: result.clone(),
-            expires_at: std::time::Instant::now() + Duration::from_secs(30),
-        });
-    }
 
     Ok(Json(result))
 }

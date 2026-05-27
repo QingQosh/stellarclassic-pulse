@@ -47,6 +47,9 @@ clean: ## Remove build artifacts
 gen-openapi: ## Regenerate openapi.json from handler signatures and sync docs/openapi.json
 	cargo run --bin gen_openapi > openapi.json
 	cp openapi.json docs/openapi.json
+changelog: ## Generate changelog from git history (requires git-cliff)
+	@command -v git-cliff >/dev/null 2>&1 || { echo "git-cliff not installed. Install with: cargo install git-cliff"; exit 1; }
+	git-cliff --unreleased
 
 generate-sdk: ## Generate TypeScript and Python SDKs from OpenAPI spec
 	cargo run --bin gen_openapi > openapi.json
