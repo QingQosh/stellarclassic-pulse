@@ -896,19 +896,21 @@ async fn stream_events_internal(
             sqlx::query_as::<_, crate::models::Event>(
                 "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, event_data_normalized, created_at, schema_version, 0::bigint AS total_count \
                  FROM events WHERE created_at > (SELECT created_at FROM events WHERE id = $1) \
-                 AND contract_id = $2 ORDER BY created_at ASC",
+                 AND contract_id = $2 ORDER BY created_at ASC LIMIT $3",
             )
             .bind(last_id)
             .bind(cid)
+            .bind(state.sse_replay_limit as i64)
             .fetch_all(&state.pool)
             .await
         } else {
             sqlx::query_as::<_, crate::models::Event>(
                 "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, event_data_normalized, created_at, schema_version, 0::bigint AS total_count \
                  FROM events WHERE created_at > (SELECT created_at FROM events WHERE id = $1) \
-                 ORDER BY created_at ASC",
+                 ORDER BY created_at ASC LIMIT $2",
             )
             .bind(last_id)
+            .bind(state.sse_replay_limit as i64)
             .fetch_all(&state.pool)
             .await
         };
@@ -968,7 +970,7 @@ async fn stream_events_internal(
                             }
                             let data = serde_json::to_string(&event).unwrap_or_default();
                             let sse = Event::default()
-                                .id(format!("{}-{}", event.tx_hash, event.ledger))
+                                .id(event.id.to_string())
                                 .retry(Duration::from_millis(ka))
                                 .data(data);
                             return Some((Ok(sse), (rx, filter, ka, cols, ek, ek_old, false)));

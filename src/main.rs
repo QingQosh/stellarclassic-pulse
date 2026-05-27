@@ -26,6 +26,7 @@ mod normalizer;
 #[cfg(feature = "parquet")]
 mod parquet_export;
 
+mod pruner;
 mod pubsub;
 mod queue_publisher;
 mod reencrypt;
