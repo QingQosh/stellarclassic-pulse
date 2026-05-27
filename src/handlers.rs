@@ -2379,9 +2379,10 @@ pub async fn get_events_diff(
     params(
         ("page" = Option<i64>, Query, description = "Page number (default 1)"),
         ("limit" = Option<i64>, Query, description = "Items per page (1-100, default 20)"),
+        ("sort" = Option<String>, Query, description = "Sort order: event_count_desc, event_count_asc, last_seen_desc (default), first_seen_asc"),
     ),
     responses(
-        (status = 200, description = "Paginated list of indexed contract IDs"),
+        (status = 200, description = "Paginated list of indexed contract IDs with event counts and ledger info"),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 429, description = "Too many requests", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse),
@@ -2394,20 +2395,20 @@ pub async fn get_contracts(
     let limit = params.limit();
     let offset = params.offset();
 
-    // Check cache
-    {
-        let cache = contracts_cache().lock().await;
-        if let Some(ref entry) = *cache {
-            if entry.expires_at > std::time::Instant::now() {
-                return Ok(Json(entry.data.clone()));
-            }
-        }
-    }
+    // Determine sort order
+    let sort_clause = match params.sort {
+        Some(SortOrder::Asc) => "ORDER BY event_count ASC",
+        _ => "ORDER BY last_seen_ledger DESC",
+    };
 
     let rows = sqlx::query_as::<_, ContractSummary>(
-        "SELECT contract_id, COUNT(*) AS event_count, MAX(ledger) AS latest_ledger \
-         FROM events GROUP BY contract_id ORDER BY latest_ledger DESC \
-         LIMIT $1 OFFSET $2",
+        &format!(
+            "SELECT contract_id, COUNT(*) AS event_count, MIN(ledger) AS first_seen_ledger, \
+             MAX(ledger) AS last_seen_ledger, MAX(timestamp) AS last_event_at \
+             FROM events GROUP BY contract_id {} \
+             LIMIT $1 OFFSET $2",
+            sort_clause
+        ),
     )
     .bind(limit)
     .bind(offset)
@@ -2424,15 +2425,6 @@ pub async fn get_contracts(
         "page": params.page.unwrap_or(1),
         "limit": limit,
     });
-
-    // Store in cache with 30-second TTL
-    {
-        let mut cache = contracts_cache().lock().await;
-        *cache = Some(CacheEntry {
-            data: result.clone(),
-            expires_at: std::time::Instant::now() + Duration::from_secs(30),
-        });
-    }
 
     Ok(Json(result))
 }
