@@ -1171,6 +1171,27 @@ pub async fn get_events(
         validate_contract_id(cid)?;
     }
 
+    // Validate and parse topic filter if provided
+    let topic_filter = if let Some(ref topic_str) = params.topic {
+        match serde_json::from_str::<serde_json::Value>(topic_str) {
+            Ok(val) => {
+                if !val.is_array() {
+                    return Err(AppError::Validation(
+                        "topic parameter must be a JSON array".to_string(),
+                    ));
+                }
+                Some(val)
+            }
+            Err(_) => {
+                return Err(AppError::Validation(
+                    "topic parameter must be valid JSON".to_string(),
+                ));
+            }
+        }
+    } else {
+        None
+    };
+
     let limit = params.limit();
     let columns = resolve_columns(&params)?;
     let dir = params
@@ -1215,6 +1236,10 @@ pub async fn get_events(
         }
         if params.topic_sym.is_some() {
             conditions.push(format!("topic_0_sym = ${bind_idx}"));
+            bind_idx += 1;
+        }
+        if topic_filter.is_some() {
+            conditions.push(format!("event_data->'topic' @> ${bind_idx}::jsonb"));
             bind_idx += 1;
         }
         if params.search.is_some() {
@@ -1266,6 +1291,9 @@ pub async fn get_events(
         }
         if let Some(ref ts) = params.topic_sym {
             q = q.bind(ts);
+        }
+        if let Some(ref tf) = topic_filter {
+            q = q.bind(tf.to_string());
         }
         if let Some(ref search) = params.search {
             q = q.bind(search);
@@ -1352,6 +1380,10 @@ pub async fn get_events(
         conditions.push(format!("topic_0_sym = ${bind_idx}"));
         bind_idx += 1;
     }
+    if topic_filter.is_some() {
+        conditions.push(format!("event_data->'topic' @> ${bind_idx}::jsonb"));
+        bind_idx += 1;
+    }
     if params.search.is_some() {
         conditions.push(format!("event_data_tsv @@ plainto_tsquery('english', ${bind_idx})"));
         bind_idx += 1;
@@ -1411,6 +1443,9 @@ pub async fn get_events(
     if let Some(ref ts) = params.topic_sym {
         q = q.bind(ts);
     }
+    if let Some(ref tf) = topic_filter {
+        q = q.bind(tf.to_string());
+    }
     if let Some(ref search) = params.search {
         q = q.bind(search);
     }
@@ -1465,6 +1500,9 @@ pub async fn get_events(
         }
         if let Some(ref ts) = params.topic_sym {
             cq = cq.bind(ts);
+        }
+        if let Some(ref tf) = topic_filter {
+            cq = cq.bind(tf.to_string());
         }
         if let Some(ref search) = params.search {
             cq = cq.bind(search);
