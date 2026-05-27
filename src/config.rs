@@ -241,6 +241,8 @@ pub struct Config {
     // Issue #327: Event retention and pruning
     pub retention_days: u64,
     pub pruning_interval_hours: u64,
+    // Issue #325: SSE Last-Event-ID replay limit
+    pub sse_replay_limit: u64,
 }
 
 impl Default for Config {
@@ -310,6 +312,7 @@ impl Default for Config {
             stats_refresh_interval_secs: 3600,
             retention_days: 90,
             pruning_interval_hours: 24,
+            sse_replay_limit: 500,
         }
     }
 }
@@ -986,6 +989,9 @@ impl Config {
             pruning_interval_hours: env_or_file("PRUNING_INTERVAL_HOURS", &file)
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(24),
+            sse_replay_limit: env_or_file("SSE_REPLAY_LIMIT", &file)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(500),
         }
     }
 }
