@@ -236,8 +236,14 @@ pub struct Config {
     // Redis stream fields
     pub redis_url: Option<String>,
     pub redis_stream_key: Option<String>,
+    /// Maximum number of events to buffer in memory during a Redis outage (default 10 000).
+    pub redis_buffer_max_size: usize,
     // Stats refresh
     pub stats_refresh_interval_secs: u64,
+    /// Comma-separated list of fallback Soroban RPC URLs tried in order when the primary fails.
+    pub stellar_rpc_fallback_urls: Vec<String>,
+    /// Kinesis partition key strategy: contract_id (default), tx_hash, or random.
+    pub kinesis_partition_key_field: String,
 }
 
 impl Default for Config {
@@ -304,7 +310,10 @@ impl Default for Config {
             email_contract_filter: Vec::new(),
             redis_url: None,
             redis_stream_key: None,
+            redis_buffer_max_size: 10_000,
             stats_refresh_interval_secs: 3600,
+            stellar_rpc_fallback_urls: Vec::new(),
+            kinesis_partition_key_field: "contract_id".to_string(),
         }
     }
 }
@@ -972,9 +981,27 @@ impl Config {
                 .unwrap_or_default(),
             redis_url: env_or_file("REDIS_URL", &file),
             redis_stream_key: env_or_file("REDIS_STREAM_KEY", &file),
+            redis_buffer_max_size: env_or_file("REDIS_BUFFER_MAX_SIZE", &file)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10_000),
             stats_refresh_interval_secs: env_or_file("STATS_REFRESH_INTERVAL_SECS", &file)
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(3600),
+            stellar_rpc_fallback_urls: env_or_file("STELLAR_RPC_FALLBACK_URLS", &file)
+                .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+                .unwrap_or_default(),
+            kinesis_partition_key_field: {
+                let field = env_or_file_or("KINESIS_PARTITION_KEY_FIELD", &file, "contract_id");
+                if !["contract_id", "tx_hash", "random"].contains(&field.as_str()) {
+                    errors.push(format!(
+                        "  KINESIS_PARTITION_KEY_FIELD={field:?} is invalid. \
+                         Valid values: contract_id, tx_hash, random."
+                    ));
+                    "contract_id".to_string()
+                } else {
+                    field
+                }
+            },
         }
     }
 }

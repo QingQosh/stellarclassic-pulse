@@ -263,8 +263,15 @@ async fn main() -> anyhow::Result<()> {
 
         info!(stream_key = %redis_stream_key, "Redis publisher enabled");
 
+        let redis_buffer_max_size = config.redis_buffer_max_size;
         tokio::spawn(async move {
-            queue_publisher::spawn_redis_publisher(redis_url, redis_stream_key, redis_rx).await;
+            queue_publisher::spawn_redis_publisher(
+                redis_url,
+                redis_stream_key,
+                redis_buffer_max_size,
+                redis_rx,
+            )
+            .await;
         });
     }
 
@@ -299,7 +306,10 @@ async fn main() -> anyhow::Result<()> {
         config.kinesis_stream_name.clone(),
         config.aws_region.clone(),
     ) {
-        let publisher = kinesis::aws::AwsKinesisPublisher::from_env(stream_name, region).await;
+        let partition_key_field = config.kinesis_partition_key_field.clone();
+        let publisher =
+            kinesis::aws::AwsKinesisPublisher::from_env(stream_name, region, partition_key_field)
+                .await;
         indexer.set_kinesis_publisher(std::sync::Arc::new(publisher));
         info!("Kinesis publisher enabled");
     }

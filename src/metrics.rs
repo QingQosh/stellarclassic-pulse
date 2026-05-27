@@ -97,6 +97,41 @@ pub fn record_webhook_failure() {
     m::counter!("soroban_pulse_webhook_failures_total").increment(1);
 }
 
+/// Record a Redis queue publish failure (all retries exhausted)
+pub fn record_queue_publish_failure() {
+    m::counter!("soroban_pulse_redis_publish_failures_total").increment(1);
+}
+
+/// Record an event dropped because the Redis in-memory buffer is full
+pub fn record_redis_dropped() {
+    m::counter!("soroban_pulse_redis_dropped_total").increment(1);
+}
+
+/// Record a successful Redis reconnection after a connection loss
+pub fn record_redis_reconnect() {
+    m::counter!("soroban_pulse_redis_reconnect_total").increment(1);
+}
+
+/// Update the Redis in-memory buffer size gauge
+pub fn update_redis_buffer_size(size: usize) {
+    m::gauge!("soroban_pulse_redis_buffer_size").set(size as f64);
+}
+
+/// Record an RPC failover event (primary URL failed, switched to fallback)
+pub fn record_rpc_failover() {
+    m::counter!("soroban_pulse_rpc_failover_total").increment(1);
+}
+
+/// Update the active RPC endpoint label gauge (1.0 = active)
+pub fn set_rpc_active_endpoint(endpoint: &str) {
+    m::gauge!("soroban_pulse_rpc_active_endpoint", "url" => endpoint.to_string()).set(1.0);
+}
+
+/// Record a Kinesis ProvisionedThroughputExceededException (throttled record)
+pub fn record_kinesis_throttled() {
+    m::counter!("soroban_pulse_kinesis_throttled_total").increment(1);
+}
+
 /// Record an email notification failure
 pub fn record_email_failure() {
     m::counter!("soroban_pulse_email_failures_total").increment(1);
