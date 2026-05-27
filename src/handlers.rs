@@ -296,7 +296,7 @@ async fn build_health_response(state: &AppState) -> (StatusCode, Value) {
     path = "/health",
     tag = "system",
     responses(
-        (status = 200, description = "Service is healthy"),
+        (status = 200, description = "Service is healthy", body = serde_json::Value),
         (status = 503, description = "Service is degraded", body = ErrorResponse),
     )
 )]
@@ -310,7 +310,7 @@ pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Value>) 
     path = "/healthz/live",
     tag = "system",
     responses(
-        (status = 200, description = "Process is alive"),
+        (status = 200, description = "Process is alive", body = serde_json::Value),
     )
 )]
 pub async fn health_live() -> (StatusCode, Json<Value>) {
@@ -322,7 +322,7 @@ pub async fn health_live() -> (StatusCode, Json<Value>) {
     path = "/healthz/ready",
     tag = "system",
     responses(
-        (status = 200, description = "Service is ready"),
+        (status = 200, description = "Service is ready", body = serde_json::Value),
         (status = 503, description = "Service is not ready", body = ErrorResponse),
     )
 )]
@@ -333,10 +333,10 @@ pub async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Va
 
 #[utoipa::path(
     get,
-    path = "/status",
+    path = "/v1/status",
     tag = "system",
     responses(
-        (status = 200, description = "Indexer operational status"),
+        (status = 200, description = "Indexer operational status", body = serde_json::Value),
     )
 )]
 pub async fn status(State(state): State<AppState>) -> Json<Value> {
