@@ -80,6 +80,8 @@ pub struct PaginationParams {
     pub to_ledger: Option<i64>,
     pub cursor: Option<String>,
     pub sort: Option<SortOrder>,
+    /// Sort column: `ledger`, `timestamp`, or `created_at` (default: ledger)
+    pub sort_by: Option<SortBy>,
     pub in_successful_call: Option<bool>,
     /// Filter by the first topic symbol (uses topic_0_sym generated column index).
     pub topic_sym: Option<String>,
@@ -109,6 +111,34 @@ impl SortOrder {
         match self {
             SortOrder::Asc => "ASC",
             SortOrder::Desc => "DESC",
+        }
+    }
+}
+
+/// Column to sort by for event list endpoints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SortBy {
+    Ledger,
+    Timestamp,
+    CreatedAt,
+}
+
+impl SortBy {
+    /// Returns the SQL column name to sort by.
+    pub fn as_sql_col(&self) -> &'static str {
+        match self {
+            SortBy::Ledger => "ledger",
+            SortBy::Timestamp => "timestamp",
+            SortBy::CreatedAt => "created_at",
+        }
+    }
+    /// Returns a short string identifier suitable for cursor encoding/decoding.
+    pub fn as_tag(&self) -> &'static str {
+        match self {
+            SortBy::Ledger => "ledger",
+            SortBy::Timestamp => "timestamp",
+            SortBy::CreatedAt => "created_at",
         }
     }
 }

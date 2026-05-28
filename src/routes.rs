@@ -292,9 +292,18 @@ pub fn create_router_with_tx_and_tenant_map(
         .route("/events/stream", get(handlers::stream_events))
         .route("/events/stream/multi", get(handlers::stream_events_multi))
         .route("/events/ws", get(handlers::ws_events))
-        .route("/events/contract/{contract_id}", get(handlers::get_events_by_contract))
-        .route("/events/contract/{contract_id}/stream", get(handlers::stream_events_by_contract))
-        .route("/events/tx/batch", axum::routing::post(handlers::get_events_by_tx_batch))
+        .route(
+            "/events/contract/{contract_id}",
+            get(handlers::get_events_by_contract),
+        )
+        .route(
+            "/events/contract/{contract_id}/stream",
+            get(handlers::stream_events_by_contract),
+        )
+        .route(
+            "/events/tx/batch",
+            axum::routing::post(handlers::get_events_by_tx_batch),
+        )
         .route("/events/tx/{tx_hash}", get(handlers::get_events_by_tx))
         .route(
             "/events/ledger-hash/{hash}",
@@ -374,13 +383,15 @@ pub fn create_router_with_tx_and_tenant_map(
             .route("/docs", get(handlers::swagger_ui))
             .nest("/v1", v1)
             .merge(deprecated)
-            .layer(axum::middleware::from_fn(|req: Request<Body>, next: axum::middleware::Next| async move {
-                let resp = next.run(req).await;
-                if resp.status() == axum::http::StatusCode::TOO_MANY_REQUESTS {
-                    metrics::record_rate_limit_rejected();
-                }
-                resp
-            }))
+            .layer(axum::middleware::from_fn(
+                |req: Request<Body>, next: axum::middleware::Next| async move {
+                    let resp = next.run(req).await;
+                    if resp.status() == axum::http::StatusCode::TOO_MANY_REQUESTS {
+                        metrics::record_rate_limit_rejected();
+                    }
+                    resp
+                },
+            ))
             .layer(GovernorLayer::new(governor_conf))
     } else {
         let governor_conf = Arc::new(
@@ -397,13 +408,15 @@ pub fn create_router_with_tx_and_tenant_map(
             .route("/docs", get(handlers::swagger_ui))
             .nest("/v1", v1)
             .merge(deprecated)
-            .layer(axum::middleware::from_fn(|req: Request<Body>, next: axum::middleware::Next| async move {
-                let resp = next.run(req).await;
-                if resp.status() == axum::http::StatusCode::TOO_MANY_REQUESTS {
-                    metrics::record_rate_limit_rejected();
-                }
-                resp
-            }))
+            .layer(axum::middleware::from_fn(
+                |req: Request<Body>, next: axum::middleware::Next| async move {
+                    let resp = next.run(req).await;
+                    if resp.status() == axum::http::StatusCode::TOO_MANY_REQUESTS {
+                        metrics::record_rate_limit_rejected();
+                    }
+                    resp
+                },
+            ))
             .layer(GovernorLayer::new(governor_conf))
     };
 

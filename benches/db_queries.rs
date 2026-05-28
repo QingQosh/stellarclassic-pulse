@@ -200,11 +200,35 @@ fn bench_get_events_by_contract(c: &mut Criterion) {
     });
 }
 
+fn bench_get_events_timestamp_sort(c: &mut Criterion) {
+    let rt = rt();
+    let pool = rt.block_on(connect());
+    rt.block_on(seed(&pool));
+
+    c.bench_function("db/get_events_timestamp_sort", |b| {
+        b.iter(|| {
+            rt.block_on(async {
+                let rows = sqlx::query(
+                    "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at \
+                     FROM events ORDER BY timestamp DESC, id DESC LIMIT $1 OFFSET $2",
+                )
+                .bind(black_box(20_i64))
+                .bind(black_box(0_i64))
+                .fetch_all(&pool)
+                .await
+                .expect("query failed");
+                black_box(rows.len())
+            })
+        });
+    });
+}
+
 criterion_group!(
     db_benches,
     bench_get_events_no_filter,
     bench_get_events_ledger_range,
     bench_get_events_exact_count,
     bench_get_events_by_contract,
+    bench_get_events_timestamp_sort,
 );
 criterion_main!(db_benches);

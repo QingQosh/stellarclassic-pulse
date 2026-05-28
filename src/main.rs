@@ -250,7 +250,9 @@ async fn main() -> anyhow::Result<()> {
 
                 notifier.spawn(email_rx);
             } else {
-                warn!("EMAIL_SMTP_HOST is set but EMAIL_TO is empty — email notifications disabled");
+                warn!(
+                    "EMAIL_SMTP_HOST is set but EMAIL_TO is empty — email notifications disabled"
+                );
             }
         } else {
             warn!("EMAIL_SMTP_HOST is set but EMAIL_FROM is not — email notifications disabled");
@@ -258,7 +260,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Spawn Redis publisher if configured
-    if let (Some(redis_url), Some(redis_stream_key)) = (&config.redis_url, &config.redis_stream_key) {
+    if let (Some(redis_url), Some(redis_stream_key)) = (&config.redis_url, &config.redis_stream_key)
+    {
         let redis_rx = event_tx.subscribe();
         let redis_url = redis_url.clone();
         let redis_stream_key = redis_stream_key.clone();

@@ -119,12 +119,17 @@ mod redis_impl {
                 ("ledger", event.ledger.to_string()),
                 ("ledger_closed_at", event.ledger_closed_at.clone()),
                 ("value", event.value.to_string()),
-                ("topic", event.topic.as_ref().map(|t| t.to_string()).unwrap_or_else(|| "null".to_string())),
+                (
+                    "topic",
+                    event
+                        .topic
+                        .as_ref()
+                        .map(|t| t.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                ),
             ];
 
-            self.client
-                .xadd(&self.stream_key, "*", &fields)
-                .await?;
+            self.client.xadd(&self.stream_key, "*", &fields).await?;
 
             Ok(())
         }

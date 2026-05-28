@@ -24,11 +24,10 @@ impl SchemaValidator {
 
     /// Load all schemas from the database into the cache
     pub async fn load_schemas(&self) -> Result<(), sqlx::Error> {
-        let schemas: Vec<(String, Value)> = sqlx::query_as(
-            "SELECT contract_id, schema FROM contract_schemas"
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let schemas: Vec<(String, Value)> =
+            sqlx::query_as("SELECT contract_id, schema FROM contract_schemas")
+                .fetch_all(&self.pool)
+                .await?;
 
         let mut cache = self.cache.write().await;
         for (contract_id, schema_value) in schemas {
@@ -97,7 +96,7 @@ impl SchemaValidator {
         let schema = cache.get(contract_id)?;
 
         let is_valid = schema.is_valid(event_data);
-        
+
         if !is_valid {
             if let Err(errors) = schema.validate(event_data) {
                 let error_details: Vec<ValidationErrorDetail> = errors
@@ -128,24 +127,20 @@ impl SchemaValidator {
 
     /// Get the schema for a contract
     pub async fn get_schema(&self, contract_id: &str) -> Option<Value> {
-        sqlx::query_scalar::<_, Value>(
-            "SELECT schema FROM contract_schemas WHERE contract_id = $1"
-        )
-        .bind(contract_id)
-        .fetch_optional(&self.pool)
-        .await
-        .ok()
-        .flatten()
+        sqlx::query_scalar::<_, Value>("SELECT schema FROM contract_schemas WHERE contract_id = $1")
+            .bind(contract_id)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Delete a schema for a contract
     pub async fn delete_schema(&self, contract_id: &str) -> Result<bool, sqlx::Error> {
-        let result = sqlx::query(
-            "DELETE FROM contract_schemas WHERE contract_id = $1"
-        )
-        .bind(contract_id)
-        .execute(&self.pool)
-        .await?;
+        let result = sqlx::query("DELETE FROM contract_schemas WHERE contract_id = $1")
+            .bind(contract_id)
+            .execute(&self.pool)
+            .await?;
 
         if result.rows_affected() > 0 {
             let mut cache = self.cache.write().await;

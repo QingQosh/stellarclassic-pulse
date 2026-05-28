@@ -163,11 +163,13 @@ impl EmailNotifier {
     }
 
     /// Send an email using SMTP.
-    async fn send_email(&self, subject: &str, body: &str) -> Result<(), Box<dyn std::error::Error>> {
+    async fn send_email(
+        &self,
+        subject: &str,
+        body: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Build message with all recipients
-        let mut message_builder = Message::builder()
-            .from(self.from.parse()?)
-            .subject(subject);
+        let mut message_builder = Message::builder().from(self.from.parse()?).subject(subject);
 
         for recipient in &self.to {
             message_builder = message_builder.to(recipient.parse()?);
@@ -178,8 +180,7 @@ impl EmailNotifier {
             .body(body.to_string())?;
 
         // Build SMTP transport
-        let mut transport_builder = SmtpTransport::relay(&self.smtp_host)?
-            .port(self.smtp_port);
+        let mut transport_builder = SmtpTransport::relay(&self.smtp_host)?.port(self.smtp_port);
 
         if let (Some(user), Some(password)) = (&self.smtp_user, &self.smtp_password) {
             transport_builder = transport_builder.credentials(Credentials::new(
@@ -248,7 +249,7 @@ mod tests {
     #[test]
     fn test_contract_filter_logic() {
         let filter = vec!["CONTRACT_A".to_string(), "CONTRACT_B".to_string()];
-        
+
         let event_a = mock_event("CONTRACT_A", 100);
         let event_b = mock_event("CONTRACT_B", 101);
         let event_c = mock_event("CONTRACT_C", 102);

@@ -116,3 +116,7 @@ harness = false
 [[bench]]
 name = "compression"
 harness = false
+
+[[bench]]
+name = "conditional_get"
+harness = false

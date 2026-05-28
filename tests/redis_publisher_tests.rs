@@ -20,8 +20,8 @@ mod redis_tests {
     #[tokio::test]
     #[ignore] // Requires Redis server
     async fn test_redis_publisher_publishes_event() {
-        let redis_url = std::env::var("REDIS_URL")
-            .unwrap_or_else(|_| "redis://localhost:6379".to_string());
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
         let stream_key = "test_soroban_pulse_events".to_string();
 
         let (event_tx, event_rx) = broadcast::channel(10);
@@ -43,10 +43,7 @@ mod redis_tests {
 
         // Clean up
         drop(event_tx);
-        let _ = tokio::time::timeout(
-            tokio::time::Duration::from_secs(1),
-            publisher_handle
-        ).await;
+        let _ = tokio::time::timeout(tokio::time::Duration::from_secs(1), publisher_handle).await;
     }
 
     #[tokio::test]
@@ -69,10 +66,7 @@ mod redis_tests {
 
         // Clean up
         drop(event_tx);
-        let _ = tokio::time::timeout(
-            tokio::time::Duration::from_secs(1),
-            publisher_handle
-        ).await;
+        let _ = tokio::time::timeout(tokio::time::Duration::from_secs(1), publisher_handle).await;
     }
 }
 

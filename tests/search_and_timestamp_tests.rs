@@ -30,7 +30,7 @@ async fn insert_test_event(
 async fn test_fulltext_search_finds_matching_events(pool: PgPool) -> sqlx::Result<()> {
     // Insert events with different searchable content
     let ts = Utc::now();
-    
+
     insert_test_event(
         &pool,
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
@@ -57,43 +57,55 @@ async fn test_fulltext_search_finds_matching_events(pool: PgPool) -> sqlx::Resul
 
     // Search for "USDC" - should find first event
     let results: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM events WHERE event_data_tsv @@ plainto_tsquery('english', $1)"
+        "SELECT id FROM events WHERE event_data_tsv @@ plainto_tsquery('english', $1)",
     )
     .bind("USDC")
     .fetch_all(&pool)
     .await?;
-    
+
     assert_eq!(results.len(), 1, "Should find exactly one event with USDC");
 
     // Search for "payment" - should find second event
     let results: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM events WHERE event_data_tsv @@ plainto_tsquery('english', $1)"
+        "SELECT id FROM events WHERE event_data_tsv @@ plainto_tsquery('english', $1)",
     )
     .bind("payment")
     .fetch_all(&pool)
     .await?;
-    
-    assert_eq!(results.len(), 1, "Should find exactly one event with payment");
+
+    assert_eq!(
+        results.len(),
+        1,
+        "Should find exactly one event with payment"
+    );
 
     // Search for "transfer" - should find third event
     let results: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM events WHERE event_data_tsv @@ plainto_tsquery('english', $1)"
+        "SELECT id FROM events WHERE event_data_tsv @@ plainto_tsquery('english', $1)",
     )
     .bind("transfer")
     .fetch_all(&pool)
     .await?;
-    
-    assert_eq!(results.len(), 1, "Should find exactly one event with transfer");
+
+    assert_eq!(
+        results.len(),
+        1,
+        "Should find exactly one event with transfer"
+    );
 
     // Search for non-existent term
     let results: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM events WHERE event_data_tsv @@ plainto_tsquery('english', $1)"
+        "SELECT id FROM events WHERE event_data_tsv @@ plainto_tsquery('english', $1)",
     )
     .bind("nonexistent")
     .fetch_all(&pool)
     .await?;
-    
-    assert_eq!(results.len(), 0, "Should find no events with nonexistent term");
+
+    assert_eq!(
+        results.len(),
+        0,
+        "Should find no events with nonexistent term"
+    );
 
     Ok(())
 }
@@ -131,17 +143,19 @@ async fn test_timestamp_filtering_from_timestamp(pool: PgPool) -> sqlx::Result<(
     .await?;
 
     // Query events from 2.5 hours ago - should get id2 and id3
-    let results: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM events WHERE timestamp >= $1 ORDER BY timestamp ASC"
-    )
-    .bind(two_hours_ago - Duration::minutes(30))
-    .fetch_all(&pool)
-    .await?;
+    let results: Vec<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM events WHERE timestamp >= $1 ORDER BY timestamp ASC")
+            .bind(two_hours_ago - Duration::minutes(30))
+            .fetch_all(&pool)
+            .await?;
 
     assert!(results.len() >= 2, "Should find at least 2 events");
     assert!(results.iter().any(|(id,)| *id == id2), "Should include id2");
     assert!(results.iter().any(|(id,)| *id == id3), "Should include id3");
-    assert!(!results.iter().any(|(id,)| *id == id1), "Should not include id1");
+    assert!(
+        !results.iter().any(|(id,)| *id == id1),
+        "Should not include id1"
+    );
 
     Ok(())
 }
@@ -179,17 +193,19 @@ async fn test_timestamp_filtering_to_timestamp(pool: PgPool) -> sqlx::Result<()>
     .await?;
 
     // Query events up to 1.5 hours ago - should get id1 and id2
-    let results: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM events WHERE timestamp <= $1 ORDER BY timestamp ASC"
-    )
-    .bind(one_hour_ago - Duration::minutes(30))
-    .fetch_all(&pool)
-    .await?;
+    let results: Vec<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM events WHERE timestamp <= $1 ORDER BY timestamp ASC")
+            .bind(one_hour_ago - Duration::minutes(30))
+            .fetch_all(&pool)
+            .await?;
 
     assert!(results.len() >= 2, "Should find at least 2 events");
     assert!(results.iter().any(|(id,)| *id == id1), "Should include id1");
     assert!(results.iter().any(|(id,)| *id == id2), "Should include id2");
-    assert!(!results.iter().any(|(id,)| *id == id3), "Should not include id3");
+    assert!(
+        !results.iter().any(|(id,)| *id == id3),
+        "Should not include id3"
+    );
 
     Ok(())
 }
@@ -237,7 +253,7 @@ async fn test_timestamp_filtering_range(pool: PgPool) -> sqlx::Result<()> {
 
     // Query events between 3 and 1.5 hours ago - should get id2 and id3
     let results: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM events WHERE timestamp >= $1 AND timestamp <= $2 ORDER BY timestamp ASC"
+        "SELECT id FROM events WHERE timestamp >= $1 AND timestamp <= $2 ORDER BY timestamp ASC",
     )
     .bind(three_hours_ago)
     .bind(one_hour_ago - Duration::minutes(30))
@@ -247,8 +263,14 @@ async fn test_timestamp_filtering_range(pool: PgPool) -> sqlx::Result<()> {
     assert!(results.len() >= 2, "Should find at least 2 events");
     assert!(results.iter().any(|(id,)| *id == id2), "Should include id2");
     assert!(results.iter().any(|(id,)| *id == id3), "Should include id3");
-    assert!(!results.iter().any(|(id,)| *id == id1), "Should not include id1");
-    assert!(!results.iter().any(|(id,)| *id == id4), "Should not include id4");
+    assert!(
+        !results.iter().any(|(id,)| *id == id1),
+        "Should not include id1"
+    );
+    assert!(
+        !results.iter().any(|(id,)| *id == id4),
+        "Should not include id4"
+    );
 
     Ok(())
 }
@@ -289,7 +311,7 @@ async fn test_combined_search_and_timestamp_filters(pool: PgPool) -> sqlx::Resul
         "SELECT id FROM events 
          WHERE event_data_tsv @@ plainto_tsquery('english', $1) 
          AND timestamp >= $2 
-         ORDER BY timestamp ASC"
+         ORDER BY timestamp ASC",
     )
     .bind("USDC")
     .bind(one_hour_ago - Duration::minutes(30))
@@ -304,7 +326,7 @@ async fn test_combined_search_and_timestamp_filters(pool: PgPool) -> sqlx::Resul
         "SELECT id FROM events 
          WHERE event_data_tsv @@ plainto_tsquery('english', $1) 
          AND timestamp >= $2 
-         ORDER BY timestamp ASC"
+         ORDER BY timestamp ASC",
     )
     .bind("transfer")
     .bind(one_hour_ago - Duration::minutes(30))
@@ -325,7 +347,7 @@ async fn test_tsvector_column_exists(pool: PgPool) -> sqlx::Result<()> {
             SELECT 1 FROM information_schema.columns 
             WHERE table_name = 'events' 
             AND column_name = 'event_data_tsv'
-        )"
+        )",
     )
     .fetch_one(&pool)
     .await?;
@@ -343,7 +365,7 @@ async fn test_tsvector_gin_index_exists(pool: PgPool) -> sqlx::Result<()> {
             SELECT 1 FROM pg_indexes 
             WHERE tablename = 'events' 
             AND indexname = 'idx_events_event_data_tsv'
-        )"
+        )",
     )
     .fetch_one(&pool)
     .await?;

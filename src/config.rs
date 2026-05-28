@@ -779,21 +779,22 @@ impl Config {
         .unwrap_or(10000);
 
         // SSE_KEEPALIVE_SECS (seconds) takes precedence over SSE_KEEPALIVE_INTERVAL_MS (ms).
-        let sse_keepalive_interval_ms = if let Some(secs_str) = env_or_file("SSE_KEEPALIVE_SECS", &file) {
-            parse_int_range::<u64>("SSE_KEEPALIVE_SECS", &secs_str, 1, 60, "15", &mut errors)
-                .map(|s| s * 1000)
+        let sse_keepalive_interval_ms =
+            if let Some(secs_str) = env_or_file("SSE_KEEPALIVE_SECS", &file) {
+                parse_int_range::<u64>("SSE_KEEPALIVE_SECS", &secs_str, 1, 60, "15", &mut errors)
+                    .map(|s| s * 1000)
+                    .unwrap_or(15000)
+            } else {
+                parse_int_range::<u64>(
+                    "SSE_KEEPALIVE_INTERVAL_MS",
+                    &env_or_file_or("SSE_KEEPALIVE_INTERVAL_MS", &file, "15000"),
+                    1000,
+                    60000,
+                    "15000",
+                    &mut errors,
+                )
                 .unwrap_or(15000)
-        } else {
-            parse_int_range::<u64>(
-                "SSE_KEEPALIVE_INTERVAL_MS",
-                &env_or_file_or("SSE_KEEPALIVE_INTERVAL_MS", &file, "15000"),
-                1000,
-                60000,
-                "15000",
-                &mut errors,
-            )
-            .unwrap_or(15000)
-        };
+            };
 
         let sse_max_connections = parse_int_range::<usize>(
             "SSE_MAX_CONNECTIONS",
@@ -981,7 +982,9 @@ impl Config {
             bloom_filter_capacity: env_or_file_or("BLOOM_FILTER_CAPACITY", &file, "1000000")
                 .parse()
                 .unwrap_or(1_000_000),
-            kinesis_stream_name: env::var("KINESIS_STREAM_NAME").ok().filter(|s| !s.is_empty()),
+            kinesis_stream_name: env::var("KINESIS_STREAM_NAME")
+                .ok()
+                .filter(|s| !s.is_empty()),
             aws_region: env::var("AWS_REGION").ok().filter(|s| !s.is_empty()),
             pubsub_project_id: env::var("PUBSUB_PROJECT_ID").ok().filter(|s| !s.is_empty()),
             pubsub_topic_id: env::var("PUBSUB_TOPIC_ID").ok().filter(|s| !s.is_empty()),
@@ -1013,10 +1016,20 @@ impl Config {
                 .map(SecretString::new),
             email_from: env_or_file("EMAIL_FROM", &file),
             email_to: env_or_file("EMAIL_TO", &file)
-                .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+                .map(|v| {
+                    v.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
                 .unwrap_or_default(),
             email_contract_filter: env_or_file("EMAIL_CONTRACT_FILTER", &file)
-                .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+                .map(|v| {
+                    v.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
                 .unwrap_or_default(),
             redis_url: env_or_file("REDIS_URL", &file),
             redis_stream_key: env_or_file("REDIS_STREAM_KEY", &file),

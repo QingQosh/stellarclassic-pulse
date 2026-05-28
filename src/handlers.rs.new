@@ -83,27 +83,42 @@ fn maybe_add_tenant_condition(
     }
 }
 
-/// Encode a (ledger, id) pair as an opaque URL-safe base64 cursor.
-fn encode_cursor(ledger: i64, id: Uuid) -> String {
-    URL_SAFE_NO_PAD.encode(format!("{ledger}:{id}"))
+/// Encode an opaque cursor containing a sort tag, the sort value (as text), and the id.
+fn encode_cursor_tagged(tag: &str, value: &str, id: Uuid) -> String {
+    URL_SAFE_NO_PAD.encode(format!("{}|{}|{}", tag, value, id))
 }
 
-/// Decode a cursor back to (ledger, id). Returns a validation error on malformed input.
-fn decode_cursor(cursor: &str) -> Result<(i64, Uuid), AppError> {
+/// Decode a tagged cursor into (tag, value, id). Value is left as text and parsed by the caller.
+fn decode_cursor_tagged(cursor: &str) -> Result<(String, String, Uuid), AppError> {
     let bytes = URL_SAFE_NO_PAD
         .decode(cursor)
         .map_err(|_| AppError::Validation("invalid cursor".to_string()))?;
     let s = std::str::from_utf8(&bytes)
         .map_err(|_| AppError::Validation("invalid cursor".to_string()))?;
-    let (ledger_str, id_str) = s
-        .split_once(':')
-        .ok_or_else(|| AppError::Validation("invalid cursor".to_string()))?;
-    let ledger = ledger_str
-        .parse::<i64>()
-        .map_err(|_| AppError::Validation("invalid cursor".to_string()))?;
-    let id =
-        Uuid::parse_str(id_str).map_err(|_| AppError::Validation("invalid cursor".to_string()))?;
-    Ok((ledger, id))
+    if s.contains('|') {
+        let mut parts = s.splitn(3, '|');
+        let tag = parts
+            .next()
+            .ok_or_else(|| AppError::Validation("invalid cursor".to_string()))?
+            .to_string();
+        let val = parts
+            .next()
+            .ok_or_else(|| AppError::Validation("invalid cursor".to_string()))?
+            .to_string();
+        let id_str = parts
+            .next()
+            .ok_or_else(|| AppError::Validation("invalid cursor".to_string()))?;
+        let id = Uuid::parse_str(id_str)
+            .map_err(|_| AppError::Validation("invalid cursor".to_string()))?;
+        Ok((tag, val, id))
+    } else {
+        let (ledger_str, id_str) = s
+            .rsplit_once(':')
+            .ok_or_else(|| AppError::Validation("invalid cursor".to_string()))?;
+        let id = Uuid::parse_str(id_str)
+            .map_err(|_| AppError::Validation("invalid cursor".to_string()))?;
+        Ok(("ledger".to_string(), ledger_str.to_string(), id))
+    }
 }
 
 /// Map sqlx rows to a JSON array, projecting only the requested columns.
@@ -170,39 +185,13 @@ fn rows_to_json(
                         event.insert(col.to_string(), decrypted);
                     }
                 }
-                "event_data_normalized" => {
-                    event.insert(
-                        col.to_string(),
-                        json!(row.try_get::<Option<Value>, _>(col)?),
-                    );
-                }
-                "event_data_decoded" => {
-                    event.insert(
-                        col.to_string(),
-                        json!(row.try_get::<Option<Value>, _>(col)?),
-                    );
-                }
-                "ledger_hash" => {
-                    event.insert(
-                        col.to_string(),
-                        json!(row.try_get::<Option<String>, _>(col)?),
-                    );
-                }
-                "in_successful_call" => {
-                    event.insert(col.to_string(), json!(row.try_get::<bool, _>(col)?));
-                }
-                "created_at" => {
-                    event.insert(
-                        col.to_string(),
-                        json!(row.try_get::<DateTime<Utc>, _>(col)?),
-                    );
-                }
-                "schema_version" => {
-                    event.insert(col.to_string(), json!(row.try_get::<i32, _>(col)?));
-                }
-                "anonymized" => {
-                    event.insert(col.to_string(), json!(row.try_get::<bool, _>(col)?));
-                }
+                "event_data_normalized" => { event.insert(col.to_string(), json!(row.try_get::<Option<Value>, _>(col)?)); }
+                "event_data_decoded" => { event.insert(col.to_string(), json!(row.try_get::<Option<Value>, _>(col)?)); }
+                "ledger_hash" => { event.insert(col.to_string(), json!(row.try_get::<Option<String>, _>(col)?)); }
+                "in_successful_call" => { event.insert(col.to_string(), json!(row.try_get::<bool, _>(col)?)); }
+                "created_at" => { event.insert(col.to_string(), json!(row.try_get::<DateTime<Utc>, _>(col)?)); }
+                "schema_version" => { event.insert(col.to_string(), json!(row.try_get::<i32, _>(col)?)); }
+                "anonymized" => { event.insert(col.to_string(), json!(row.try_get::<bool, _>(col)?)); }
                 _ => {}
             }
         }
@@ -326,7 +315,7 @@ async fn build_health_response(state: &AppState) -> (StatusCode, Value) {
     path = "/health",
     tag = "system",
     responses(
-        (status = 200, description = "Service is healthy", body = serde_json::Value),
+        (status = 200, description = "Service is healthy"),
         (status = 503, description = "Service is degraded", body = ErrorResponse),
     )
 )]
@@ -340,7 +329,7 @@ pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Value>) 
     path = "/healthz/live",
     tag = "system",
     responses(
-        (status = 200, description = "Process is alive", body = serde_json::Value),
+        (status = 200, description = "Process is alive"),
     )
 )]
 pub async fn health_live() -> (StatusCode, Json<Value>) {
@@ -352,7 +341,7 @@ pub async fn health_live() -> (StatusCode, Json<Value>) {
     path = "/healthz/ready",
     tag = "system",
     responses(
-        (status = 200, description = "Service is ready", body = serde_json::Value),
+        (status = 200, description = "Service is ready"),
         (status = 503, description = "Service is not ready", body = ErrorResponse),
     )
 )]
@@ -363,10 +352,10 @@ pub async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Va
 
 #[utoipa::path(
     get,
-    path = "/v1/status",
+    path = "/status",
     tag = "system",
     responses(
-        (status = 200, description = "Indexer operational status", body = serde_json::Value),
+        (status = 200, description = "Indexer operational status"),
     )
 )]
 pub async fn status(State(state): State<AppState>) -> Json<Value> {
@@ -446,25 +435,6 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
 pub async fn get_event_stats(State(state): State<AppState>) -> Result<impl IntoResponse, AppError> {
     use std::collections::HashMap;
 
-    let cache_key = "stats";
-
-    // Try to get from cache
-    if let Some(cached) = state.stats_cache.get(cache_key).await {
-        crate::metrics::record_stats_cache_hit();
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::CACHE_CONTROL,
-            axum::http::HeaderValue::from_str(&format!(
-                "public, max-age={}",
-                state.config.stats_cache_ttl_secs
-            ))
-            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("public, max-age=30")),
-        );
-        return Ok((headers, Json(cached)));
-    }
-
-    crate::metrics::record_stats_cache_miss();
-
     // Total events and ledger range from raw table (fast with index)
     let totals_row = sqlx::query(
         "SELECT COUNT(*) AS total_events, MIN(ledger) AS min_ledger, MAX(ledger) AS max_ledger FROM events",
@@ -517,12 +487,10 @@ pub async fn get_event_stats(State(state): State<AppState>) -> Result<impl IntoR
 
     let top_contracts = top_rows
         .into_iter()
-        .map(
-            |(contract_id, event_count)| crate::models::ContractStatEntry {
-                contract_id,
-                event_count,
-            },
-        )
+        .map(|(contract_id, event_count)| crate::models::ContractStatEntry {
+            contract_id,
+            event_count,
+        })
         .collect();
 
     let stats = crate::models::EventStats {
@@ -536,25 +504,13 @@ pub async fn get_event_stats(State(state): State<AppState>) -> Result<impl IntoR
         computed_at: Utc::now(),
     };
 
-    let stats_json = serde_json::to_value(&stats)?;
-
-    // Store in cache
-    state
-        .stats_cache
-        .insert(cache_key.to_string(), stats_json.clone())
-        .await;
-
     let mut headers = HeaderMap::new();
     headers.insert(
         axum::http::header::CACHE_CONTROL,
-        axum::http::HeaderValue::from_str(&format!(
-            "public, max-age={}",
-            state.config.stats_cache_ttl_secs
-        ))
-        .unwrap_or_else(|_| axum::http::HeaderValue::from_static("public, max-age=30")),
+        axum::http::HeaderValue::from_static("public, max-age=60"),
     );
 
-    Ok((headers, Json(stats_json)))
+    Ok((headers, Json(stats)))
 }
 
 pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
@@ -606,11 +562,8 @@ pub async fn stream_events(
     State(state): State<AppState>,
     Query(params): Query<StreamParams>,
     headers: axum::http::HeaderMap,
-    extensions: axum::http::Extensions,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
-    let tenant_id = extract_tenant_id(&extensions).map(|s| s.to_owned());
-    stream_events_internal(State(state), params.contract_id, params.fields, headers, tenant_id)
-        .await
+    stream_events_internal(State(state), params.contract_id, params.fields, headers).await
 }
 
 /// Stream new events for a specific contract in real time via Server-Sent Events.
@@ -635,15 +588,12 @@ pub async fn stream_events_by_contract(
     Path(contract_id): Path<String>,
     Query(params): Query<StreamParams>,
     headers: axum::http::HeaderMap,
-    extensions: axum::http::Extensions,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
     validate_contract_id(&contract_id).map_err(|e| {
         let (status, body) = e.into_response_parts();
         (status, body)
     })?;
-    let tenant_id = extract_tenant_id(&extensions).map(|s| s.to_owned());
-    stream_events_internal(State(state), Some(contract_id), params.fields, headers, tenant_id)
-        .await
+    stream_events_internal(State(state), Some(contract_id), params.fields, headers).await
 }
 
 /// Stream events for multiple contracts simultaneously via Server-Sent Events.
@@ -666,9 +616,7 @@ pub async fn stream_events_multi(
     State(state): State<AppState>,
     Query(params): Query<crate::models::MultiStreamParams>,
     headers: axum::http::HeaderMap,
-    extensions: axum::http::Extensions,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
-    let tenant_id = extract_tenant_id(&extensions).map(|s| s.to_owned());
     let raw = params.contract_ids.unwrap_or_default();
     if raw.trim().is_empty() {
         return Err((
@@ -678,22 +626,6 @@ pub async fn stream_events_multi(
     }
 
     let ids: Vec<String> = raw.split(',').map(|s| s.trim().to_string()).collect();
-
-    // Validate number of contract IDs does not exceed limit
-    if ids.len() > state.config.sse_multi_max_contract_ids {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": format!("too many contract IDs (max {})", state.config.sse_multi_max_contract_ids),
-                "code": "VALIDATION_ERROR",
-                "limit": state.config.sse_multi_max_contract_ids,
-                "provided": ids.len(),
-            })),
-        ));
-    }
-
-    // Record histogram metric for contract IDs per connection
-    crate::metrics::record_sse_multi_contract_ids(ids.len() as u64);
 
     // Validate every ID; collect all invalid ones for a helpful error message.
     let invalid: Vec<String> = ids
@@ -742,31 +674,21 @@ pub async fn stream_events_multi(
         .and_then(|s| uuid::Uuid::parse_str(s).ok());
 
     let replay: Vec<crate::models::Event> = if let Some(last_id) = last_event_id {
-        let base_offset = 2usize;
         let placeholders: String = ids
             .iter()
             .enumerate()
-            .map(|(i, _)| format!("${}", base_offset + i))
+            .map(|(i, _)| format!("${}", i + 2))
             .collect::<Vec<_>>()
             .join(", ");
-        let tid = tenant_id.as_deref();
-        let tenant_clause = if tid.is_some() {
-            format!(" AND tenant_id = ${}", base_offset + ids.len())
-        } else {
-            String::new()
-        };
         let sql = format!(
             "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at, 0::bigint AS total_count \
              FROM events WHERE created_at > (SELECT created_at FROM events WHERE id = $1) \
-             AND contract_id IN ({}){} ORDER BY created_at ASC",
-            placeholders, tenant_clause
+             AND contract_id IN ({}) ORDER BY created_at ASC",
+            placeholders
         );
         let mut q = sqlx::query_as::<_, crate::models::Event>(&sql).bind(last_id);
         for id in &ids {
             q = q.bind(id);
-        }
-        if let Some(tid) = tid {
-            q = q.bind(tid);
         }
         q.fetch_all(&state.pool).await.unwrap_or_default()
     } else {
@@ -787,8 +709,8 @@ pub async fn stream_events_multi(
     }));
 
     let live_stream = futures::stream::unfold(
-        (rx, ids, keepalive_ms, tenant_id, false),
-        move |(mut rx, filter_ids, ka, tid, closed)| async move {
+        (rx, ids, keepalive_ms, false),
+        move |(mut rx, filter_ids, ka, closed)| async move {
             if closed {
                 return None;
             }
@@ -802,28 +724,23 @@ pub async fn stream_events_multi(
                             if !filter_ids.contains(&event.contract_id) {
                                 continue;
                             }
-                            if let Some(ref tenant) = tid {
-                                if event.tenant_id.as_deref() != Some(tenant.as_str()) {
-                                    continue;
-                                }
-                            }
                             let data = serde_json::to_string(&event).unwrap_or_default();
                             let sse = Event::default()
                                 .id(format!("{}-{}", event.tx_hash, event.ledger))
                                 .retry(Duration::from_millis(ka))
                                 .data(data);
-                            return Some((Ok(sse), (rx, filter_ids, ka, tid, false)));
+                            return Some((Ok(sse), (rx, filter_ids, ka, false)));
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             let close_event = Event::default().event("close").data("stream closed");
-                            return Some((Ok(close_event), (rx, filter_ids, ka, tid, true)));
+                            return Some((Ok(close_event), (rx, filter_ids, ka, true)));
                         }
                     },
                     _ = interval.tick() => {
                         let ts = chrono::Utc::now().to_rfc3339();
                         let ping = Event::default().event("ping").data(ts);
-                        return Some((Ok(ping), (rx, filter_ids, ka, tid, false)));
+                        return Some((Ok(ping), (rx, filter_ids, ka, false)));
                     }
                 }
             }
@@ -929,7 +846,6 @@ async fn stream_events_internal(
     contract_filter: Option<String>,
     fields: Option<String>,
     headers: axum::http::HeaderMap,
-    tenant_id: Option<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
     // Check if we've reached the max SSE connections limit
     let current_connections = state
@@ -999,21 +915,19 @@ async fn stream_events_internal(
             sqlx::query_as::<_, crate::models::Event>(
                 "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, event_data_normalized, created_at, schema_version, 0::bigint AS total_count \
                  FROM events WHERE created_at > (SELECT created_at FROM events WHERE id = $1) \
-                 AND contract_id = $2 ORDER BY created_at ASC LIMIT $3",
+                 AND contract_id = $2 ORDER BY created_at ASC",
             )
             .bind(last_id)
             .bind(cid)
-            .bind(state.sse_replay_limit as i64)
             .fetch_all(&state.pool)
             .await
         } else {
             sqlx::query_as::<_, crate::models::Event>(
                 "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, event_data_normalized, created_at, schema_version, 0::bigint AS total_count \
                  FROM events WHERE created_at > (SELECT created_at FROM events WHERE id = $1) \
-                 ORDER BY created_at ASC LIMIT $2",
+                 ORDER BY created_at ASC",
             )
             .bind(last_id)
-            .bind(state.sse_replay_limit as i64)
             .fetch_all(&state.pool)
             .await
         };
@@ -1053,11 +967,9 @@ async fn stream_events_internal(
             field_columns,
             enc_key,
             enc_key_old,
-            tenant_id,
             false, // closed
-            state.shutdown_rx.clone(),
         ),
-        move |(mut rx, filter, ka, cols, ek, ek_old, tid, closed, mut shutdown_rx)| async move {
+        move |(mut rx, filter, ka, cols, ek, ek_old, closed)| async move {
             if closed {
                 return None;
             }
@@ -1073,34 +985,23 @@ async fn stream_events_internal(
                                     continue;
                                 }
                             }
-                            // Tenant isolation: drop events belonging to other tenants.
-                            if let Some(ref tenant) = tid {
-                                if event.tenant_id.as_deref() != Some(tenant.as_str()) {
-                                    continue;
-                                }
-                            }
                             let data = serde_json::to_string(&event).unwrap_or_default();
                             let sse = Event::default()
-                                .id(event.id.to_string())
+                                .id(format!("{}-{}", event.tx_hash, event.ledger))
                                 .retry(Duration::from_millis(ka))
                                 .data(data);
-                            return Some((Ok(sse), (rx, filter, ka, cols, ek, ek_old, tid, false, shutdown_rx)));
+                            return Some((Ok(sse), (rx, filter, ka, cols, ek, ek_old, false)));
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             let close_event = Event::default().event("close").data("stream closed");
-                            return Some((Ok(close_event), (rx, filter, ka, cols, ek, ek_old, tid, true, shutdown_rx)));
+                            return Some((Ok(close_event), (rx, filter, ka, cols, ek, ek_old, true)));
                         }
                     },
                     _ = interval.tick() => {
                         let ts = chrono::Utc::now().to_rfc3339();
                         let ping = Event::default().event("ping").data(ts);
-                        return Some((Ok(ping), (rx, filter, ka, cols, ek, ek_old, tid, false, shutdown_rx)));
-                    }
-                    _ = shutdown_rx.changed() => {
-                        // Server is shutting down, emit close event
-                        let close_event = Event::default().event("close").data("server shutting down");
-                        return Some((Ok(close_event), (rx, filter, ka, cols, ek, ek_old, tid, true, shutdown_rx)));
+                        return Some((Ok(ping), (rx, filter, ka, cols, ek, ek_old, false)));
                     }
                 }
             }
@@ -1172,27 +1073,13 @@ fn filter_fields(
                 let decrypted = decrypt_event_data(&event.event_data, enc_key, enc_key_old);
                 map.insert(col.to_string(), decrypted);
             }
-            "event_data_normalized" => {
-                map.insert(col.to_string(), json!(event.event_data_normalized));
-            }
-            "event_data_decoded" => {
-                map.insert(col.to_string(), json!(event.event_data_decoded));
-            }
-            "ledger_hash" => {
-                map.insert(col.to_string(), json!(event.ledger_hash));
-            }
-            "in_successful_call" => {
-                map.insert(col.to_string(), json!(event.in_successful_call));
-            }
-            "created_at" => {
-                map.insert(col.to_string(), json!(event.created_at));
-            }
-            "schema_version" => {
-                map.insert(col.to_string(), json!(event.schema_version));
-            }
-            "anonymized" => {
-                map.insert(col.to_string(), json!(event.anonymized));
-            }
+            "event_data_normalized" => { map.insert(col.to_string(), json!(event.event_data_normalized)); }
+            "event_data_decoded"    => { map.insert(col.to_string(), json!(event.event_data_decoded)); }
+            "ledger_hash"           => { map.insert(col.to_string(), json!(event.ledger_hash)); }
+            "in_successful_call"    => { map.insert(col.to_string(), json!(event.in_successful_call)); }
+            "created_at"  => { map.insert(col.to_string(), json!(event.created_at)); }
+            "schema_version" => { map.insert(col.to_string(), json!(event.schema_version)); }
+            "anonymized"     => { map.insert(col.to_string(), json!(event.anonymized)); }
             _ => {}
         }
     }
@@ -1304,69 +1191,39 @@ pub async fn get_events(
         validate_contract_id(cid)?;
     }
 
-    // Parse and validate contract_ids if provided
-    let contract_ids_list: Vec<String> = if let Some(ref cids) = params.contract_ids {
-        let ids: Vec<&str> = cids.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
-        
-        if ids.is_empty() {
-            return Err(AppError::Validation(
-                "contract_ids parameter is empty".to_string(),
-            ));
-        }
-        
-        if ids.len() > PaginationParams::MAX_CONTRACT_IDS_FILTER {
-            return Err(AppError::Validation(
-                format!(
-                    "contract_ids exceeds maximum of {} IDs",
-                    PaginationParams::MAX_CONTRACT_IDS_FILTER
-                ),
-            ));
-        }
-        
-        for id in &ids {
-            validate_contract_id(id)?;
-        }
-        
-        ids.iter().map(|s| s.to_string()).collect()
-    } else {
-        Vec::new()
-    };
-
     let limit = params.limit();
     let columns = resolve_columns(&params)?;
-    let sort_order = params.sort.unwrap_or(crate::models::SortOrder::Desc);
+    let sort_order = params
+        .sort
+        .unwrap_or(crate::models::SortOrder::Desc);
     let dir = sort_order.as_sql();
-    let sort_by = params.sort_by.unwrap_or(crate::models::SortBy::Ledger);
+    let sort_by = params
+        .sort_by
+        .unwrap_or(crate::models::SortBy::Ledger);
     let sort_col = sort_by.as_sql_col();
 
     // Cursor-based path
     if let Some(ref cursor_str) = params.cursor {
         let (cursor_tag, cursor_val_text, cursor_id) = decode_cursor_tagged(cursor_str)?;
         if cursor_tag != sort_by.as_tag() {
-            return Err(crate::error::AppError::Validation(
+            return Err(AppError::Validation(
                 "cursor sort column does not match sort_by".to_string(),
             ));
         }
 
+        // For DESC (default): rows where (sort_col, id) < cursor
+        // For ASC: rows where (sort_col, id) > cursor
         let cursor_op = if sort_order == crate::models::SortOrder::Asc {
             ">"
         } else {
             "<"
         };
 
-        let mut conditions: Vec<String> = vec![format!(
-            "({col}, id) {op} ($1, $2)",
-            col = sort_col,
-            op = cursor_op
-        )];
+        let mut conditions: Vec<String> = vec![format!("({col}, id) {op} ($1, $2)", col = sort_col, op = cursor_op)];
         let mut bind_idx: i32 = 3;
 
         if params.contract_id.is_some() {
             conditions.push(format!("contract_id = ${bind_idx}"));
-            bind_idx += 1;
-        }
-        if !contract_ids_list.is_empty() {
-            conditions.push(format!("contract_id = ANY(${bind_idx}::text[])"));
             bind_idx += 1;
         }
         if params.event_type.is_some() {
@@ -1389,14 +1246,8 @@ pub async fn get_events(
             conditions.push(format!("topic_0_sym = ${bind_idx}"));
             bind_idx += 1;
         }
-        if topic_filter.is_some() {
-            conditions.push(format!("event_data->'topic' @> ${bind_idx}::jsonb"));
-            bind_idx += 1;
-        }
         if params.search.is_some() {
-            conditions.push(format!(
-                "event_data_tsv @@ plainto_tsquery('english', ${bind_idx})"
-            ));
+            conditions.push(format!("event_data_tsv @@ plainto_tsquery('english', ${bind_idx})"));
             bind_idx += 1;
         }
         if from_ts.is_some() {
@@ -1418,51 +1269,39 @@ pub async fn get_events(
         if !select_cols.contains(&"id") {
             select_cols.push("id");
         }
+        // Always fetch created_at for ETag computation
         if !select_cols.contains(&"created_at") {
             select_cols.push("created_at");
         }
 
-        // Defence-in-depth: re-validate each column before SQL interpolation
-        for col in &select_cols {
-            if !models::PaginationParams::validate_column_name(col) {
-                return Err(AppError::Validation(format!(
-                    "invalid column name: {}",
-                    col
-                )));
-            }
-        }
+        // Bind the cursor value according to the requested sort column.
+        let mut q = sqlx::query(&{
+            format!(
+                "SELECT {} FROM events {} ORDER BY {col} {dir}, id {dir} LIMIT ${}",
+                select_cols.join(", "),
+                where_clause,
+                col = sort_col,
+                dir = dir,
+                bind_idx
+            )
+        });
 
-        let query_str = format!(
-            "SELECT {} FROM events {} ORDER BY {col} {dir}, id {dir} LIMIT ${}",
-            select_cols.join(", "),
-            where_clause,
-            col = sort_col,
-            dir = dir,
-            bind_idx,
-        );
-
-        let mut q = sqlx::query(&query_str);
         match sort_by {
             crate::models::SortBy::Ledger => {
                 let val = cursor_val_text.parse::<i64>().map_err(|_| {
-                    crate::error::AppError::Validation("invalid ledger cursor".to_string())
+                    AppError::Validation("invalid cursor for ledger sort".to_string())
                 })?;
                 q = q.bind(val).bind(cursor_id);
             }
             crate::models::SortBy::Timestamp | crate::models::SortBy::CreatedAt => {
                 let ts = cursor_val_text
-                    .parse::<chrono::DateTime<chrono::Utc>>()
-                    .map_err(|_| {
-                        crate::error::AppError::Validation("invalid timestamp cursor".to_string())
-                    })?;
+                    .parse::<DateTime<Utc>>()
+                    .map_err(|_| AppError::Validation("invalid cursor timestamp".to_string()))?;
                 q = q.bind(ts).bind(cursor_id);
             }
         }
         if let Some(ref cid) = params.contract_id {
             q = q.bind(cid);
-        }
-        if !contract_ids_list.is_empty() {
-            q = q.bind(&contract_ids_list);
         }
         if let Some(ref et) = params.event_type {
             q = q.bind(et);
@@ -1478,9 +1317,6 @@ pub async fn get_events(
         }
         if let Some(ref ts) = params.topic_sym {
             q = q.bind(ts);
-        }
-        if let Some(ref tf) = topic_filter {
-            q = q.bind(tf.to_string());
         }
         if let Some(ref search) = params.search {
             q = q.bind(search);
@@ -1501,26 +1337,22 @@ pub async fn get_events(
         let has_more = rows.len() as i64 == limit;
         let next_cursor = if has_more {
             let last = rows.last().unwrap();
-            let last_id: uuid::Uuid = last.try_get("id")?;
+            let last_id: Uuid = last.try_get("id")?;
             let last_val_text = match sort_by {
                 crate::models::SortBy::Ledger => {
                     let v: i64 = last.try_get("ledger")?;
                     v.to_string()
                 }
                 crate::models::SortBy::Timestamp => {
-                    let v: chrono::DateTime<chrono::Utc> = last.try_get("timestamp")?;
+                    let v: DateTime<Utc> = last.try_get("timestamp")?;
                     v.to_rfc3339()
                 }
                 crate::models::SortBy::CreatedAt => {
-                    let v: chrono::DateTime<chrono::Utc> = last.try_get("created_at")?;
+                    let v: DateTime<Utc> = last.try_get("created_at")?;
                     v.to_rfc3339()
                 }
             };
-            Some(encode_cursor_tagged(
-                sort_by.as_tag(),
-                &last_val_text,
-                last_id,
-            ))
+            Some(encode_cursor_tagged(sort_by.as_tag(), &last_val_text, last_id))
         } else {
             None
         };
@@ -1561,8 +1393,7 @@ pub async fn get_events(
             let mut resp = ndjson_response(events.into_iter()).into_response();
             if let Some(ref tag) = etag {
                 resp.headers_mut().insert("ETag", tag.parse().unwrap());
-                resp.headers_mut()
-                    .insert("Cache-Control", "no-cache".parse().unwrap());
+                resp.headers_mut().insert("Cache-Control", "no-cache".parse().unwrap());
             }
             return Ok(resp);
         }
@@ -1575,8 +1406,7 @@ pub async fn get_events(
         }));
         if let Some(ref tag) = etag {
             resp.headers_mut().insert("ETag", tag.parse().unwrap());
-            resp.headers_mut()
-                .insert("Cache-Control", "no-cache".parse().unwrap());
+            resp.headers_mut().insert("Cache-Control", "no-cache".parse().unwrap());
         }
         if compact_mode {
             resp.headers_mut().insert(
@@ -1596,10 +1426,6 @@ pub async fn get_events(
 
     if params.contract_id.is_some() {
         conditions.push(format!("contract_id = ${bind_idx}"));
-        bind_idx += 1;
-    }
-    if !contract_ids_list.is_empty() {
-        conditions.push(format!("contract_id = ANY(${bind_idx}::text[])"));
         bind_idx += 1;
     }
     if params.event_type.is_some() {
@@ -1622,14 +1448,8 @@ pub async fn get_events(
         conditions.push(format!("topic_0_sym = ${bind_idx}"));
         bind_idx += 1;
     }
-    if topic_filter.is_some() {
-        conditions.push(format!("event_data->'topic' @> ${bind_idx}::jsonb"));
-        bind_idx += 1;
-    }
     if params.search.is_some() {
-        conditions.push(format!(
-            "event_data_tsv @@ plainto_tsquery('english', ${bind_idx})"
-        ));
+        conditions.push(format!("event_data_tsv @@ plainto_tsquery('english', ${bind_idx})"));
         bind_idx += 1;
     }
     if from_ts.is_some() {
@@ -1660,16 +1480,6 @@ pub async fn get_events(
         select_cols.push("created_at");
     }
 
-    // Defence-in-depth: re-validate each column before SQL interpolation
-    for col in &select_cols {
-        if !models::PaginationParams::validate_column_name(col) {
-            return Err(AppError::Validation(format!(
-                "invalid column name: {}",
-                col
-            )));
-        }
-    }
-
     let query_str = format!(
         "SELECT {} FROM events {} ORDER BY {col} {dir}, id {dir} LIMIT ${} OFFSET ${}",
         select_cols.join(", "),
@@ -1683,9 +1493,6 @@ pub async fn get_events(
     let mut q = sqlx::query(&query_str);
     if let Some(ref cid) = params.contract_id {
         q = q.bind(cid);
-    }
-    if !contract_ids_list.is_empty() {
-        q = q.bind(&contract_ids_list);
     }
     if let Some(ref et) = params.event_type {
         q = q.bind(et);
@@ -1701,9 +1508,6 @@ pub async fn get_events(
     }
     if let Some(ref ts) = params.topic_sym {
         q = q.bind(ts);
-    }
-    if let Some(ref tf) = topic_filter {
-        q = q.bind(tf.to_string());
     }
     if let Some(ref search) = params.search {
         q = q.bind(search);
@@ -1724,26 +1528,22 @@ pub async fn get_events(
     let has_more = rows.len() as i64 == limit;
     let next_cursor = if has_more {
         let last = rows.last().unwrap();
-        let last_id: uuid::Uuid = last.try_get("id")?;
+        let last_id: Uuid = last.try_get("id")?;
         let last_val_text = match sort_by {
             crate::models::SortBy::Ledger => {
                 let v: i64 = last.try_get("ledger")?;
                 v.to_string()
             }
             crate::models::SortBy::Timestamp => {
-                let v: chrono::DateTime<chrono::Utc> = last.try_get("timestamp")?;
+                let v: DateTime<Utc> = last.try_get("timestamp")?;
                 v.to_rfc3339()
             }
             crate::models::SortBy::CreatedAt => {
-                let v: chrono::DateTime<chrono::Utc> = last.try_get("created_at")?;
+                let v: DateTime<Utc> = last.try_get("created_at")?;
                 v.to_rfc3339()
             }
         };
-        Some(encode_cursor_tagged(
-            sort_by.as_tag(),
-            &last_val_text,
-            last_id,
-        ))
+        Some(encode_cursor_tagged(sort_by.as_tag(), &last_val_text, last_id))
     } else {
         None
     };
@@ -1777,9 +1577,6 @@ pub async fn get_events(
         if let Some(ref ts) = params.topic_sym {
             cq = cq.bind(ts);
         }
-        if let Some(ref tf) = topic_filter {
-            cq = cq.bind(tf.to_string());
-        }
         if let Some(ref search) = params.search {
             cq = cq.bind(search);
         }
@@ -1798,11 +1595,12 @@ pub async fn get_events(
         // In multi-tenant mode we can't use the pg_class estimate (it's for the whole table).
         // Fall back to an exact count scoped to the tenant.
         if tenant_id.is_some() {
-            let count =
-                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM events WHERE tenant_id = $1")
-                    .bind(tenant_id)
-                    .fetch_one(&state.read_pool)
-                    .await?;
+            let count = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM events WHERE tenant_id = $1",
+            )
+            .bind(tenant_id)
+            .fetch_one(&state.read_pool)
+            .await?;
             (count, false)
         } else {
             let count = sqlx::query_scalar::<_, i64>(
@@ -1847,30 +1645,6 @@ pub async fn get_events(
         "pagination": "offset — migrate to cursor parameter for better performance",
     });
 
-    let mut body_obj = body.as_object().unwrap().clone();
-    
-    // Add approximation metadata when using approximate count
-    if approximate {
-        // Get stats age and dead tuple ratio
-        let stats_info: (Option<chrono::DateTime<chrono::Utc>>, Option<f64>) = sqlx::query_as(
-            "SELECT last_analyze, CASE WHEN n_live_tup > 0 THEN (n_dead_tup::float / n_live_tup) * 100 ELSE 0 END \
-             FROM pg_stat_user_tables WHERE relname = 'events'"
-        )
-        .fetch_optional(&state.read_pool)
-        .await
-        .unwrap_or(None)
-        .map(|(last_analyze, error_pct)| (last_analyze, error_pct))
-        .unwrap_or((None, None));
-        
-        if let Some(error_pct) = stats_info.1 {
-            body_obj.insert("approximate_error_pct".to_string(), json!(error_pct.min(100.0)));
-        }
-        if let Some(last_analyze) = stats_info.0 {
-            body_obj.insert("last_analyzed".to_string(), json!(last_analyze.to_rfc3339()));
-        }
-    }
-
-    let body = serde_json::Value::Object(body_obj);
     let mut response = Json(body).into_response();
     if let Some(ref tag) = etag {
         response.headers_mut().insert("ETag", tag.parse().unwrap());
@@ -1981,28 +1755,6 @@ pub async fn export_events(
 
     let rows = q.fetch_all(&state.pool).await?;
 
-    // Get total count of available rows (for Content-Range header)
-    let total_count: i64 = {
-        let count_str = format!("SELECT COUNT(*) FROM events {}", where_clause);
-        let mut cq = sqlx::query_scalar::<_, i64>(&count_str);
-        if let Some(ref cid) = params.contract_id {
-            cq = cq.bind(cid);
-        }
-        if let Some(ref et) = params.event_type {
-            cq = cq.bind(et);
-        }
-        if let Some(fl) = params.from_ledger {
-            cq = cq.bind(fl);
-        }
-        if let Some(tl) = params.to_ledger {
-            cq = cq.bind(tl);
-        }
-        cq.fetch_one(&state.pool).await?
-    };
-
-    let returned_count = rows.len() as i64;
-    let content_range = format!("items 0-{}/{}", returned_count.saturating_sub(1), total_count);
-
     #[cfg(feature = "parquet")]
     if want_parquet {
         use crate::parquet_export::{write_events_parquet, EventRow};
@@ -2022,8 +1774,8 @@ pub async fn export_events(
             })
             .collect::<Result<_, _>>()?;
 
-        let bytes =
-            write_events_parquet(&event_rows).map_err(|e| AppError::Internal(e.to_string()))?;
+        let bytes = write_events_parquet(&event_rows)
+            .map_err(|e| AppError::Internal(e.to_string()))?;
 
         return Ok(Response::builder()
             .status(StatusCode::OK)
@@ -2032,7 +1784,6 @@ pub async fn export_events(
                 header::CONTENT_DISPOSITION,
                 "attachment; filename=\"events.parquet\"",
             )
-            .header("Content-Range", content_range)
             .body(Body::from(bytes))
             .unwrap());
     }
@@ -2062,7 +1813,6 @@ pub async fn export_events(
             header::CONTENT_DISPOSITION,
             "attachment; filename=\"events.csv\"",
         )
-        .header("Content-Range", content_range)
         .body(Body::from(csv))
         .unwrap())
 }
@@ -2168,26 +1918,34 @@ pub async fn get_recent_events(
         ("contract_id" = String, Path, description = "Stellar contract ID (56-char, starts with C)"),
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
         ("limit" = Option<i64>, Query, description = "Results per page, 1–100 (default: 20)"),
+        ("cursor" = Option<String>, Query, description = "Opaque cursor for keyset pagination (returned as next_cursor)"),
         ("exact_count" = Option<bool>, Query, description = "Use exact COUNT(*) instead of approximate (default: false)"),
         ("from_ledger" = Option<i64>, Query, description = "Return events at or after this ledger"),
         ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
         ("sort" = Option<String>, Query, description = "Sort order: asc (oldest first) or desc (newest first, default)"),
+        ("sort_by" = Option<crate::models::SortBy>, Query, description = "Sort column: ledger (default), timestamp, or created_at"),
     ),
     responses(
         (status = 200, description = "Events for the given contract"),
         (status = 400, description = "Invalid contract_id format or ledger range", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
-        (status = 404, description = "No events found for contract", body = ErrorResponse),
         (status = 429, description = "Too many requests", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
 pub async fn get_events_by_contract(
-    State(state): State<AppState>,
-    Path(contract_id): Path<String>,
-    Query(params): Query<PaginationParams>,
-    extensions: axum::http::Extensions,
-) -> Result<Json<Value>, AppError> {
+    State(state,
+    headers: axum::http::HeaderMap,
+): State<AppState>,
+    Path(contract_id,
+    headers: axum::http::HeaderMap,
+): Path<String>,
+    Query(params,
+    headers: axum::http::HeaderMap,
+): Query<PaginationParams>,
+,
+    headers: axum::http::HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
     validate_contract_id(&contract_id)?;
 
     if let (Some(from), Some(to)) = (params.from_ledger, params.to_ledger) {
@@ -2198,17 +1956,138 @@ pub async fn get_events_by_contract(
         }
     }
 
-    let tenant_id = extract_tenant_id(&extensions).map(|s| s.to_owned());
-    let tenant_id = tenant_id.as_deref();
+    let sort_order = params
+        .sort
+        .unwrap_or(crate::models::SortOrder::Desc);
+    let dir = sort_order.as_sql();
+    let sort_by = params
+        .sort_by
+        .unwrap_or(crate::models::SortBy::Ledger);
+    let sort_col = sort_by.as_sql_col();
 
+    // Cursor-based path
+    if let Some(ref cursor_str) = params.cursor {
+        let (cursor_tag, cursor_val_text, cursor_id) = decode_cursor_tagged(cursor_str)?;
+        if cursor_tag != sort_by.as_tag() {
+            return Err(AppError::Validation(
+                "cursor sort column does not match sort_by".to_string(),
+            ));
+        }
+
+        let cursor_op = if sort_order == crate::models::SortOrder::Asc {
+            ">"
+        } else {
+            "<"
+        };
+
+        let mut conditions: Vec<String> = vec![
+            "contract_id = $1".to_string(),
+            format!("({col}, id) {op} ($2, $3)", col = sort_col, op = cursor_op),
+        ];
+        let mut bind_idx: i32 = 4;
+
+        if params.from_ledger.is_some() {
+            conditions.push(format!("ledger >= ${bind_idx}"));
+            bind_idx += 1;
+        }
+        if params.to_ledger.is_some() {
+            conditions.push(format!("ledger <= ${bind_idx}"));
+            bind_idx += 1;
+        }
+
+        let where_clause = format!("WHERE {}", conditions.join(" AND "));
+        let mut select_cols: Vec<&str> = vec!["id", "contract_id", "event_type", "tx_hash", sort_col, "timestamp", "event_data", "created_at"];
+        select_cols.sort_unstable();
+        select_cols.dedup();
+
+        let mut q = sqlx::query(&format!(
+            "SELECT {} FROM events {} ORDER BY {col} {dir}, id {dir} LIMIT ${}",
+            select_cols.join(", "),
+            where_clause,
+            col = sort_col,
+            dir = dir,
+            bind_idx
+        )).bind(&contract_id);
+
+        match sort_by {
+            crate::models::SortBy::Ledger => {
+                let val = cursor_val_text.parse::<i64>().map_err(|_| {
+                    AppError::Validation("invalid cursor for ledger sort".to_string())
+                })?;
+                q = q.bind(val).bind(cursor_id);
+            }
+            crate::models::SortBy::Timestamp | crate::models::SortBy::CreatedAt => {
+                let ts = cursor_val_text
+                    .parse::<DateTime<Utc>>()
+                    .map_err(|_| AppError::Validation("invalid cursor timestamp".to_string()))?;
+                q = q.bind(ts).bind(cursor_id);
+            }
+        }
+
+        if let Some(fl) = params.from_ledger {
+            q = q.bind(fl);
+        }
+        if let Some(tl) = params.to_ledger {
+            q = q.bind(tl);
+        }
+        q = q.bind(params.limit());
+
+        let rows = q.fetch_all(&state.read_pool).await?;
+        let limit = params.limit();
+        let has_more = rows.len() as i64 == limit;
+        let next_cursor = if has_more {
+            let last = rows.last().unwrap();
+            let last_id: Uuid = last.try_get("id")?;
+            let last_val_text = match sort_by {
+                crate::models::SortBy::Ledger => {
+                    let v: i64 = last.try_get("ledger")?;
+                    v.to_string()
+                }
+                crate::models::SortBy::Timestamp => {
+                    let v: DateTime<Utc> = last.try_get("timestamp")?;
+                    v.to_rfc3339()
+                }
+                crate::models::SortBy::CreatedAt => {
+                    let v: DateTime<Utc> = last.try_get("created_at")?;
+                    v.to_rfc3339()
+                }
+            };
+            Some(encode_cursor_tagged(sort_by.as_tag(), &last_val_text, last_id))
+        } else {
+            None
+        };
+
+        let columns = resolve_columns(&params)?;
+        let events = rows_to_json(
+            &rows,
+            &columns,
+            state.encryption_key.as_ref(),
+            state.encryption_key_old.as_ref(),
+            params.compact.unwrap_or(false),
+        )?;
+
+        let mut response = json!({
+            "data": events,
+            "contract_id": contract_id,
+            "next_cursor": next_cursor,
+            "limit": limit,
+        });
+
+        if let Some(fl) = params.from_ledger {
+            response["from_ledger"] = json!(fl);
+        }
+        if let Some(tl) = params.to_ledger {
+            response["to_ledger"] = json!(tl);
+        }
+
+        return Ok(Json(response));
+    }
+
+    // Offset-based path (deprecated fallback)
     let limit = params.limit();
     let offset = params.offset();
     let exact = params.exact_count.unwrap_or(false);
     let columns = resolve_columns(&params)?;
-    let dir = params
-        .sort
-        .unwrap_or(crate::models::SortOrder::Desc)
-        .as_sql();
 
     let mut conditions: Vec<String> = vec!["contract_id = $1".to_string()];
     let mut bind_idx: i32 = 2;
@@ -2221,47 +2100,65 @@ pub async fn get_events_by_contract(
         conditions.push(format!("ledger <= ${bind_idx}"));
         bind_idx += 1;
     }
-    maybe_add_tenant_condition(&mut conditions, &mut bind_idx, tenant_id);
 
     let where_clause = format!("WHERE {}", conditions.join(" AND "));
+    let mut select_cols: Vec<&str> = vec!["id", "contract_id", "event_type", "tx_hash", sort_col, "timestamp", "event_data", "created_at"];
+    select_cols.sort_unstable();
+    select_cols.dedup();
+
     let query_str = format!(
-        "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at, 0::bigint AS total_count \
-         FROM events {} ORDER BY ledger {dir} LIMIT ${} OFFSET ${}",
-        where_clause, bind_idx, bind_idx + 1,
+        "SELECT {} FROM events {} ORDER BY {col} {dir}, id {dir} LIMIT ${} OFFSET ${}",
+        select_cols.join(", "),
+        where_clause,
+        col = sort_col,
+        dir = dir,
+        bind_idx, bind_idx + 1,
     );
 
-    let mut q = sqlx::query_as::<_, models::Event>(&query_str).bind(&contract_id);
+    let mut q = sqlx::query(&query_str).bind(&contract_id);
     if let Some(fl) = params.from_ledger {
         q = q.bind(fl);
     }
     if let Some(tl) = params.to_ledger {
         q = q.bind(tl);
     }
-    if let Some(tid) = tenant_id {
-        q = q.bind(tid);
-    }
     q = q.bind(limit).bind(offset);
 
     let rows = q.fetch_all(&state.read_pool).await?;
 
-    if rows.is_empty() {
-        return Err(AppError::NotFound);
-    }
+    let has_more = rows.len() as i64 == limit;
+    let next_cursor = if has_more {
+        let last = rows.last().unwrap();
+        let last_id: Uuid = last.try_get("id")?;
+        let last_val_text = match sort_by {
+            crate::models::SortBy::Ledger => {
+                let v: i64 = last.try_get("ledger")?;
+                v.to_string()
+            }
+            crate::models::SortBy::Timestamp => {
+                let v: DateTime<Utc> = last.try_get("timestamp")?;
+                v.to_rfc3339()
+            }
+            crate::models::SortBy::CreatedAt => {
+                let v: DateTime<Utc> = last.try_get("created_at")?;
+                v.to_rfc3339()
+            }
+        };
+        Some(encode_cursor_tagged(sort_by.as_tag(), &last_val_text, last_id))
+    } else {
+        None
+    };
 
-    let events: Vec<Value> = rows
-        .iter()
-        .map(|e| {
-            filter_fields(
-                e,
-                &columns,
-                state.encryption_key.as_ref(),
-                state.encryption_key_old.as_ref(),
-            )
-        })
-        .collect();
+    let events = rows_to_json(
+        &rows,
+        &columns,
+        state.encryption_key.as_ref(),
+        state.encryption_key_old.as_ref(),
+        params.compact.unwrap_or(false),
+    )?;
 
-    // Fetch total count. Skip cache in multi-tenant mode to avoid cross-tenant leakage.
-    let total: i64 = if params.from_ledger.is_none() && params.to_ledger.is_none() && tenant_id.is_none() {
+    // Fetch total count, using the moka cache when no ledger filters are applied.
+    let total: i64 = if params.from_ledger.is_none() && params.to_ledger.is_none() {
         if let Some(cached) = state.contract_count_cache.get(&contract_id).await {
             cached
         } else {
@@ -2287,7 +2184,7 @@ pub async fn get_events_by_contract(
             count_conditions.push(format!("ledger <= ${cidx}"));
             cidx += 1;
         }
-        maybe_add_tenant_condition(&mut count_conditions, &mut cidx, tenant_id);
+        let _ = cidx;
         let count_str = format!(
             "SELECT COUNT(*) FROM events WHERE {}",
             count_conditions.join(" AND ")
@@ -2298,9 +2195,6 @@ pub async fn get_events_by_contract(
         }
         if let Some(tl) = params.to_ledger {
             cq = cq.bind(tl);
-        }
-        if let Some(tid) = tenant_id {
-            cq = cq.bind(tid);
         }
         cq.fetch_one(&state.pool).await?
     };
@@ -2340,16 +2234,20 @@ pub async fn get_events_by_contract(
     )
 )]
 pub async fn get_events_by_tx(
-    State(state): State<AppState>,
-    Path(tx_hash): Path<String>,
-    Query(params): Query<PaginationParams>,
-    extensions: axum::http::Extensions,
-) -> Result<Json<Value>, AppError> {
+    State(state,
+    headers: axum::http::HeaderMap,
+): State<AppState>,
+    Path(tx_hash,
+    headers: axum::http::HeaderMap,
+): Path<String>,
+    Query(params,
+    headers: axum::http::HeaderMap,
+): Query<PaginationParams>,
+,
+    headers: axum::http::HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
     let tx_hash = tx_hash.to_lowercase();
     validate_tx_hash(&tx_hash)?;
-
-    let tenant_id = extract_tenant_id(&extensions).map(|s| s.to_owned());
-    let tenant_id = tenant_id.as_deref();
 
     let columns = resolve_columns(&params)?;
 
@@ -2361,21 +2259,15 @@ pub async fn get_events_by_tx(
         select_cols.push("id");
     }
 
-    let mut conditions: Vec<String> = vec!["tx_hash = $1".to_string()];
-    let mut bind_idx: i32 = 2;
-    maybe_add_tenant_condition(&mut conditions, &mut bind_idx, tenant_id);
-
     let query_str = format!(
-        "SELECT {} FROM events WHERE {} ORDER BY ledger DESC, id DESC",
+        "SELECT {} FROM events WHERE tx_hash = $1 ORDER BY ledger DESC, id DESC",
         select_cols.join(", "),
-        conditions.join(" AND "),
     );
 
-    let mut q = sqlx::query(&query_str).bind(&tx_hash);
-    if let Some(tid) = tenant_id {
-        q = q.bind(tid);
-    }
-    let rows = q.fetch_all(&state.read_pool).await?;
+    let rows = sqlx::query(&query_str)
+        .bind(&tx_hash)
+        .fetch_all(&state.read_pool)
+        .await?;
 
     let total = rows.len() as i64;
     let events = rows_to_json(
@@ -2408,14 +2300,19 @@ pub async fn get_events_by_tx(
     )
 )]
 pub async fn get_events_by_tx_batch(
-    State(state): State<AppState>,
-    Json(body): Json<crate::models::BatchTxRequest>,
-) -> Result<Json<Value>, AppError> {
-    if body.hashes.len() > state.config.batch_tx_max_size {
-        return Err(AppError::Validation(format!(
-            "too many hashes: maximum is {}",
-            state.config.batch_tx_max_size
-        )));
+    State(state,
+    headers: axum::http::HeaderMap,
+): State<AppState>,
+    Json(body,
+    headers: axum::http::HeaderMap,
+): Json<crate::models::BatchTxRequest>,
+,
+    headers: axum::http::HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
+    if body.hashes.len() > 100 {
+        return Err(AppError::Validation(
+            "too many hashes: maximum is 100".to_string(),
+        ));
     }
 
     // Validate all hashes; collect invalid ones for a helpful error.
@@ -2432,13 +2329,7 @@ pub async fn get_events_by_tx_batch(
         )));
     }
 
-    // Deduplicate hashes using HashSet
-    let mut unique_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for h in &body.hashes {
-        unique_hashes.insert(h.to_lowercase());
-    }
-    let deduplicated_count = unique_hashes.len();
-    let hashes: Vec<String> = unique_hashes.into_iter().collect();
+    let hashes: Vec<String> = body.hashes.iter().map(|h| h.to_lowercase()).collect();
 
     // Single query using ANY().
     let rows = sqlx::query(
@@ -2481,11 +2372,7 @@ pub async fn get_events_by_tx_batch(
         }
     }
 
-    // Add deduplicated_count to response
-    let mut response_obj = result;
-    response_obj.insert("deduplicated_count".to_string(), Value::Number(deduplicated_count.into()));
-
-    Ok(Json(Value::Object(response_obj)))
+    Ok(Json(Value::Object(result)))
 }
 
 #[utoipa::path(
@@ -2502,10 +2389,18 @@ pub async fn get_events_by_tx_batch(
     )
 )]
 pub async fn get_events_by_ledger_hash(
-    State(state): State<AppState>,
-    Path(hash): Path<String>,
-    Query(params): Query<PaginationParams>,
-) -> Result<Json<Value>, AppError> {
+    State(state,
+    headers: axum::http::HeaderMap,
+): State<AppState>,
+    Path(hash,
+    headers: axum::http::HeaderMap,
+): Path<String>,
+    Query(params,
+    headers: axum::http::HeaderMap,
+): Query<PaginationParams>,
+,
+    headers: axum::http::HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
     let columns = resolve_columns(&params)?;
     let mut select_cols = columns.to_vec();
     if !select_cols.contains(&"ledger") {
@@ -2597,7 +2492,7 @@ pub async fn anonymize_event(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, AppError> {
-    use sha2::{Digest, Sha256};
+    use sha2::{Sha256, Digest};
 
     // Fetch current tx_hash and anonymized flag
     let row = sqlx::query("SELECT tx_hash, anonymized FROM events WHERE id = $1")
@@ -2619,12 +2514,14 @@ pub async fn anonymize_event(
         format!("{:x}", h.finalize())
     };
 
-    sqlx::query("UPDATE events SET anonymized = TRUE, event_data = $1, tx_hash = $2 WHERE id = $3")
-        .bind(json!({"anonymized": true}))
-        .bind(&hashed_tx)
-        .bind(id)
-        .execute(&state.pool)
-        .await?;
+    sqlx::query(
+        "UPDATE events SET anonymized = TRUE, event_data = $1, tx_hash = $2 WHERE id = $3",
+    )
+    .bind(json!({"anonymized": true}))
+    .bind(&hashed_tx)
+    .bind(id)
+    .execute(&state.pool)
+    .await?;
 
     tracing::info!(event_id = %id, anonymized_at = %chrono::Utc::now(), "Event anonymized");
 
@@ -2645,11 +2542,7 @@ pub async fn anonymize_event(
 pub async fn pause_indexer(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !state
-        .indexer_state
-        .is_active_indexer
-        .load(Ordering::Relaxed)
-    {
+    if !state.indexer_state.is_active_indexer.load(Ordering::Relaxed) {
         return Err((
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "pause endpoint only available on active indexer" })),
@@ -2674,83 +2567,15 @@ pub async fn pause_indexer(
 pub async fn resume_indexer(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !state
-        .indexer_state
-        .is_active_indexer
-        .load(Ordering::Relaxed)
-    {
+    if !state.indexer_state.is_active_indexer.load(Ordering::Relaxed) {
         return Err((
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "resume endpoint only available on active indexer" })),
         ));
     }
-    state
-        .indexer_state
-        .is_paused
-        .store(false, Ordering::Relaxed);
+    state.indexer_state.is_paused.store(false, Ordering::Relaxed);
     tracing::info!("Indexer resumed via admin API");
     Ok(Json(json!({ "indexer_paused": false })))
-}
-
-/// Start a background re-encryption job to migrate events from old key to new key.
-#[utoipa::path(
-    post,
-    path = "/v1/admin/reencrypt",
-    tag = "admin",
-    responses(
-        (status = 202, description = "Re-encryption job started"),
-        (status = 400, description = "Encryption not enabled or no old key configured", body = ErrorResponse),
-        (status = 409, description = "Re-encryption job already running", body = ErrorResponse),
-        (status = 401, description = "Unauthorized", body = ErrorResponse),
-    )
-)]
-pub async fn start_reencrypt(
-    State(state): State<AppState>,
-) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
-    #[cfg(not(feature = "encryption"))]
-    {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "encryption feature not enabled" })),
-        ));
-    }
-
-    #[cfg(feature = "encryption")]
-    {
-        let new_key = state.encryption_key.ok_or((
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "ENCRYPTION_KEY not configured" })),
-        ))?;
-
-        let old_key = state.encryption_key_old.ok_or((
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "ENCRYPTION_KEY_OLD not configured" })),
-        ))?;
-
-        // Create or get the reencrypt state from app state
-        // For now, we'll create a new one per request (in production, store in AppState)
-        let reencrypt_state = crate::reencrypt::ReencryptState::new();
-
-        if reencrypt_state.is_running() {
-            return Err((
-                StatusCode::CONFLICT,
-                Json(json!({ "error": "re-encryption job already running" })),
-            ));
-        }
-
-        let pool = state.pool.clone();
-        let batch_size = 1000;
-
-        crate::reencrypt::start_reencrypt_job(pool, new_key, old_key, batch_size, reencrypt_state);
-
-        Ok((
-            StatusCode::ACCEPTED,
-            Json(json!({
-                "message": "re-encryption job started",
-                "batch_size": batch_size
-            })),
-        ))
-    }
 }
 
 #[utoipa::path(
@@ -2768,35 +2593,19 @@ pub async fn start_reencrypt(
     )
 )]
 pub async fn get_events_diff(
-    State(state): State<AppState>,
-    Query(params): Query<crate::models::DiffParams>,
-) -> Result<Json<Value>, AppError> {
-    // Validate from_ledger and to_ledger are positive
-    if params.from_ledger < 0 {
+    State(state,
+    headers: axum::http::HeaderMap,
+): State<AppState>,
+    Query(params,
+    headers: axum::http::HeaderMap,
+): Query<crate::models::DiffParams>,
+,
+    headers: axum::http::HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
+    if params.from_ledger > params.to_ledger {
         return Err(AppError::Validation(
-            "from_ledger must be a positive integer".to_string(),
+            "from_ledger must be <= to_ledger".to_string(),
         ));
-    }
-    if params.to_ledger < 0 {
-        return Err(AppError::Validation(
-            "to_ledger must be a positive integer".to_string(),
-        ));
-    }
-
-    // Validate from_ledger < to_ledger
-    if params.from_ledger >= params.to_ledger {
-        return Err(AppError::Validation(
-            "from_ledger must be less than to_ledger".to_string(),
-        ));
-    }
-
-    // Validate ledger range does not exceed maximum
-    let ledger_range = params.to_ledger - params.from_ledger;
-    if ledger_range > state.config.max_ledger_range as i64 {
-        return Err(AppError::Validation(format!(
-            "ledger range exceeds maximum of {}",
-            state.config.max_ledger_range
-        )));
     }
 
     // Single query: count per (contract_id, event_type) in range
@@ -2818,13 +2627,11 @@ pub async fn get_events_diff(
         let contract_id: String = row.try_get("contract_id")?;
         let event_type: String = row.try_get("event_type")?;
         let cnt: i64 = row.try_get("cnt")?;
-        let entry = map
-            .entry(contract_id.clone())
-            .or_insert_with(|| crate::models::ContractDiff {
-                contract_id,
-                event_counts: std::collections::HashMap::new(),
-                total: 0,
-            });
+        let entry = map.entry(contract_id.clone()).or_insert_with(|| crate::models::ContractDiff {
+            contract_id,
+            event_counts: std::collections::HashMap::new(),
+            total: 0,
+        });
         entry.event_counts.insert(event_type, cnt);
         entry.total += cnt;
     }
@@ -2832,14 +2639,11 @@ pub async fn get_events_diff(
     let mut contracts: Vec<crate::models::ContractDiff> = map.into_values().collect();
     contracts.sort_by(|a, b| b.total.cmp(&a.total));
 
-    Ok(Json(
-        serde_json::to_value(crate::models::DiffResponse {
-            from_ledger: params.from_ledger,
-            to_ledger: params.to_ledger,
-            contracts,
-        })
-        .unwrap(),
-    ))
+    Ok(Json(serde_json::to_value(crate::models::DiffResponse {
+        from_ledger: params.from_ledger,
+        to_ledger: params.to_ledger,
+        contracts,
+    }).unwrap()))
 }
 
 #[utoipa::path(
@@ -2849,10 +2653,9 @@ pub async fn get_events_diff(
     params(
         ("page" = Option<i64>, Query, description = "Page number (default 1)"),
         ("limit" = Option<i64>, Query, description = "Items per page (1-100, default 20)"),
-        ("sort" = Option<String>, Query, description = "Sort order: event_count_desc, event_count_asc, last_seen_desc (default), first_seen_asc"),
     ),
     responses(
-        (status = 200, description = "Paginated list of indexed contract IDs with event counts and ledger info"),
+        (status = 200, description = "Paginated list of indexed contract IDs"),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 429, description = "Too many requests", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse),
@@ -2865,20 +2668,20 @@ pub async fn get_contracts(
     let limit = params.limit();
     let offset = params.offset();
 
-    // Determine sort order
-    let sort_clause = match params.sort {
-        Some(SortOrder::Asc) => "ORDER BY event_count ASC",
-        _ => "ORDER BY last_seen_ledger DESC",
-    };
+    // Check cache
+    {
+        let cache = contracts_cache().lock().await;
+        if let Some(ref entry) = *cache {
+            if entry.expires_at > std::time::Instant::now() {
+                return Ok(Json(entry.data.clone()));
+            }
+        }
+    }
 
     let rows = sqlx::query_as::<_, ContractSummary>(
-        &format!(
-            "SELECT contract_id, COUNT(*) AS event_count, MIN(ledger) AS first_seen_ledger, \
-             MAX(ledger) AS last_seen_ledger, MAX(timestamp) AS last_event_at \
-             FROM events GROUP BY contract_id {} \
-             LIMIT $1 OFFSET $2",
-            sort_clause
-        ),
+        "SELECT contract_id, COUNT(*) AS event_count, MAX(ledger) AS latest_ledger \
+         FROM events GROUP BY contract_id ORDER BY latest_ledger DESC \
+         LIMIT $1 OFFSET $2",
     )
     .bind(limit)
     .bind(offset)
@@ -2896,37 +2699,29 @@ pub async fn get_contracts(
         "limit": limit,
     });
 
+    // Store in cache with 30-second TTL
+    {
+        let mut cache = contracts_cache().lock().await;
+        *cache = Some(CacheEntry {
+            data: result.clone(),
+            expires_at: std::time::Instant::now() + Duration::from_secs(30),
+        });
+    }
+
     Ok(Json(result))
 }
 
-/// Query the min and max indexed ledger from the events table.
-/// Returns `(None, None)` when no events have been indexed yet.
-async fn get_indexed_ledger_range(
-    pool: &sqlx::PgPool,
-) -> Result<(Option<i64>, Option<i64>), AppError> {
-    let row = sqlx::query("SELECT MIN(ledger) AS min_ledger, MAX(ledger) AS max_ledger FROM events")
-        .fetch_one(pool)
-        .await?;
-    let min: Option<i64> = row.try_get("min_ledger")?;
-    let max: Option<i64> = row.try_get("max_ledger")?;
-    Ok((min, max))
-}
-
-/// Replay events for a specific ledger range.
-///
-/// The requested range is validated against the indexed window:
-/// - **400** if the range is entirely outside the indexed window (no overlap).
-/// - **202** with a `warning` field if the range is only partially indexed.
+/// Replay events for a specific ledger range
 #[utoipa::path(
     post,
     path = "/v1/admin/replay",
     tag = "admin",
     request_body(content = ReplayRequest, description = "Ledger range to replay", content_type = "application/json"),
     responses(
-        (status = 202, description = "Replay job accepted and queued. A `warning` field is included when the requested range is only partially covered by the indexed window."),
-        (status = 400, description = "Invalid request parameters, or the requested range is entirely outside the indexed window"),
+        (status = 202, description = "Replay job accepted and queued"),
         (status = 401, description = "Unauthorized - API key required"),
         (status = 403, description = "Forbidden - not the active indexer"),
+        (status = 400, description = "Invalid request parameters"),
     )
 )]
 pub async fn replay_events(
@@ -2968,63 +2763,6 @@ pub async fn replay_events(
         ));
     }
 
-    // Validate the requested range against the indexed window.
-    let from = request.from_ledger as i64;
-    let to = request.to_ledger as i64;
-
-    let warning: Option<String> =
-        match get_indexed_ledger_range(&state.pool).await.map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": e.to_string() })),
-            )
-        })? {
-            (None, None) => {
-                // No events indexed at all — any range is entirely outside.
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({
-                        "error": "requested range is entirely outside the indexed window: no events have been indexed yet"
-                    })),
-                ));
-            }
-            (Some(min_indexed), Some(max_indexed)) => {
-                // Entirely before the indexed window.
-                if to < min_indexed {
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({
-                            "error": format!(
-                                "requested range [{from}, {to}] is entirely before the indexed window [{min_indexed}, {max_indexed}]"
-                            )
-                        })),
-                    ));
-                }
-                // Entirely after the indexed window (future ledgers).
-                if from > max_indexed {
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({
-                            "error": format!(
-                                "requested range [{from}, {to}] is entirely after the indexed window [{min_indexed}, {max_indexed}]"
-                            )
-                        })),
-                    ));
-                }
-                // Partial overlap — warn the caller.
-                if from < min_indexed || to > max_indexed {
-                    Some(format!(
-                        "requested range [{from}, {to}] is partially outside the indexed window [{min_indexed}, {max_indexed}]; only ledgers [{}, {}] will be replayed",
-                        from.max(min_indexed),
-                        to.min(max_indexed),
-                    ))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        };
-
     // Record the replay job metric
     crate::metrics::record_replay_job();
 
@@ -3040,16 +2778,14 @@ pub async fn replay_events(
         }
     });
 
-    let mut body = json!({
-        "message": "replay job accepted",
-        "from_ledger": request.from_ledger,
-        "to_ledger": request.to_ledger
-    });
-    if let Some(w) = warning {
-        body["warning"] = json!(w);
-    }
-
-    Ok((StatusCode::ACCEPTED, Json(body)))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "message": "replay job accepted",
+            "from_ledger": request.from_ledger,
+            "to_ledger": request.to_ledger
+        })),
+    ))
 }
 
 /// Execute the replay job using the same fetch_and_store_events logic
@@ -4410,7 +4146,7 @@ mod tests {
             indexer_state,
             prometheus_handle,
             event_tx,
-            50, // keepalive_ms = 50 ms
+            50,   // keepalive_ms = 50 ms
             1000,
             2000,
             None,
@@ -5220,10 +4956,7 @@ mod tests {
         let v: Value = serde_json::from_slice(&body).unwrap();
         let event_data = &v["data"][0]["event_data"];
         // Full JSON object, not a string
-        assert!(
-            event_data.is_object(),
-            "event_data should be a JSON object when compact=false"
-        );
+        assert!(event_data.is_object(), "event_data should be a JSON object when compact=false");
         assert_eq!(event_data["value"], json!(42));
     }
 
@@ -5270,9 +5003,7 @@ mod tests {
         let event_data = &v["data"][0]["event_data"];
 
         // Must be a string (base64-encoded)
-        let encoded = event_data
-            .as_str()
-            .expect("event_data should be a base64 string when compact=true");
+        let encoded = event_data.as_str().expect("event_data should be a base64 string when compact=true");
 
         // Decode base64 → decompress gzip → parse JSON → must equal original
         use base64::engine::general_purpose::STANDARD;
@@ -5286,10 +5017,7 @@ mod tests {
         decoder.read_to_string(&mut json_str).expect("valid gzip");
         let decoded: Value = serde_json::from_str(&json_str).expect("valid JSON");
 
-        assert_eq!(
-            decoded, original,
-            "decoded compact event_data must equal original"
-        );
+        assert_eq!(decoded, original, "decoded compact event_data must equal original");
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -5327,9 +5055,7 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(
-            resp.headers()
-                .get("x-event-data-encoding")
-                .and_then(|v| v.to_str().ok()),
+            resp.headers().get("x-event-data-encoding").and_then(|v| v.to_str().ok()),
             Some("gzip+base64")
         );
 
@@ -5352,10 +5078,7 @@ mod tests {
         let body2 = to_bytes(resp2.into_body(), usize::MAX).await.unwrap();
         let v2: Value = serde_json::from_slice(&body2).unwrap();
         let event_data = &v2["data"][0]["event_data"];
-        assert!(
-            event_data.is_string(),
-            "event_data should be base64 string on cursor page"
-        );
+        assert!(event_data.is_string(), "event_data should be base64 string on cursor page");
     }
 
     // Multi-tenant isolation tests
@@ -5363,16 +5086,8 @@ mod tests {
     async fn multitenant_tenant_a_cannot_see_tenant_b_events(pool: PgPool) {
         // Insert events for two different tenants
         for (tenant, contract, tx) in [
-            (
-                "tenant_a",
-                "C1111111111111111111111111111111111111111111111111111111",
-                "a".repeat(64),
-            ),
-            (
-                "tenant_b",
-                "C2222222222222222222222222222222222222222222222222222222",
-                "b".repeat(64),
-            ),
+            ("tenant_a", "C1111111111111111111111111111111111111111111111111111111", "a".repeat(64)),
+            ("tenant_b", "C2222222222222222222222222222222222222222222222222222222", "b".repeat(64)),
         ] {
             sqlx::query(
                 "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data, tenant_id)
@@ -5790,207 +5505,6 @@ mod tests {
         assert_eq!(v["message"], "replay job accepted");
     }
 
-    // ── Indexed range validation tests ───────────────────────────────────────
-
-    fn create_active_replay_router(pool: PgPool) -> axum::Router {
-        let health_state = Arc::new(HealthState::new(60));
-        let indexer_state = Arc::new(IndexerState::new());
-        indexer_state
-            .is_active_indexer
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        let prometheus_handle = crate::metrics::init_metrics();
-        let config = crate::config::Config::default();
-        crate::routes::create_router(
-            pool,
-            vec!["test-key".to_string()],
-            &[],
-            60,
-            health_state,
-            indexer_state,
-            prometheus_handle,
-            2000,
-            config,
-        )
-    }
-
-    async fn insert_events_at_ledgers(pool: &PgPool, ledgers: &[i64]) {
-        for (i, &ledger) in ledgers.iter().enumerate() {
-            sqlx::query(
-                "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
-                 VALUES ($1, $2, $3, $4, $5, $6)",
-            )
-            .bind(format!("C{:0>55}", i))
-            .bind("contract")
-            .bind(format!("{:0>64}", i))
-            .bind(ledger)
-            .bind(Utc::now())
-            .bind(json!({}))
-            .execute(pool)
-            .await
-            .unwrap();
-        }
-    }
-
-    async fn post_replay(app: axum::Router, from: u64, to: u64) -> (StatusCode, Value) {
-        let body = serde_json::to_string(&ReplayRequest {
-            from_ledger: from,
-            to_ledger: to,
-        })
-        .unwrap();
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/admin/replay")
-                    .header("Authorization", "Bearer test-key")
-                    .header("Content-Type", "application/json")
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let v: Value = serde_json::from_slice(&bytes).unwrap();
-        (status, v)
-    }
-
-    /// No events indexed → any range returns 400.
-    #[sqlx::test(migrations = "./migrations")]
-    async fn replay_range_validation_no_events_indexed_returns_400(pool: PgPool) {
-        let app = create_active_replay_router(pool);
-        let (status, v) = post_replay(app, 100, 200).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(
-            v["error"].as_str().unwrap().contains("no events have been indexed"),
-            "unexpected error: {}",
-            v["error"]
-        );
-    }
-
-    /// Range entirely before the indexed window → 400.
-    #[sqlx::test(migrations = "./migrations")]
-    async fn replay_range_entirely_before_indexed_window_returns_400(pool: PgPool) {
-        // Indexed window: ledgers 500–1000
-        insert_events_at_ledgers(&pool, &[500, 750, 1000]).await;
-        let app = create_active_replay_router(pool);
-        let (status, v) = post_replay(app, 100, 400).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        let err = v["error"].as_str().unwrap();
-        assert!(
-            err.contains("entirely before"),
-            "unexpected error: {err}"
-        );
-    }
-
-    /// Range entirely after the indexed window (future ledgers) → 400.
-    #[sqlx::test(migrations = "./migrations")]
-    async fn replay_range_entirely_after_indexed_window_returns_400(pool: PgPool) {
-        // Indexed window: ledgers 500–1000
-        insert_events_at_ledgers(&pool, &[500, 750, 1000]).await;
-        let app = create_active_replay_router(pool);
-        let (status, v) = post_replay(app, 1001, 2000).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        let err = v["error"].as_str().unwrap();
-        assert!(
-            err.contains("entirely after"),
-            "unexpected error: {err}"
-        );
-    }
-
-    /// Range fully within the indexed window → 202, no warning.
-    #[sqlx::test(migrations = "./migrations")]
-    async fn replay_range_fully_within_indexed_window_returns_202_no_warning(pool: PgPool) {
-        insert_events_at_ledgers(&pool, &[500, 750, 1000]).await;
-        let app = create_active_replay_router(pool);
-        let (status, v) = post_replay(app, 500, 1000).await;
-        assert_eq!(status, StatusCode::ACCEPTED);
-        assert!(v.get("warning").is_none(), "no warning expected for fully-covered range");
-    }
-
-    /// Range partially overlapping at the low end → 202 with warning.
-    #[sqlx::test(migrations = "./migrations")]
-    async fn replay_range_partial_overlap_low_end_returns_202_with_warning(pool: PgPool) {
-        // Indexed window: 500–1000; request starts before min
-        insert_events_at_ledgers(&pool, &[500, 750, 1000]).await;
-        let app = create_active_replay_router(pool);
-        let (status, v) = post_replay(app, 100, 800).await;
-        assert_eq!(status, StatusCode::ACCEPTED);
-        let warning = v["warning"].as_str().expect("warning field must be present");
-        assert!(
-            warning.contains("partially outside"),
-            "unexpected warning: {warning}"
-        );
-    }
-
-    /// Range partially overlapping at the high end → 202 with warning.
-    #[sqlx::test(migrations = "./migrations")]
-    async fn replay_range_partial_overlap_high_end_returns_202_with_warning(pool: PgPool) {
-        // Indexed window: 500–1000; request extends beyond max
-        insert_events_at_ledgers(&pool, &[500, 750, 1000]).await;
-        let app = create_active_replay_router(pool);
-        let (status, v) = post_replay(app, 800, 1500).await;
-        assert_eq!(status, StatusCode::ACCEPTED);
-        let warning = v["warning"].as_str().expect("warning field must be present");
-        assert!(
-            warning.contains("partially outside"),
-            "unexpected warning: {warning}"
-        );
-    }
-
-    /// Range spanning the entire indexed window and beyond on both sides → 202 with warning.
-    #[sqlx::test(migrations = "./migrations")]
-    async fn replay_range_spanning_beyond_both_ends_returns_202_with_warning(pool: PgPool) {
-        insert_events_at_ledgers(&pool, &[500, 750, 1000]).await;
-        let app = create_active_replay_router(pool);
-        let (status, v) = post_replay(app, 1, 9999).await;
-        assert_eq!(status, StatusCode::ACCEPTED);
-        assert!(
-            v["warning"].as_str().is_some(),
-            "warning field must be present"
-        );
-    }
-
-    /// Boundary: request exactly at min indexed ledger → 202, no warning.
-    #[sqlx::test(migrations = "./migrations")]
-    async fn replay_range_exact_min_boundary_returns_202_no_warning(pool: PgPool) {
-        insert_events_at_ledgers(&pool, &[500, 1000]).await;
-        let app = create_active_replay_router(pool);
-        let (status, v) = post_replay(app, 500, 500).await;
-        assert_eq!(status, StatusCode::ACCEPTED);
-        assert!(v.get("warning").is_none());
-    }
-
-    /// Boundary: request exactly at max indexed ledger → 202, no warning.
-    #[sqlx::test(migrations = "./migrations")]
-    async fn replay_range_exact_max_boundary_returns_202_no_warning(pool: PgPool) {
-        insert_events_at_ledgers(&pool, &[500, 1000]).await;
-        let app = create_active_replay_router(pool);
-        let (status, v) = post_replay(app, 1000, 1000).await;
-        assert_eq!(status, StatusCode::ACCEPTED);
-        assert!(v.get("warning").is_none());
-    }
-
-    /// Boundary: to_ledger == min_indexed - 1 → entirely before → 400.
-    #[sqlx::test(migrations = "./migrations")]
-    async fn replay_range_to_ledger_one_before_min_returns_400(pool: PgPool) {
-        insert_events_at_ledgers(&pool, &[500, 1000]).await;
-        let app = create_active_replay_router(pool);
-        let (status, v) = post_replay(app, 400, 499).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(v["error"].as_str().unwrap().contains("entirely before"));
-    }
-
-    /// Boundary: from_ledger == max_indexed + 1 → entirely after → 400.
-    #[sqlx::test(migrations = "./migrations")]
-    async fn replay_range_from_ledger_one_after_max_returns_400(pool: PgPool) {
-        insert_events_at_ledgers(&pool, &[500, 1000]).await;
-        let app = create_active_replay_router(pool);
-        let (status, v) = post_replay(app, 1001, 1500).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(v["error"].as_str().unwrap().contains("entirely after"));
-    }
-
     #[sqlx::test(migrations = "./migrations")]
     async fn replay_endpoint_rejects_invalid_api_key(pool: PgPool) {
         let health_state = Arc::new(HealthState::new(60));
@@ -6167,11 +5681,7 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert!(body.len() > 4);
         assert_eq!(&body[..4], b"PAR1", "Parquet magic bytes missing");
-        assert_eq!(
-            &body[body.len() - 4..],
-            b"PAR1",
-            "Parquet footer magic missing"
-        );
+        assert_eq!(&body[body.len() - 4..], b"PAR1", "Parquet footer magic missing");
     }
 
     #[cfg(feature = "parquet")]
@@ -6219,9 +5729,7 @@ mod tests {
 
         // Verify ledger column value
         let ledger_col = batch.column_by_name("ledger").unwrap();
-        let ledger_val = ledger_col
-            .as_primitive::<arrow_array::types::Int64Type>()
-            .value(0);
+        let ledger_val = ledger_col.as_primitive::<arrow_array::types::Int64Type>().value(0);
         assert_eq!(ledger_val, 42);
 
         // Verify contract_id column value
@@ -6276,17 +5784,7 @@ mod tests {
         let indexer_state = Arc::new(IndexerState::new());
         let prometheus_handle = crate::metrics::init_metrics();
         let config = crate::config::Config::default();
-        crate::routes::create_router(
-            pool,
-            vec!["admin-key".to_string()],
-            &[],
-            60,
-            health_state,
-            indexer_state,
-            prometheus_handle,
-            2000,
-            config,
-        )
+        crate::routes::create_router(pool, vec!["admin-key".to_string()], &[], 60, health_state, indexer_state, prometheus_handle, 2000, config)
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -6335,10 +5833,7 @@ mod tests {
         let event_data: Value = row.try_get("event_data").unwrap();
         assert_eq!(event_data, json!({"anonymized": true}));
         let tx_hash: String = row.try_get("tx_hash").unwrap();
-        assert_ne!(
-            tx_hash, original_tx,
-            "tx_hash must be replaced with its hash"
-        );
+        assert_ne!(tx_hash, original_tx, "tx_hash must be replaced with its hash");
         assert_eq!(tx_hash.len(), 64, "hashed tx_hash must be 64 hex chars");
         let anonymized: bool = row.try_get("anonymized").unwrap();
         assert!(anonymized);
@@ -6464,16 +5959,13 @@ mod tests {
         let contract_a = "CA23456789012345678901234567890123456789012345678901234";
         let contract_b = "CB23456789012345678901234567890123456789012345678901234";
         for (i, (cid, etype, ledger)) in [
-            (contract_a, "contract", 10_i64),
-            (contract_a, "contract", 11_i64),
-            (contract_a, "contract", 12_i64),
+            (contract_a, "contract",   10_i64),
+            (contract_a, "contract",   11_i64),
+            (contract_a, "contract",   12_i64),
             (contract_a, "diagnostic", 11_i64),
-            (contract_b, "contract", 10_i64),
-            (contract_b, "contract", 11_i64),
-        ]
-        .iter()
-        .enumerate()
-        {
+            (contract_b, "contract",   10_i64),
+            (contract_b, "contract",   11_i64),
+        ].iter().enumerate() {
             sqlx::query(
                 "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
                  VALUES ($1, $2, $3, $4, $5, $6)",
@@ -6580,22 +6072,10 @@ mod tests {
     fn create_active_indexer_router(pool: PgPool) -> axum::Router {
         let health_state = Arc::new(HealthState::new(60));
         let indexer_state = Arc::new(IndexerState::new());
-        indexer_state
-            .is_active_indexer
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        indexer_state.is_active_indexer.store(true, std::sync::atomic::Ordering::Relaxed);
         let prometheus_handle = crate::metrics::init_metrics();
         let config = crate::config::Config::default();
-        crate::routes::create_router(
-            pool,
-            vec!["admin-key".to_string()],
-            &[],
-            60,
-            health_state,
-            indexer_state,
-            prometheus_handle,
-            2000,
-            config,
-        )
+        crate::routes::create_router(pool, vec!["admin-key".to_string()], &[], 60, health_state, indexer_state, prometheus_handle, 2000, config)
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -6710,10 +6190,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
-        assert!(
-            v.get("indexer_paused").is_some(),
-            "indexer_paused must be present in /status"
-        );
+        assert!(v.get("indexer_paused").is_some(), "indexer_paused must be present in /status");
         assert_eq!(v["indexer_paused"], false);
     }
 
@@ -6862,10 +6339,7 @@ mod tests {
             .get("cache-control")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        assert!(
-            cc.contains("max-age=60"),
-            "expected max-age=60 in Cache-Control, got: {cc}"
-        );
+        assert!(cc.contains("max-age=60"), "expected max-age=60 in Cache-Control, got: {cc}");
     }
 }
 
@@ -6950,8 +6424,7 @@ pub async fn register_contract_schema(
 ) -> Result<impl IntoResponse, AppError> {
     validate_contract_id(&contract_id)?;
 
-    let validator = state
-        .schema_validator
+    let validator = state.schema_validator
         .as_ref()
         .ok_or_else(|| AppError::Internal("Schema validator not initialized".to_string()))?;
 
@@ -6965,7 +6438,7 @@ pub async fn register_contract_schema(
         Json(json!({
             "status": "ok",
             "message": "Schema registered successfully"
-        })),
+        }))
     ))
 }
 
@@ -6993,8 +6466,7 @@ pub async fn get_contract_schema(
 ) -> Result<impl IntoResponse, AppError> {
     validate_contract_id(&contract_id)?;
 
-    let validator = state
-        .schema_validator
+    let validator = state.schema_validator
         .as_ref()
         .ok_or_else(|| AppError::Internal("Schema validator not initialized".to_string()))?;
 
@@ -7030,8 +6502,7 @@ pub async fn delete_contract_schema(
 ) -> Result<impl IntoResponse, AppError> {
     validate_contract_id(&contract_id)?;
 
-    let validator = state
-        .schema_validator
+    let validator = state.schema_validator
         .as_ref()
         .ok_or_else(|| AppError::Internal("Schema validator not initialized".to_string()))?;
 
@@ -7046,56 +6517,9 @@ pub async fn delete_contract_schema(
             Json(json!({
                 "status": "ok",
                 "message": "Schema deleted successfully"
-            })),
+            }))
         ))
     } else {
         Err(AppError::NotFound)
-    }
-}
-
-/// Validate event data against a contract's JSON Schema
-#[utoipa::path(
-    post,
-    path = "/v1/admin/contracts/{contract_id}/validate",
-    tag = "admin",
-    params(
-        ("contract_id" = String, Path, description = "Contract ID")
-    ),
-    request_body = serde_json::Value,
-    responses(
-        (status = 200, description = "Validation result"),
-        (status = 400, description = "Validation failed with error details"),
-        (status = 404, description = "No schema registered for this contract"),
-        (status = 401, description = "Unauthorized"),
-        (status = 500, description = "Internal server error")
-    ),
-    security(
-        ("api_key" = [])
-    )
-)]
-pub async fn validate_event_data_against_schema(
-    State(state): State<AppState>,
-    Path(contract_id): Path<String>,
-    Json(event_data): Json<serde_json::Value>,
-) -> Result<impl IntoResponse, AppError> {
-    validate_contract_id(&contract_id)?;
-
-    let validator = state.schema_validator
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("Schema validator not initialized".to_string()))?;
-
-    match validator.validate_event_data(&contract_id, &event_data).await {
-        None => Err(AppError::NotFound),
-        Some((true, _)) => Ok((
-            StatusCode::OK,
-            Json(json!({
-                "valid": true,
-                "message": "Event data is valid"
-            }))
-        )),
-        Some((false, errors)) => {
-            let error_msg = format!("Event data validation failed with {} error(s)", errors.len());
-            Err(AppError::ValidationWithDetails(error_msg, errors))
-        }
     }
 }

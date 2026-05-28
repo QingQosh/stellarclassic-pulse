@@ -41,6 +41,9 @@ export interface GetEventsByContractRequest {
     contractId: string;
     page?: number | null;
     limit?: number | null;
+    cursor?: string | null;
+    sort?: string | null;
+    sortBy?: string | null;
     fromLedger?: number | null;
     toLedger?: number | null;
 }
@@ -181,6 +184,18 @@ export class EventsApi extends runtime.BaseAPI {
 
         if (requestParameters['limit'] != null) {
             queryParameters['limit'] = requestParameters['limit'];
+        }
+
+        if (requestParameters['cursor'] != null) {
+            queryParameters['cursor'] = requestParameters['cursor'];
+        }
+
+        if (requestParameters['sort'] != null) {
+            queryParameters['sort'] = requestParameters['sort'];
+        }
+
+        if (requestParameters['sortBy'] != null) {
+            queryParameters['sort_by'] = requestParameters['sortBy'];
         }
 
         if (requestParameters['fromLedger'] != null) {

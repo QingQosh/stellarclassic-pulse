@@ -35,11 +35,11 @@ impl LuaTransformer {
         // Load the script
         let script_content = std::fs::read_to_string(script_path)
             .with_context(|| format!("Failed to read Lua script: {}", script_path.display()))?;
-        
+
         lua.load(&script_content)
             .exec()
             .with_context(|| format!("Failed to execute Lua script: {}", script_path.display()))?;
-        
+
         debug!(
             script_path = %script_path.display(),
             timeout_ms = timeout_ms,
@@ -47,16 +47,16 @@ impl LuaTransformer {
             memory_limit_mb = LUA_MEMORY_LIMIT_MB,
             "Lua transformer initialized"
         );
-        
+
         Ok(Self {
             lua: Arc::new(lua),
             timeout: Duration::from_millis(timeout_ms),
             script_path: script_path.display().to_string(),
         })
     }
-    
+
     /// Transform an event using the loaded Lua script
-    /// 
+    ///
     /// Returns:
     /// - Ok(Some(event)) if the event was transformed or passed through
     /// - Ok(None) if the script returned nil (skip the event)
@@ -69,9 +69,10 @@ impl LuaTransformer {
         // Run the Lua transformation in a blocking task with timeout
         let result = tokio::time::timeout(
             timeout,
-            tokio::task::spawn_blocking(move || Self::transform_sync(&lua, event))
-        ).await;
-        
+            tokio::task::spawn_blocking(move || Self::transform_sync(&lua, event)),
+        )
+        .await;
+
         match result {
             Ok(Ok(transformed)) => Ok(transformed),
             Ok(Err(e)) => {
@@ -85,7 +86,7 @@ impl LuaTransformer {
             }
         }
     }
-    
+
     /// Synchronous transformation logic
     fn transform_sync(lua: &Lua, event: SorobanEvent) -> Result<Option<SorobanEvent>> {
         // Set instruction hook to limit CPU usage
@@ -98,15 +99,15 @@ impl LuaTransformer {
             .globals()
             .get("transform_event")
             .context("Lua script must define a 'transform_event' function")?;
-        
+
         // Convert the event to a Lua table
         let event_table = Self::event_to_lua_table(lua, &event)?;
-        
+
         // Call the transform function
         let result: LuaValue = transform_fn
             .call(event_table)
             .context("Error calling transform_event function")?;
-        
+
         // Handle the result
         match result {
             LuaValue::Nil => {
@@ -127,27 +128,27 @@ impl LuaTransformer {
             )),
         }
     }
-    
+
     /// Convert a SorobanEvent to a Lua table
     fn event_to_lua_table<'lua>(lua: &'lua Lua, event: &SorobanEvent) -> Result<Table<'lua>> {
         let table = lua.create_table()?;
-        
+
         table.set("contract_id", event.contract_id.clone())?;
         table.set("event_type", event.event_type.clone())?;
         table.set("tx_hash", event.tx_hash.clone())?;
         table.set("ledger", event.ledger)?;
         table.set("ledger_closed_at", event.ledger_closed_at.clone())?;
-        
+
         if let Some(ref hash) = event.ledger_hash {
             table.set("ledger_hash", hash.clone())?;
         }
-        
+
         table.set("in_successful_call", event.in_successful_call)?;
-        
+
         // Convert JSON values to Lua values
         let value_lua = Self::json_to_lua(lua, &event.value)?;
         table.set("value", value_lua)?;
-        
+
         if let Some(ref topic) = event.topic {
             let topic_table = lua.create_table()?;
             for (i, item) in topic.iter().enumerate() {
@@ -156,10 +157,10 @@ impl LuaTransformer {
             }
             table.set("topic", topic_table)?;
         }
-        
+
         Ok(table)
     }
-    
+
     /// Convert a Lua table back to a SorobanEvent
     fn lua_table_to_event(lua: &Lua, table: Table, original: SorobanEvent) -> Result<SorobanEvent> {
         Ok(SorobanEvent {
@@ -167,9 +168,13 @@ impl LuaTransformer {
             event_type: table.get("event_type").unwrap_or(original.event_type),
             tx_hash: table.get("tx_hash").unwrap_or(original.tx_hash),
             ledger: table.get("ledger").unwrap_or(original.ledger),
-            ledger_closed_at: table.get("ledger_closed_at").unwrap_or(original.ledger_closed_at),
+            ledger_closed_at: table
+                .get("ledger_closed_at")
+                .unwrap_or(original.ledger_closed_at),
             ledger_hash: table.get("ledger_hash").ok().or(original.ledger_hash),
-            in_successful_call: table.get("in_successful_call").unwrap_or(original.in_successful_call),
+            in_successful_call: table
+                .get("in_successful_call")
+                .unwrap_or(original.in_successful_call),
             value: Self::lua_to_json(lua, table.get("value")?)?,
             topic: match table.get::<_, LuaValue>("topic")? {
                 LuaValue::Nil => original.topic,
@@ -185,7 +190,7 @@ impl LuaTransformer {
             },
         })
     }
-    
+
     /// Convert a JSON value to a Lua value
     fn json_to_lua<'lua>(lua: &'lua Lua, value: &Value) -> Result<LuaValue<'lua>> {
         match value {
@@ -217,24 +222,22 @@ impl LuaTransformer {
             }
         }
     }
-    
+
     /// Convert a Lua value to a JSON value
     fn lua_to_json(_lua: &Lua, value: LuaValue) -> Result<Value> {
         match value {
             LuaValue::Nil => Ok(Value::Null),
             LuaValue::Boolean(b) => Ok(Value::Bool(b)),
             LuaValue::Integer(i) => Ok(Value::Number(i.into())),
-            LuaValue::Number(n) => {
-                Ok(serde_json::Number::from_f64(n)
-                    .map(Value::Number)
-                    .unwrap_or(Value::Null))
-            }
+            LuaValue::Number(n) => Ok(serde_json::Number::from_f64(n)
+                .map(Value::Number)
+                .unwrap_or(Value::Null)),
             LuaValue::String(s) => Ok(Value::String(s.to_str()?.to_string())),
             LuaValue::Table(table) => {
                 // Check if it's an array or object
                 let mut is_array = true;
                 let mut max_index = 0;
-                
+
                 for pair in table.clone().pairs::<LuaValue, LuaValue>() {
                     let (key, _) = pair?;
                     if let LuaValue::Integer(i) = key {
@@ -249,7 +252,7 @@ impl LuaTransformer {
                         break;
                     }
                 }
-                
+
                 if is_array && max_index > 0 {
                     let mut arr = Vec::new();
                     for i in 1..=max_index {
@@ -272,7 +275,10 @@ impl LuaTransformer {
                     Ok(Value::Object(obj))
                 }
             }
-            _ => Err(anyhow::anyhow!("Unsupported Lua type: {}", value.type_name())),
+            _ => Err(anyhow::anyhow!(
+                "Unsupported Lua type: {}",
+                value.type_name()
+            )),
         }
     }
 }

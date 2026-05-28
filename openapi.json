@@ -150,6 +150,29 @@
               "nullable": true
             }
           }
+          ,
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "Sort order: asc (oldest first) or desc (newest first, default)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true,
+              "enum": ["asc", "desc"]
+            }
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "description": "Sort column: ledger (default), timestamp, or created_at",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true,
+              "enum": ["ledger", "timestamp", "created_at"]
+            }
+          }
         ],
         "responses": {
           "200": {
@@ -200,6 +223,38 @@
             }
           },
           {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor for keyset pagination (returned as next_cursor)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "Sort order: asc (oldest first) or desc (newest first, default)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true,
+              "enum": ["asc", "desc"]
+            }
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "description": "Sort column: ledger (default), timestamp, or created_at",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true,
+              "enum": ["ledger", "timestamp", "created_at"]
+            }
+          },
+          {
             "name": "from_ledger",
             "in": "query",
             "description": "Return events at or after this ledger",
@@ -228,9 +283,6 @@
           },
           "400": {
             "description": "Invalid contract_id format or ledger range"
-          },
-          "404": {
-            "description": "No events found for contract"
           }
         }
       }
@@ -436,6 +488,16 @@
             "format": "int64",
             "nullable": true
           }
+           "sort": {
+             "type": "string",
+             "nullable": true,
+             "enum": ["asc", "desc"]
+           },
+           "sort_by": {
+             "type": "string",
+             "nullable": true,
+             "enum": ["ledger", "timestamp", "created_at"]
+           }
         }
       }
     }
