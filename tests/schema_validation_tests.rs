@@ -17,10 +17,10 @@ async fn make_router_with_schema(pool: PgPool, api_key: Option<String>) -> axum:
     let prometheus_handle = init_metrics();
     let api_keys = api_key.into_iter().collect();
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
-    
+
     let schema_validator = Arc::new(SchemaValidator::new(pool.clone()));
     schema_validator.load_schemas().await.unwrap();
-    
+
     let config = soroban_pulse::config::Config {
         database_url: String::new(),
         database_replica_url: None,
@@ -64,7 +64,7 @@ async fn make_router_with_schema(pool: PgPool, api_key: Option<String>) -> axum:
         contract_count_cache_ttl_secs: 300,
         index_check_interval_hours: 24,
     };
-    
+
     create_router_with_tx(
         pool.clone(),
         pool,
@@ -163,7 +163,9 @@ async fn register_and_get_schema(pool: PgPool) {
                 .uri(format!("/v1/admin/contracts/{}/schema", contract_id))
                 .header("Authorization", "Bearer test-key")
                 .header("Content-Type", "application/json")
-                .body(Body::from(serde_json::to_string(&json!({"schema": schema})).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&json!({"schema": schema})).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
@@ -255,7 +257,9 @@ async fn invalid_schema_rejected(pool: PgPool) {
                 .uri(format!("/v1/admin/contracts/{}/schema", contract_id))
                 .header("Authorization", "Bearer test-key")
                 .header("Content-Type", "application/json")
-                .body(Body::from(serde_json::to_string(&json!({"schema": invalid_schema})).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&json!({"schema": invalid_schema})).unwrap(),
+                ))
                 .unwrap(),
         )
         .await

@@ -500,6 +500,122 @@ async fn get_events_by_contract_sort_desc_returns_newest_first(pool: PgPool) {
     assert!(data[0]["ledger"].as_i64().unwrap() >= data[1]["ledger"].as_i64().unwrap());
 }
 
+#[sqlx::test(migrations = "./migrations")]
+async fn get_events_by_contract_pagination_page_1(pool: PgPool) {
+    let contract_id = "C1234567890123456789012345678901234567890123456789012345";
+    insert_contract_events(&pool, contract_id, &[100, 200, 300, 400, 500]).await;
+
+    let app = make_router(pool, None);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/v1/events/contract/{}?page=1&limit=2",
+                    contract_id
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(data.len(), 2);
+    assert_eq!(body["page"], 1);
+    assert_eq!(body["limit"], 2);
+    assert_eq!(body["total"], 5);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn get_events_by_contract_pagination_page_2(pool: PgPool) {
+    let contract_id = "C1234567890123456789012345678901234567890123456789012345";
+    insert_contract_events(&pool, contract_id, &[100, 200, 300, 400, 500]).await;
+
+    let app = make_router(pool, None);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/v1/events/contract/{}?page=2&limit=2",
+                    contract_id
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(data.len(), 2);
+    assert_eq!(body["page"], 2);
+    assert_eq!(body["limit"], 2);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn get_events_by_contract_cursor_pagination(pool: PgPool) {
+    let contract_id = "C1234567890123456789012345678901234567890123456789012345";
+    insert_contract_events(&pool, contract_id, &[100, 200, 300, 400, 500]).await;
+
+    let app = make_router(pool.clone(), None);
+
+    // Get first page with cursor
+    let resp1 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/v1/events/contract/{}?limit=2&sort=desc",
+                    contract_id
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp1.status(), StatusCode::OK);
+    let body1: serde_json::Value =
+        serde_json::from_slice(&to_bytes(resp1.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let data1 = body1["data"].as_array().unwrap();
+    assert_eq!(data1.len(), 2);
+
+    let next_cursor = body1["next_cursor"].as_str();
+    assert!(next_cursor.is_some());
+
+    // Get second page with cursor
+    let resp2 = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/v1/events/contract/{}?cursor={}&limit=2&sort=desc",
+                    contract_id,
+                    next_cursor.unwrap()
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp2.status(), StatusCode::OK);
+    let body2: serde_json::Value =
+        serde_json::from_slice(&to_bytes(resp2.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let data2 = body2["data"].as_array().unwrap();
+    assert_eq!(data2.len(), 2);
+
+    // Verify first item of page 2 is different from page 1
+    assert_ne!(
+        data1[data1.len() - 1]["id"].as_str(),
+        data2[0]["id"].as_str()
+    );
+}
+
 // --- GET /v1/events/stats ---
 
 async fn insert_stats_seed_data(pool: &PgPool) {
@@ -654,4 +770,47 @@ async fn stats_requires_auth_when_key_configured(pool: PgPool) {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_conditional_get_304() {
+    let app = tests::helpers::spawn_app().await;
+
+    // Seed events
+    app.seed_random_events(5).await;
+
+    // 1. Initial request to get ETag
+    let client = reqwest::Client::new();
+    let res = client
+        .get(&format!("{}/v1/events", app.address))
+        .send()
+        .await
+        .expect("Failed to execute request.");
+
+    assert_eq!(res.status(), 200);
+
+    let etag = res
+        .headers()
+        .get("ETag")
+        .expect("ETag header missing")
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    assert!(!etag.is_empty(), "ETag should not be empty");
+
+    // 2. Second request with If-None-Match - should return 304
+    let res_not_modified = client
+        .get(&format!("{}/v1/events", app.address))
+        .header("If-None-Match", &etag)
+        .send()
+        .await
+        .expect("Failed second request");
+
+    assert_eq!(res_not_modified.status(), reqwest::StatusCode::NOT_MODIFIED);
+
+    let content_len = res_not_modified.content_length().unwrap_or(0);
+    assert_eq!(content_len, 0, "304 response should have no body");
+
+    // 3. Test that slightly changing cursor still works normally (Optional but good)
 }

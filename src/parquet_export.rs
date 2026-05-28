@@ -1,6 +1,4 @@
-use arrow_array::{
-    ArrayRef, Int64Array, RecordBatch, StringArray,
-};
+use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use chrono::{DateTime, Utc};
 use parquet::arrow::ArrowWriter;
@@ -39,10 +37,16 @@ pub fn write_events_parquet(events: &[EventRow]) -> Result<Vec<u8>, parquet::err
         events.iter().map(|e| e.id.to_string()).collect::<Vec<_>>(),
     ));
     let contract_ids: ArrayRef = Arc::new(StringArray::from(
-        events.iter().map(|e| e.contract_id.clone()).collect::<Vec<_>>(),
+        events
+            .iter()
+            .map(|e| e.contract_id.clone())
+            .collect::<Vec<_>>(),
     ));
     let event_types: ArrayRef = Arc::new(StringArray::from(
-        events.iter().map(|e| e.event_type.clone()).collect::<Vec<_>>(),
+        events
+            .iter()
+            .map(|e| e.event_type.clone())
+            .collect::<Vec<_>>(),
     ));
     let tx_hashes: ArrayRef = Arc::new(StringArray::from(
         events.iter().map(|e| e.tx_hash.clone()).collect::<Vec<_>>(),
@@ -72,7 +76,13 @@ pub fn write_events_parquet(events: &[EventRow]) -> Result<Vec<u8>, parquet::err
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
-            ids, contract_ids, event_types, tx_hashes, ledgers, timestamps, event_datas,
+            ids,
+            contract_ids,
+            event_types,
+            tx_hashes,
+            ledgers,
+            timestamps,
+            event_datas,
             created_ats,
         ],
     )

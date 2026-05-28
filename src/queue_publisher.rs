@@ -27,13 +27,13 @@ mod redis_impl {
         pub async fn new(redis_url: &str, stream_key: String) -> Result<Self, RedisError> {
             let client = redis::Client::open(redis_url)?;
             let conn = ConnectionManager::new(client).await?;
-            
+
             info!(
                 redis_url = %Self::safe_redis_url(redis_url),
                 stream_key = %stream_key,
                 "Redis publisher initialized"
             );
-            
+
             Ok(Self {
                 client: conn,
                 stream_key,
@@ -71,12 +71,17 @@ mod redis_impl {
                 ("ledger", event.ledger.to_string()),
                 ("ledger_closed_at", event.ledger_closed_at.clone()),
                 ("value", event.value.to_string()),
-                ("topic", event.topic.as_ref().map(|t| t.to_string()).unwrap_or_else(|| "null".to_string())),
+                (
+                    "topic",
+                    event
+                        .topic
+                        .as_ref()
+                        .map(|t| t.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                ),
             ];
 
-            self.client
-                .xadd(&self.stream_key, "*", &fields)
-                .await?;
+            self.client.xadd(&self.stream_key, "*", &fields).await?;
 
             Ok(())
         }
@@ -183,7 +188,7 @@ mod tests {
     #[test]
     fn test_safe_redis_url() {
         use super::redis_impl::RedisPublisher;
-        
+
         let url = "redis://user:password@localhost:6379/0";
         let safe = RedisPublisher::safe_redis_url(url);
         assert!(!safe.contains("password"));
@@ -195,7 +200,7 @@ mod tests {
     #[test]
     fn test_safe_redis_url_unparseable() {
         use super::redis_impl::RedisPublisher;
-        
+
         let url = "not-a-url";
         let safe = RedisPublisher::safe_redis_url(url);
         assert_eq!(safe, "<unparseable>");

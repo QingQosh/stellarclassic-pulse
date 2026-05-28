@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Chatbot • Claude</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Geist Sans", Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --surface: #f8f9fd;
+      --surface-strong: #eef0f6;
+      --border: #dfe3ee;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --accent: #4f6ef7;
+      --accent-soft: rgba(79, 110, 247, 0.12);
+      --shadow: 0 28px 80px rgba(31, 41, 55, 0.08);
+      --radius: 18px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(circle at top left, rgba(79, 110, 247, 0.12), transparent 28%),
+        linear-gradient(180deg, #f8fbff 0%, #eff2f8 100%);
+      color: var(--text);
+      font-synthesis: none;
+      text-rendering: optimizeLegibility;
+    }
+
+    .app-shell {
+      display: grid;
+      min-height: 100vh;
+      place-items: center;
+      padding: 32px;
+    }
+
+    .auth-card {
+      width: min(460px, 100%);
+      border-radius: 24px;
+      padding: 36px;
+      background: rgba(18, 25, 40, 0.96);
+      color: #f8fbff;
+      box-shadow: 0 40px 90px rgba(15, 23, 42, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .brand-hero {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 28px;
+    }
+
+    .brand-mark {
+      width: 52px;
+      height: 52px;
+      display: grid;
+      place-items: center;
+      border-radius: 16px;
+      background: linear-gradient(135deg, #6675ff, #2eb5ff);
+      box-shadow: 0 18px 40px rgba(59, 130, 246, 0.28);
+    }
+
+    .brand-mark::before {
+      content: "AI";
+      color: #fff;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      font-size: 1rem;
+    }
+
+    .brand-copy h1 {
+      margin: 0;
+      font-size: clamp(1.65rem, 2vw, 2rem);
+      letter-spacing: -0.02em;
+    }
+
+    .brand-copy p {
+      margin: 8px 0 0;
+      color: rgba(248, 251, 255, 0.72);
+      line-height: 1.6;
+    }
+
+    .auth-toggle {
+      display: inline-flex;
+      gap: 8px;
+      margin-bottom: 26px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      padding: 6px;
+    }
+
+    .auth-toggle button {
+      border: none;
+      background: transparent;
+      color: rgba(255, 255, 255, 0.68);
+      padding: 12px 20px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: all 180ms ease;
+      font-size: 0.96rem;
+      font-weight: 600;
+    }
+
+    .auth-toggle button.active,
+    .auth-toggle button:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.12);
+    }
+
+    .form-field {
+      display: grid;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+
+    .form-field label {
+      font-size: 0.92rem;
+      color: rgba(248, 251, 255, 0.78);
+    }
+
+    .form-field input {
+      width: 100%;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 14px;
+      padding: 16px 18px;
+      background: rgba(255, 255, 255, 0.06);
+      color: #fff;
+      font-size: 1rem;
+      transition: border-color 180ms ease, background 180ms ease;
+    }
+
+    .form-field input:focus {
+      outline: none;
+      background: rgba(255, 255, 255, 0.1);
+      border-color: #7f97ff;
+      box-shadow: 0 0 0 4px rgba(79, 110, 247, 0.12);
+    }
+
+    .auth-cta {
+      width: 100%;
+      border: none;
+      border-radius: 14px;
+      padding: 16px 20px;
+      margin-top: 12px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 14px 30px rgba(79, 110, 247, 0.18);
+      transition: transform 160ms ease, box-shadow 160ms ease;
+    }
+
+    .auth-cta:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 18px 36px rgba(79, 110, 247, 0.24);
+    }
+
+    .auth-footer {
+      margin-top: 24px;
+      font-size: 0.92rem;
+      color: rgba(248, 251, 255, 0.64);
+      line-height: 1.7;
+    }
+
+    .chat-app {
+      width: min(1260px, 100%);
+      margin: 0 auto;
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 24px;
+      padding: 36px;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 32px;
+      align-self: start;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 24px;
+      min-height: calc(100vh - 72px);
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    .sidebar-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .new-chat {
+      border: none;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 14px;
+      padding: 14px 18px;
+      cursor: pointer;
+      font-weight: 700;
+      transition: background 160ms ease, transform 160ms ease;
+    }
+
+    .new-chat:hover {
+      transform: translateY(-1px);
+      background: #4261e1;
+    }
+
+    .chat-list {
+      display: grid;
+      gap: 12px;
+    }
+
+    .chat-item {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: #f8faff;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: background 160ms ease, border-color 160ms ease;
+    }
+
+    .chat-item:hover {
+      background: #eef2ff;
+      border-color: rgba(79, 110, 247, 0.14);
+    }
+
+    .chat-item.active {
+      background: rgba(79, 110, 247, 0.12);
+      border-color: rgba(79, 110, 247, 0.25);
+    }
+
+    .chat-title {
+      font-weight: 700;
+      color: var(--text);
+      margin: 0;
+      font-size: 0.98rem;
+    }
+
+    .chat-meta {
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+
+    .chat-delete {
+      opacity: 0;
+      transition: opacity 140ms ease;
+      color: var(--muted);
+      cursor: pointer;
+    }
+
+    .chat-item:hover .chat-delete,
+    .chat-item.active .chat-delete {
+      opacity: 1;
+    }
+
+    .main-panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      overflow: hidden;
+    }
+
+    .chat-header {
+      padding: 24px 24px 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .avatar {
+      width: 54px;
+      height: 54px;
+      border-radius: 18px;
+      background: linear-gradient(135deg, #4f6ef7, #2ea3ff);
+      color: white;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      font-size: 1.05rem;
+    }
+
+    .assistant-copy {
+      display: grid;
+      gap: 4px;
+    }
+
+    .assistant-copy h2 {
+      margin: 0;
+      font-size: 1.1rem;
+      letter-spacing: -0.02em;
+    }
+
+    .assistant-copy p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .status-pill {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      background: #f0fbf4;
+      border-radius: 999px;
+      color: #1f6b34;
+      font-size: 0.92rem;
+      border: 1px solid rgba(85, 179, 109, 0.16);
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: #34d399;
+      box-shadow: 0 0 0 4px rgba(52, 211, 153, 0.18);
+    }
+
+    .message-column {
+      padding: 24px 24px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      overflow: hidden;
+    }
+
+    .message-feed {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      overflow-y: auto;
+      padding-right: 6px;
+      margin-bottom: 18px;
+    }
+
+    .bubble {
+      max-width: min(76%, 680px);
+      padding: 16px 18px;
+      border-radius: 22px;
+      position: relative;
+      display: inline-flex;
+      flex-direction: column;
+      gap: 10px;
+      line-height: 1.6;
+    }
+
+    .bubble.user {
+      margin-left: auto;
+      background: linear-gradient(135deg, #4f6ef7, #3b71ff);
+      color: white;
+      border-bottom-right-radius: 4px;
+      border-bottom-left-radius: 22px;
+      border-top-right-radius: 22px;
+      border-top-left-radius: 22px;
+    }
+
+    .bubble.assistant {
+      margin-right: auto;
+      background: #f5f7fb;
+      color: var(--text);
+      border-bottom-left-radius: 4px;
+      border-bottom-right-radius: 22px;
+      border-top-left-radius: 22px;
+      border-top-right-radius: 22px;
+    }
+
+    .bubble-time {
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: right;
+      opacity: 0.85;
+    }
+
+    .typing-indicator {
+      width: 100%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 56px;
+      background: #f5f7fb;
+      border-radius: 22px;
+      border-bottom-left-radius: 4px;
+      padding: 14px 16px;
+    }
+
+    .dots {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #6b7280;
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+
+    .dot:nth-child(2) {
+      animation-delay: 0.15s;
+    }
+
+    .dot:nth-child(3) {
+      animation-delay: 0.3s;
+    }
+
+    @keyframes pulse {
+      0%, 100% {
+        transform: translateY(0);
+        opacity: 0.45;
+      }
+      50% {
+        transform: translateY(-4px);
+        opacity: 1;
+      }
+    }
+
+    .composer {
+      padding: 20px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    .composer-card {
+      display: grid;
+      gap: 14px;
+      border-radius: 20px;
+      padding: 18px;
+      border: 1px solid rgba(114, 122, 148, 0.12);
+      background: #fff;
+      box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
+    }
+
+    .composer-input {
+      width: 100%;
+      min-height: 56px;
+      max-height: 180px;
+      border: none;
+      resize: none;
+      padding: 16px 18px;
+      border-radius: 16px;
+      background: #f5f7fb;
+      color: var(--text);
+      font-size: 1rem;
+      line-height: 1.65;
+      outline: none;
+    }
+
+    .composer-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .disclaimer {
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.6;
+    }
+
+    .send-button {
+      border: none;
+      background: var(--accent);
+      color: white;
+      min-width: 54px;
+      min-height: 54px;
+      border-radius: 16px;
+      display: inline-grid;
+      place-items: center;
+      cursor: pointer;
+      transition: transform 160ms ease, background 160ms ease;
+      box-shadow: 0 14px 32px rgba(79, 110, 247, 0.18);
+    }
+
+    .send-button:hover {
+      transform: translateY(-1px);
+      background: #3655e5;
+    }
+
+    .send-button svg {
+      width: 18px;
+      height: 18px;
+      stroke: white;
+      stroke-width: 2.2;
+      fill: none;
+    }
+
+    @media (max-width: 980px) {
+      .chat-app {
+        grid-template-columns: 1fr;
+        padding: 24px;
+      }
+
+      .sidebar {
+        min-height: auto;
+        position: static;
+        order: 2;
+      }
+
+      .main-panel {
+        order: 1;
+      }
+    }
+
+    @media (max-width: 680px) {
+      .auth-card {
+        padding: 28px 20px;
+      }
+
+      .chat-header,
+      .composer {
+        padding: 20px;
+      }
+
+      .message-feed {
+        padding-right: 0;
+      }
+
+      .chat-item {
+        padding: 14px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell" id="app">
+    <section class="auth-card" id="authScreen">
+      <div class="brand-hero">
+        <div class="brand-mark"></div>
+        <div class="brand-copy">
+          <h1>AI Chatbot</h1>
+          <p>Access a polished Claude-powered assistant for your team, with secure login and fast workflows.</p>
+        </div>
+      </div>
+      <div class="auth-toggle">
+        <button class="active" data-mode="signin">Sign In</button>
+        <button data-mode="signup">Sign Up</button>
+      </div>
+      <div class="form-field">
+        <label for="email">Email</label>
+        <input type="email" id="email" placeholder="you@example.com" autocomplete="email" />
+      </div>
+      <div class="form-field">
+        <label for="password">Password</label>
+        <input type="password" id="password" placeholder="Enter your password" autocomplete="current-password" />
+      </div>
+      <button class="auth-cta">Continue</button>
+      <p class="auth-footer">Powered by Claude. Safe, secure, and designed for confident collaboration.</p>
+    </section>
+
+    <main class="chat-app" id="mainScreen" style="display:none;">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <span>Chat history</span>
+          <button class="new-chat">New Chat</button>
+        </div>
+        <div class="chat-list">
+          <div class="chat-item active">
+            <div>
+              <p class="chat-title">Weekly planning</p>
+              <p class="chat-meta">Claude • 5 messages</p>
+            </div>
+            <span class="chat-delete">✕</span>
+          </div>
+          <div class="chat-item">
+            <div>
+              <p class="chat-title">Product launch</p>
+              <p class="chat-meta">Claude • 3 messages</p>
+            </div>
+            <span class="chat-delete">✕</span>
+          </div>
+          <div class="chat-item">
+            <div>
+              <p class="chat-title">Sales follow up</p>
+              <p class="chat-meta">Claude • 7 messages</p>
+            </div>
+            <span class="chat-delete">✕</span>
+          </div>
+        </div>
+      </aside>
+      <section class="main-panel">
+        <header class="chat-header">
+          <div class="avatar">AI</div>
+          <div class="assistant-copy">
+            <h2>AI Assistant</h2>
+            <p>Powered by Claude</p>
+          </div>
+          <span class="status-pill"><span class="status-dot"></span>Online</span>
+        </header>
+        <div class="message-column">
+          <div class="message-feed">
+            <div class="bubble assistant">
+              <div>Hello! I’m Claude. How can I help you build smarter content today?</div>
+              <div class="bubble-time">09:12 AM</div>
+            </div>
+            <div class="bubble user">
+              <div>Summarize last week’s sales notes into 3 bullets.</div>
+              <div class="bubble-time">09:13 AM</div>
+            </div>
+            <div class="bubble assistant">
+              <div>Sure — here’s a polished summary with actions and context.</div>
+              <div class="bubble-time">09:13 AM</div>
+            </div>
+            <div class="typing-indicator">
+              <div class="dots">
+                <span class="dot"></span>
+                <span class="dot"></span>
+                <span class="dot"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="composer">
+          <div class="composer-card">
+            <textarea class="composer-input" rows="1" placeholder="Ask Claude anything..."></textarea>
+            <div class="composer-footer">
+              <p class="disclaimer">AI can make mistakes. Verify important information.</p>
+              <button class="send-button" aria-label="Send message">
+                <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M5 12h14" />
+                  <path d="M12 5l7 7-7 7" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const authScreen = document.getElementById('authScreen');
+    const mainScreen = document.getElementById('mainScreen');
+    const buttons = document.querySelectorAll('.auth-toggle button');
+
+    buttons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        buttons.forEach(item => item.classList.remove('active'));
+        btn.classList.add('active');
+      });
+    });
+
+    document.querySelector('.auth-cta').addEventListener('click', () => {
+      authScreen.style.display = 'none';
+      mainScreen.style.display = 'grid';
+    });
+
+    const textarea = document.querySelector('.composer-input');
+    textarea.addEventListener('input', () => {
+      textarea.style.height = 'auto';
+      textarea.style.height = textarea.scrollHeight + 'px';
+    });
+  </script>
+</body>
+</html>

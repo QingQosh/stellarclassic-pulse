@@ -83,27 +83,42 @@ fn maybe_add_tenant_condition(
     }
 }
 
-/// Encode a (ledger, id) pair as an opaque URL-safe base64 cursor.
-fn encode_cursor(ledger: i64, id: Uuid) -> String {
-    URL_SAFE_NO_PAD.encode(format!("{ledger}:{id}"))
+/// Encode an opaque cursor containing a sort tag, the sort value (as text), and the id.
+fn encode_cursor_tagged(tag: &str, value: &str, id: Uuid) -> String {
+    URL_SAFE_NO_PAD.encode(format!("{}|{}|{}", tag, value, id))
 }
 
-/// Decode a cursor back to (ledger, id). Returns a validation error on malformed input.
-fn decode_cursor(cursor: &str) -> Result<(i64, Uuid), AppError> {
+/// Decode a tagged cursor into (tag, value, id). Value is left as text and parsed by the caller.
+fn decode_cursor_tagged(cursor: &str) -> Result<(String, String, Uuid), AppError> {
     let bytes = URL_SAFE_NO_PAD
         .decode(cursor)
         .map_err(|_| AppError::Validation("invalid cursor".to_string()))?;
     let s = std::str::from_utf8(&bytes)
         .map_err(|_| AppError::Validation("invalid cursor".to_string()))?;
-    let (ledger_str, id_str) = s
-        .split_once(':')
-        .ok_or_else(|| AppError::Validation("invalid cursor".to_string()))?;
-    let ledger = ledger_str
-        .parse::<i64>()
-        .map_err(|_| AppError::Validation("invalid cursor".to_string()))?;
-    let id =
-        Uuid::parse_str(id_str).map_err(|_| AppError::Validation("invalid cursor".to_string()))?;
-    Ok((ledger, id))
+    if s.contains('|') {
+        let mut parts = s.splitn(3, '|');
+        let tag = parts
+            .next()
+            .ok_or_else(|| AppError::Validation("invalid cursor".to_string()))?
+            .to_string();
+        let val = parts
+            .next()
+            .ok_or_else(|| AppError::Validation("invalid cursor".to_string()))?
+            .to_string();
+        let id_str = parts
+            .next()
+            .ok_or_else(|| AppError::Validation("invalid cursor".to_string()))?;
+        let id = Uuid::parse_str(id_str)
+            .map_err(|_| AppError::Validation("invalid cursor".to_string()))?;
+        Ok((tag, val, id))
+    } else {
+        let (ledger_str, id_str) = s
+            .rsplit_once(':')
+            .ok_or_else(|| AppError::Validation("invalid cursor".to_string()))?;
+        let id = Uuid::parse_str(id_str)
+            .map_err(|_| AppError::Validation("invalid cursor".to_string()))?;
+        Ok(("ledger".to_string(), ledger_str.to_string(), id))
+    }
 }
 
 /// Map sqlx rows to a JSON array, projecting only the requested columns.
@@ -170,39 +185,13 @@ fn rows_to_json(
                         event.insert(col.to_string(), decrypted);
                     }
                 }
-                "event_data_normalized" => {
-                    event.insert(
-                        col.to_string(),
-                        json!(row.try_get::<Option<Value>, _>(col)?),
-                    );
-                }
-                "event_data_decoded" => {
-                    event.insert(
-                        col.to_string(),
-                        json!(row.try_get::<Option<Value>, _>(col)?),
-                    );
-                }
-                "ledger_hash" => {
-                    event.insert(
-                        col.to_string(),
-                        json!(row.try_get::<Option<String>, _>(col)?),
-                    );
-                }
-                "in_successful_call" => {
-                    event.insert(col.to_string(), json!(row.try_get::<bool, _>(col)?));
-                }
-                "created_at" => {
-                    event.insert(
-                        col.to_string(),
-                        json!(row.try_get::<DateTime<Utc>, _>(col)?),
-                    );
-                }
-                "schema_version" => {
-                    event.insert(col.to_string(), json!(row.try_get::<i32, _>(col)?));
-                }
-                "anonymized" => {
-                    event.insert(col.to_string(), json!(row.try_get::<bool, _>(col)?));
-                }
+                "event_data_normalized" => { event.insert(col.to_string(), json!(row.try_get::<Option<Value>, _>(col)?)); }
+                "event_data_decoded" => { event.insert(col.to_string(), json!(row.try_get::<Option<Value>, _>(col)?)); }
+                "ledger_hash" => { event.insert(col.to_string(), json!(row.try_get::<Option<String>, _>(col)?)); }
+                "in_successful_call" => { event.insert(col.to_string(), json!(row.try_get::<bool, _>(col)?)); }
+                "created_at" => { event.insert(col.to_string(), json!(row.try_get::<DateTime<Utc>, _>(col)?)); }
+                "schema_version" => { event.insert(col.to_string(), json!(row.try_get::<i32, _>(col)?)); }
+                "anonymized" => { event.insert(col.to_string(), json!(row.try_get::<bool, _>(col)?)); }
                 _ => {}
             }
         }
@@ -498,12 +487,10 @@ pub async fn get_event_stats(State(state): State<AppState>) -> Result<impl IntoR
 
     let top_contracts = top_rows
         .into_iter()
-        .map(
-            |(contract_id, event_count)| crate::models::ContractStatEntry {
-                contract_id,
-                event_count,
-            },
-        )
+        .map(|(contract_id, event_count)| crate::models::ContractStatEntry {
+            contract_id,
+            event_count,
+        })
         .collect();
 
     let stats = crate::models::EventStats {
@@ -1086,27 +1073,13 @@ fn filter_fields(
                 let decrypted = decrypt_event_data(&event.event_data, enc_key, enc_key_old);
                 map.insert(col.to_string(), decrypted);
             }
-            "event_data_normalized" => {
-                map.insert(col.to_string(), json!(event.event_data_normalized));
-            }
-            "event_data_decoded" => {
-                map.insert(col.to_string(), json!(event.event_data_decoded));
-            }
-            "ledger_hash" => {
-                map.insert(col.to_string(), json!(event.ledger_hash));
-            }
-            "in_successful_call" => {
-                map.insert(col.to_string(), json!(event.in_successful_call));
-            }
-            "created_at" => {
-                map.insert(col.to_string(), json!(event.created_at));
-            }
-            "schema_version" => {
-                map.insert(col.to_string(), json!(event.schema_version));
-            }
-            "anonymized" => {
-                map.insert(col.to_string(), json!(event.anonymized));
-            }
+            "event_data_normalized" => { map.insert(col.to_string(), json!(event.event_data_normalized)); }
+            "event_data_decoded"    => { map.insert(col.to_string(), json!(event.event_data_decoded)); }
+            "ledger_hash"           => { map.insert(col.to_string(), json!(event.ledger_hash)); }
+            "in_successful_call"    => { map.insert(col.to_string(), json!(event.in_successful_call)); }
+            "created_at"  => { map.insert(col.to_string(), json!(event.created_at)); }
+            "schema_version" => { map.insert(col.to_string(), json!(event.schema_version)); }
+            "anonymized"     => { map.insert(col.to_string(), json!(event.anonymized)); }
             _ => {}
         }
     }
@@ -1220,31 +1193,33 @@ pub async fn get_events(
 
     let limit = params.limit();
     let columns = resolve_columns(&params)?;
-    let sort_order = params.sort.unwrap_or(crate::models::SortOrder::Desc);
+    let sort_order = params
+        .sort
+        .unwrap_or(crate::models::SortOrder::Desc);
     let dir = sort_order.as_sql();
-    let sort_by = params.sort_by.unwrap_or(crate::models::SortBy::Ledger);
+    let sort_by = params
+        .sort_by
+        .unwrap_or(crate::models::SortBy::Ledger);
     let sort_col = sort_by.as_sql_col();
 
     // Cursor-based path
     if let Some(ref cursor_str) = params.cursor {
         let (cursor_tag, cursor_val_text, cursor_id) = decode_cursor_tagged(cursor_str)?;
         if cursor_tag != sort_by.as_tag() {
-            return Err(crate::error::AppError::Validation(
+            return Err(AppError::Validation(
                 "cursor sort column does not match sort_by".to_string(),
             ));
         }
 
+        // For DESC (default): rows where (sort_col, id) < cursor
+        // For ASC: rows where (sort_col, id) > cursor
         let cursor_op = if sort_order == crate::models::SortOrder::Asc {
             ">"
         } else {
             "<"
         };
 
-        let mut conditions: Vec<String> = vec![format!(
-            "({col}, id) {op} ($1, $2)",
-            col = sort_col,
-            op = cursor_op
-        )];
+        let mut conditions: Vec<String> = vec![format!("({col}, id) {op} ($1, $2)", col = sort_col, op = cursor_op)];
         let mut bind_idx: i32 = 3;
 
         if params.contract_id.is_some() {
@@ -1272,9 +1247,7 @@ pub async fn get_events(
             bind_idx += 1;
         }
         if params.search.is_some() {
-            conditions.push(format!(
-                "event_data_tsv @@ plainto_tsquery('english', ${bind_idx})"
-            ));
+            conditions.push(format!("event_data_tsv @@ plainto_tsquery('english', ${bind_idx})"));
             bind_idx += 1;
         }
         if from_ts.is_some() {
@@ -1296,33 +1269,34 @@ pub async fn get_events(
         if !select_cols.contains(&"id") {
             select_cols.push("id");
         }
+        // Always fetch created_at for ETag computation
         if !select_cols.contains(&"created_at") {
             select_cols.push("created_at");
         }
 
-        let query_str = format!(
-            "SELECT {} FROM events {} ORDER BY {col} {dir}, id {dir} LIMIT ${}",
-            select_cols.join(", "),
-            where_clause,
-            col = sort_col,
-            dir = dir,
-            bind_idx,
-        );
+        // Bind the cursor value according to the requested sort column.
+        let mut q = sqlx::query(&{
+            format!(
+                "SELECT {} FROM events {} ORDER BY {col} {dir}, id {dir} LIMIT ${}",
+                select_cols.join(", "),
+                where_clause,
+                col = sort_col,
+                dir = dir,
+                bind_idx
+            )
+        });
 
-        let mut q = sqlx::query(&query_str);
         match sort_by {
             crate::models::SortBy::Ledger => {
                 let val = cursor_val_text.parse::<i64>().map_err(|_| {
-                    crate::error::AppError::Validation("invalid ledger cursor".to_string())
+                    AppError::Validation("invalid cursor for ledger sort".to_string())
                 })?;
                 q = q.bind(val).bind(cursor_id);
             }
             crate::models::SortBy::Timestamp | crate::models::SortBy::CreatedAt => {
                 let ts = cursor_val_text
-                    .parse::<chrono::DateTime<chrono::Utc>>()
-                    .map_err(|_| {
-                        crate::error::AppError::Validation("invalid timestamp cursor".to_string())
-                    })?;
+                    .parse::<DateTime<Utc>>()
+                    .map_err(|_| AppError::Validation("invalid cursor timestamp".to_string()))?;
                 q = q.bind(ts).bind(cursor_id);
             }
         }
@@ -1363,26 +1337,22 @@ pub async fn get_events(
         let has_more = rows.len() as i64 == limit;
         let next_cursor = if has_more {
             let last = rows.last().unwrap();
-            let last_id: uuid::Uuid = last.try_get("id")?;
+            let last_id: Uuid = last.try_get("id")?;
             let last_val_text = match sort_by {
                 crate::models::SortBy::Ledger => {
                     let v: i64 = last.try_get("ledger")?;
                     v.to_string()
                 }
                 crate::models::SortBy::Timestamp => {
-                    let v: chrono::DateTime<chrono::Utc> = last.try_get("timestamp")?;
+                    let v: DateTime<Utc> = last.try_get("timestamp")?;
                     v.to_rfc3339()
                 }
                 crate::models::SortBy::CreatedAt => {
-                    let v: chrono::DateTime<chrono::Utc> = last.try_get("created_at")?;
+                    let v: DateTime<Utc> = last.try_get("created_at")?;
                     v.to_rfc3339()
                 }
             };
-            Some(encode_cursor_tagged(
-                sort_by.as_tag(),
-                &last_val_text,
-                last_id,
-            ))
+            Some(encode_cursor_tagged(sort_by.as_tag(), &last_val_text, last_id))
         } else {
             None
         };
@@ -1423,8 +1393,7 @@ pub async fn get_events(
             let mut resp = ndjson_response(events.into_iter()).into_response();
             if let Some(ref tag) = etag {
                 resp.headers_mut().insert("ETag", tag.parse().unwrap());
-                resp.headers_mut()
-                    .insert("Cache-Control", "no-cache".parse().unwrap());
+                resp.headers_mut().insert("Cache-Control", "no-cache".parse().unwrap());
             }
             return Ok(resp);
         }
@@ -1437,8 +1406,7 @@ pub async fn get_events(
         }));
         if let Some(ref tag) = etag {
             resp.headers_mut().insert("ETag", tag.parse().unwrap());
-            resp.headers_mut()
-                .insert("Cache-Control", "no-cache".parse().unwrap());
+            resp.headers_mut().insert("Cache-Control", "no-cache".parse().unwrap());
         }
         if compact_mode {
             resp.headers_mut().insert(
@@ -1481,9 +1449,7 @@ pub async fn get_events(
         bind_idx += 1;
     }
     if params.search.is_some() {
-        conditions.push(format!(
-            "event_data_tsv @@ plainto_tsquery('english', ${bind_idx})"
-        ));
+        conditions.push(format!("event_data_tsv @@ plainto_tsquery('english', ${bind_idx})"));
         bind_idx += 1;
     }
     if from_ts.is_some() {
@@ -1562,26 +1528,22 @@ pub async fn get_events(
     let has_more = rows.len() as i64 == limit;
     let next_cursor = if has_more {
         let last = rows.last().unwrap();
-        let last_id: uuid::Uuid = last.try_get("id")?;
+        let last_id: Uuid = last.try_get("id")?;
         let last_val_text = match sort_by {
             crate::models::SortBy::Ledger => {
                 let v: i64 = last.try_get("ledger")?;
                 v.to_string()
             }
             crate::models::SortBy::Timestamp => {
-                let v: chrono::DateTime<chrono::Utc> = last.try_get("timestamp")?;
+                let v: DateTime<Utc> = last.try_get("timestamp")?;
                 v.to_rfc3339()
             }
             crate::models::SortBy::CreatedAt => {
-                let v: chrono::DateTime<chrono::Utc> = last.try_get("created_at")?;
+                let v: DateTime<Utc> = last.try_get("created_at")?;
                 v.to_rfc3339()
             }
         };
-        Some(encode_cursor_tagged(
-            sort_by.as_tag(),
-            &last_val_text,
-            last_id,
-        ))
+        Some(encode_cursor_tagged(sort_by.as_tag(), &last_val_text, last_id))
     } else {
         None
     };
@@ -1633,11 +1595,12 @@ pub async fn get_events(
         // In multi-tenant mode we can't use the pg_class estimate (it's for the whole table).
         // Fall back to an exact count scoped to the tenant.
         if tenant_id.is_some() {
-            let count =
-                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM events WHERE tenant_id = $1")
-                    .bind(tenant_id)
-                    .fetch_one(&state.read_pool)
-                    .await?;
+            let count = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM events WHERE tenant_id = $1",
+            )
+            .bind(tenant_id)
+            .fetch_one(&state.read_pool)
+            .await?;
             (count, false)
         } else {
             let count = sqlx::query_scalar::<_, i64>(
@@ -1811,8 +1774,8 @@ pub async fn export_events(
             })
             .collect::<Result<_, _>>()?;
 
-        let bytes =
-            write_events_parquet(&event_rows).map_err(|e| AppError::Internal(e.to_string()))?;
+        let bytes = write_events_parquet(&event_rows)
+            .map_err(|e| AppError::Internal(e.to_string()))?;
 
         return Ok(Response::builder()
             .status(StatusCode::OK)
@@ -1955,26 +1918,34 @@ pub async fn get_recent_events(
         ("contract_id" = String, Path, description = "Stellar contract ID (56-char, starts with C)"),
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
         ("limit" = Option<i64>, Query, description = "Results per page, 1–100 (default: 20)"),
+        ("cursor" = Option<String>, Query, description = "Opaque cursor for keyset pagination (returned as next_cursor)"),
         ("exact_count" = Option<bool>, Query, description = "Use exact COUNT(*) instead of approximate (default: false)"),
         ("from_ledger" = Option<i64>, Query, description = "Return events at or after this ledger"),
         ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
         ("sort" = Option<String>, Query, description = "Sort order: asc (oldest first) or desc (newest first, default)"),
+        ("sort_by" = Option<crate::models::SortBy>, Query, description = "Sort column: ledger (default), timestamp, or created_at"),
     ),
     responses(
         (status = 200, description = "Events for the given contract"),
         (status = 400, description = "Invalid contract_id format or ledger range", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
-        (status = 404, description = "No events found for contract", body = ErrorResponse),
         (status = 429, description = "Too many requests", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
 pub async fn get_events_by_contract(
-    State(state): State<AppState>,
-    Path(contract_id): Path<String>,
-    Query(params): Query<PaginationParams>,
+    State(state,
     headers: axum::http::HeaderMap,
-) -> Result<impl axum::response::IntoResponse, AppError> {
+): State<AppState>,
+    Path(contract_id,
+    headers: axum::http::HeaderMap,
+): Path<String>,
+    Query(params,
+    headers: axum::http::HeaderMap,
+): Query<PaginationParams>,
+,
+    headers: axum::http::HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
     validate_contract_id(&contract_id)?;
 
     if let (Some(from), Some(to)) = (params.from_ledger, params.to_ledger) {
@@ -1985,14 +1956,138 @@ pub async fn get_events_by_contract(
         }
     }
 
+    let sort_order = params
+        .sort
+        .unwrap_or(crate::models::SortOrder::Desc);
+    let dir = sort_order.as_sql();
+    let sort_by = params
+        .sort_by
+        .unwrap_or(crate::models::SortBy::Ledger);
+    let sort_col = sort_by.as_sql_col();
+
+    // Cursor-based path
+    if let Some(ref cursor_str) = params.cursor {
+        let (cursor_tag, cursor_val_text, cursor_id) = decode_cursor_tagged(cursor_str)?;
+        if cursor_tag != sort_by.as_tag() {
+            return Err(AppError::Validation(
+                "cursor sort column does not match sort_by".to_string(),
+            ));
+        }
+
+        let cursor_op = if sort_order == crate::models::SortOrder::Asc {
+            ">"
+        } else {
+            "<"
+        };
+
+        let mut conditions: Vec<String> = vec![
+            "contract_id = $1".to_string(),
+            format!("({col}, id) {op} ($2, $3)", col = sort_col, op = cursor_op),
+        ];
+        let mut bind_idx: i32 = 4;
+
+        if params.from_ledger.is_some() {
+            conditions.push(format!("ledger >= ${bind_idx}"));
+            bind_idx += 1;
+        }
+        if params.to_ledger.is_some() {
+            conditions.push(format!("ledger <= ${bind_idx}"));
+            bind_idx += 1;
+        }
+
+        let where_clause = format!("WHERE {}", conditions.join(" AND "));
+        let mut select_cols: Vec<&str> = vec!["id", "contract_id", "event_type", "tx_hash", sort_col, "timestamp", "event_data", "created_at"];
+        select_cols.sort_unstable();
+        select_cols.dedup();
+
+        let mut q = sqlx::query(&format!(
+            "SELECT {} FROM events {} ORDER BY {col} {dir}, id {dir} LIMIT ${}",
+            select_cols.join(", "),
+            where_clause,
+            col = sort_col,
+            dir = dir,
+            bind_idx
+        )).bind(&contract_id);
+
+        match sort_by {
+            crate::models::SortBy::Ledger => {
+                let val = cursor_val_text.parse::<i64>().map_err(|_| {
+                    AppError::Validation("invalid cursor for ledger sort".to_string())
+                })?;
+                q = q.bind(val).bind(cursor_id);
+            }
+            crate::models::SortBy::Timestamp | crate::models::SortBy::CreatedAt => {
+                let ts = cursor_val_text
+                    .parse::<DateTime<Utc>>()
+                    .map_err(|_| AppError::Validation("invalid cursor timestamp".to_string()))?;
+                q = q.bind(ts).bind(cursor_id);
+            }
+        }
+
+        if let Some(fl) = params.from_ledger {
+            q = q.bind(fl);
+        }
+        if let Some(tl) = params.to_ledger {
+            q = q.bind(tl);
+        }
+        q = q.bind(params.limit());
+
+        let rows = q.fetch_all(&state.read_pool).await?;
+        let limit = params.limit();
+        let has_more = rows.len() as i64 == limit;
+        let next_cursor = if has_more {
+            let last = rows.last().unwrap();
+            let last_id: Uuid = last.try_get("id")?;
+            let last_val_text = match sort_by {
+                crate::models::SortBy::Ledger => {
+                    let v: i64 = last.try_get("ledger")?;
+                    v.to_string()
+                }
+                crate::models::SortBy::Timestamp => {
+                    let v: DateTime<Utc> = last.try_get("timestamp")?;
+                    v.to_rfc3339()
+                }
+                crate::models::SortBy::CreatedAt => {
+                    let v: DateTime<Utc> = last.try_get("created_at")?;
+                    v.to_rfc3339()
+                }
+            };
+            Some(encode_cursor_tagged(sort_by.as_tag(), &last_val_text, last_id))
+        } else {
+            None
+        };
+
+        let columns = resolve_columns(&params)?;
+        let events = rows_to_json(
+            &rows,
+            &columns,
+            state.encryption_key.as_ref(),
+            state.encryption_key_old.as_ref(),
+            params.compact.unwrap_or(false),
+        )?;
+
+        let mut response = json!({
+            "data": events,
+            "contract_id": contract_id,
+            "next_cursor": next_cursor,
+            "limit": limit,
+        });
+
+        if let Some(fl) = params.from_ledger {
+            response["from_ledger"] = json!(fl);
+        }
+        if let Some(tl) = params.to_ledger {
+            response["to_ledger"] = json!(tl);
+        }
+
+        return Ok(Json(response));
+    }
+
+    // Offset-based path (deprecated fallback)
     let limit = params.limit();
     let offset = params.offset();
     let exact = params.exact_count.unwrap_or(false);
     let columns = resolve_columns(&params)?;
-    let dir = params
-        .sort
-        .unwrap_or(crate::models::SortOrder::Desc)
-        .as_sql();
 
     let mut conditions: Vec<String> = vec!["contract_id = $1".to_string()];
     let mut bind_idx: i32 = 2;
@@ -2007,13 +2102,20 @@ pub async fn get_events_by_contract(
     }
 
     let where_clause = format!("WHERE {}", conditions.join(" AND "));
+    let mut select_cols: Vec<&str> = vec!["id", "contract_id", "event_type", "tx_hash", sort_col, "timestamp", "event_data", "created_at"];
+    select_cols.sort_unstable();
+    select_cols.dedup();
+
     let query_str = format!(
-        "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at, 0::bigint AS total_count \
-         FROM events {} ORDER BY ledger {dir} LIMIT ${} OFFSET ${}",
-        where_clause, bind_idx, bind_idx + 1,
+        "SELECT {} FROM events {} ORDER BY {col} {dir}, id {dir} LIMIT ${} OFFSET ${}",
+        select_cols.join(", "),
+        where_clause,
+        col = sort_col,
+        dir = dir,
+        bind_idx, bind_idx + 1,
     );
 
-    let mut q = sqlx::query_as::<_, models::Event>(&query_str).bind(&contract_id);
+    let mut q = sqlx::query(&query_str).bind(&contract_id);
     if let Some(fl) = params.from_ledger {
         q = q.bind(fl);
     }
@@ -2024,21 +2126,36 @@ pub async fn get_events_by_contract(
 
     let rows = q.fetch_all(&state.read_pool).await?;
 
-    if rows.is_empty() {
-        return Err(AppError::NotFound);
-    }
+    let has_more = rows.len() as i64 == limit;
+    let next_cursor = if has_more {
+        let last = rows.last().unwrap();
+        let last_id: Uuid = last.try_get("id")?;
+        let last_val_text = match sort_by {
+            crate::models::SortBy::Ledger => {
+                let v: i64 = last.try_get("ledger")?;
+                v.to_string()
+            }
+            crate::models::SortBy::Timestamp => {
+                let v: DateTime<Utc> = last.try_get("timestamp")?;
+                v.to_rfc3339()
+            }
+            crate::models::SortBy::CreatedAt => {
+                let v: DateTime<Utc> = last.try_get("created_at")?;
+                v.to_rfc3339()
+            }
+        };
+        Some(encode_cursor_tagged(sort_by.as_tag(), &last_val_text, last_id))
+    } else {
+        None
+    };
 
-    let events: Vec<Value> = rows
-        .iter()
-        .map(|e| {
-            filter_fields(
-                e,
-                &columns,
-                state.encryption_key.as_ref(),
-                state.encryption_key_old.as_ref(),
-            )
-        })
-        .collect();
+    let events = rows_to_json(
+        &rows,
+        &columns,
+        state.encryption_key.as_ref(),
+        state.encryption_key_old.as_ref(),
+        params.compact.unwrap_or(false),
+    )?;
 
     // Fetch total count, using the moka cache when no ledger filters are applied.
     let total: i64 = if params.from_ledger.is_none() && params.to_ledger.is_none() {
@@ -2117,10 +2234,18 @@ pub async fn get_events_by_contract(
     )
 )]
 pub async fn get_events_by_tx(
-    State(state): State<AppState>,
-    Path(tx_hash): Path<String>,
-    Query(params): Query<PaginationParams>,
-) -> Result<Json<Value>, AppError> {
+    State(state,
+    headers: axum::http::HeaderMap,
+): State<AppState>,
+    Path(tx_hash,
+    headers: axum::http::HeaderMap,
+): Path<String>,
+    Query(params,
+    headers: axum::http::HeaderMap,
+): Query<PaginationParams>,
+,
+    headers: axum::http::HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
     let tx_hash = tx_hash.to_lowercase();
     validate_tx_hash(&tx_hash)?;
 
@@ -2175,9 +2300,15 @@ pub async fn get_events_by_tx(
     )
 )]
 pub async fn get_events_by_tx_batch(
-    State(state): State<AppState>,
-    Json(body): Json<crate::models::BatchTxRequest>,
-) -> Result<Json<Value>, AppError> {
+    State(state,
+    headers: axum::http::HeaderMap,
+): State<AppState>,
+    Json(body,
+    headers: axum::http::HeaderMap,
+): Json<crate::models::BatchTxRequest>,
+,
+    headers: axum::http::HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
     if body.hashes.len() > 100 {
         return Err(AppError::Validation(
             "too many hashes: maximum is 100".to_string(),
@@ -2258,10 +2389,18 @@ pub async fn get_events_by_tx_batch(
     )
 )]
 pub async fn get_events_by_ledger_hash(
-    State(state): State<AppState>,
-    Path(hash): Path<String>,
-    Query(params): Query<PaginationParams>,
-) -> Result<Json<Value>, AppError> {
+    State(state,
+    headers: axum::http::HeaderMap,
+): State<AppState>,
+    Path(hash,
+    headers: axum::http::HeaderMap,
+): Path<String>,
+    Query(params,
+    headers: axum::http::HeaderMap,
+): Query<PaginationParams>,
+,
+    headers: axum::http::HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
     let columns = resolve_columns(&params)?;
     let mut select_cols = columns.to_vec();
     if !select_cols.contains(&"ledger") {
@@ -2353,7 +2492,7 @@ pub async fn anonymize_event(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, AppError> {
-    use sha2::{Digest, Sha256};
+    use sha2::{Sha256, Digest};
 
     // Fetch current tx_hash and anonymized flag
     let row = sqlx::query("SELECT tx_hash, anonymized FROM events WHERE id = $1")
@@ -2375,12 +2514,14 @@ pub async fn anonymize_event(
         format!("{:x}", h.finalize())
     };
 
-    sqlx::query("UPDATE events SET anonymized = TRUE, event_data = $1, tx_hash = $2 WHERE id = $3")
-        .bind(json!({"anonymized": true}))
-        .bind(&hashed_tx)
-        .bind(id)
-        .execute(&state.pool)
-        .await?;
+    sqlx::query(
+        "UPDATE events SET anonymized = TRUE, event_data = $1, tx_hash = $2 WHERE id = $3",
+    )
+    .bind(json!({"anonymized": true}))
+    .bind(&hashed_tx)
+    .bind(id)
+    .execute(&state.pool)
+    .await?;
 
     tracing::info!(event_id = %id, anonymized_at = %chrono::Utc::now(), "Event anonymized");
 
@@ -2401,11 +2542,7 @@ pub async fn anonymize_event(
 pub async fn pause_indexer(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !state
-        .indexer_state
-        .is_active_indexer
-        .load(Ordering::Relaxed)
-    {
+    if !state.indexer_state.is_active_indexer.load(Ordering::Relaxed) {
         return Err((
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "pause endpoint only available on active indexer" })),
@@ -2430,20 +2567,13 @@ pub async fn pause_indexer(
 pub async fn resume_indexer(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !state
-        .indexer_state
-        .is_active_indexer
-        .load(Ordering::Relaxed)
-    {
+    if !state.indexer_state.is_active_indexer.load(Ordering::Relaxed) {
         return Err((
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "resume endpoint only available on active indexer" })),
         ));
     }
-    state
-        .indexer_state
-        .is_paused
-        .store(false, Ordering::Relaxed);
+    state.indexer_state.is_paused.store(false, Ordering::Relaxed);
     tracing::info!("Indexer resumed via admin API");
     Ok(Json(json!({ "indexer_paused": false })))
 }
@@ -2463,9 +2593,15 @@ pub async fn resume_indexer(
     )
 )]
 pub async fn get_events_diff(
-    State(state): State<AppState>,
-    Query(params): Query<crate::models::DiffParams>,
-) -> Result<Json<Value>, AppError> {
+    State(state,
+    headers: axum::http::HeaderMap,
+): State<AppState>,
+    Query(params,
+    headers: axum::http::HeaderMap,
+): Query<crate::models::DiffParams>,
+,
+    headers: axum::http::HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
     if params.from_ledger > params.to_ledger {
         return Err(AppError::Validation(
             "from_ledger must be <= to_ledger".to_string(),
@@ -2491,13 +2627,11 @@ pub async fn get_events_diff(
         let contract_id: String = row.try_get("contract_id")?;
         let event_type: String = row.try_get("event_type")?;
         let cnt: i64 = row.try_get("cnt")?;
-        let entry = map
-            .entry(contract_id.clone())
-            .or_insert_with(|| crate::models::ContractDiff {
-                contract_id,
-                event_counts: std::collections::HashMap::new(),
-                total: 0,
-            });
+        let entry = map.entry(contract_id.clone()).or_insert_with(|| crate::models::ContractDiff {
+            contract_id,
+            event_counts: std::collections::HashMap::new(),
+            total: 0,
+        });
         entry.event_counts.insert(event_type, cnt);
         entry.total += cnt;
     }
@@ -2505,14 +2639,11 @@ pub async fn get_events_diff(
     let mut contracts: Vec<crate::models::ContractDiff> = map.into_values().collect();
     contracts.sort_by(|a, b| b.total.cmp(&a.total));
 
-    Ok(Json(
-        serde_json::to_value(crate::models::DiffResponse {
-            from_ledger: params.from_ledger,
-            to_ledger: params.to_ledger,
-            contracts,
-        })
-        .unwrap(),
-    ))
+    Ok(Json(serde_json::to_value(crate::models::DiffResponse {
+        from_ledger: params.from_ledger,
+        to_ledger: params.to_ledger,
+        contracts,
+    }).unwrap()))
 }
 
 #[utoipa::path(
@@ -4015,7 +4146,7 @@ mod tests {
             indexer_state,
             prometheus_handle,
             event_tx,
-            50, // keepalive_ms = 50 ms
+            50,   // keepalive_ms = 50 ms
             1000,
             2000,
             None,
@@ -4825,10 +4956,7 @@ mod tests {
         let v: Value = serde_json::from_slice(&body).unwrap();
         let event_data = &v["data"][0]["event_data"];
         // Full JSON object, not a string
-        assert!(
-            event_data.is_object(),
-            "event_data should be a JSON object when compact=false"
-        );
+        assert!(event_data.is_object(), "event_data should be a JSON object when compact=false");
         assert_eq!(event_data["value"], json!(42));
     }
 
@@ -4875,9 +5003,7 @@ mod tests {
         let event_data = &v["data"][0]["event_data"];
 
         // Must be a string (base64-encoded)
-        let encoded = event_data
-            .as_str()
-            .expect("event_data should be a base64 string when compact=true");
+        let encoded = event_data.as_str().expect("event_data should be a base64 string when compact=true");
 
         // Decode base64 → decompress gzip → parse JSON → must equal original
         use base64::engine::general_purpose::STANDARD;
@@ -4891,10 +5017,7 @@ mod tests {
         decoder.read_to_string(&mut json_str).expect("valid gzip");
         let decoded: Value = serde_json::from_str(&json_str).expect("valid JSON");
 
-        assert_eq!(
-            decoded, original,
-            "decoded compact event_data must equal original"
-        );
+        assert_eq!(decoded, original, "decoded compact event_data must equal original");
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -4932,9 +5055,7 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(
-            resp.headers()
-                .get("x-event-data-encoding")
-                .and_then(|v| v.to_str().ok()),
+            resp.headers().get("x-event-data-encoding").and_then(|v| v.to_str().ok()),
             Some("gzip+base64")
         );
 
@@ -4957,10 +5078,7 @@ mod tests {
         let body2 = to_bytes(resp2.into_body(), usize::MAX).await.unwrap();
         let v2: Value = serde_json::from_slice(&body2).unwrap();
         let event_data = &v2["data"][0]["event_data"];
-        assert!(
-            event_data.is_string(),
-            "event_data should be base64 string on cursor page"
-        );
+        assert!(event_data.is_string(), "event_data should be base64 string on cursor page");
     }
 
     // Multi-tenant isolation tests
@@ -4968,16 +5086,8 @@ mod tests {
     async fn multitenant_tenant_a_cannot_see_tenant_b_events(pool: PgPool) {
         // Insert events for two different tenants
         for (tenant, contract, tx) in [
-            (
-                "tenant_a",
-                "C1111111111111111111111111111111111111111111111111111111",
-                "a".repeat(64),
-            ),
-            (
-                "tenant_b",
-                "C2222222222222222222222222222222222222222222222222222222",
-                "b".repeat(64),
-            ),
+            ("tenant_a", "C1111111111111111111111111111111111111111111111111111111", "a".repeat(64)),
+            ("tenant_b", "C2222222222222222222222222222222222222222222222222222222", "b".repeat(64)),
         ] {
             sqlx::query(
                 "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data, tenant_id)
@@ -5571,11 +5681,7 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert!(body.len() > 4);
         assert_eq!(&body[..4], b"PAR1", "Parquet magic bytes missing");
-        assert_eq!(
-            &body[body.len() - 4..],
-            b"PAR1",
-            "Parquet footer magic missing"
-        );
+        assert_eq!(&body[body.len() - 4..], b"PAR1", "Parquet footer magic missing");
     }
 
     #[cfg(feature = "parquet")]
@@ -5623,9 +5729,7 @@ mod tests {
 
         // Verify ledger column value
         let ledger_col = batch.column_by_name("ledger").unwrap();
-        let ledger_val = ledger_col
-            .as_primitive::<arrow_array::types::Int64Type>()
-            .value(0);
+        let ledger_val = ledger_col.as_primitive::<arrow_array::types::Int64Type>().value(0);
         assert_eq!(ledger_val, 42);
 
         // Verify contract_id column value
@@ -5680,17 +5784,7 @@ mod tests {
         let indexer_state = Arc::new(IndexerState::new());
         let prometheus_handle = crate::metrics::init_metrics();
         let config = crate::config::Config::default();
-        crate::routes::create_router(
-            pool,
-            vec!["admin-key".to_string()],
-            &[],
-            60,
-            health_state,
-            indexer_state,
-            prometheus_handle,
-            2000,
-            config,
-        )
+        crate::routes::create_router(pool, vec!["admin-key".to_string()], &[], 60, health_state, indexer_state, prometheus_handle, 2000, config)
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -5739,10 +5833,7 @@ mod tests {
         let event_data: Value = row.try_get("event_data").unwrap();
         assert_eq!(event_data, json!({"anonymized": true}));
         let tx_hash: String = row.try_get("tx_hash").unwrap();
-        assert_ne!(
-            tx_hash, original_tx,
-            "tx_hash must be replaced with its hash"
-        );
+        assert_ne!(tx_hash, original_tx, "tx_hash must be replaced with its hash");
         assert_eq!(tx_hash.len(), 64, "hashed tx_hash must be 64 hex chars");
         let anonymized: bool = row.try_get("anonymized").unwrap();
         assert!(anonymized);
@@ -5868,16 +5959,13 @@ mod tests {
         let contract_a = "CA23456789012345678901234567890123456789012345678901234";
         let contract_b = "CB23456789012345678901234567890123456789012345678901234";
         for (i, (cid, etype, ledger)) in [
-            (contract_a, "contract", 10_i64),
-            (contract_a, "contract", 11_i64),
-            (contract_a, "contract", 12_i64),
+            (contract_a, "contract",   10_i64),
+            (contract_a, "contract",   11_i64),
+            (contract_a, "contract",   12_i64),
             (contract_a, "diagnostic", 11_i64),
-            (contract_b, "contract", 10_i64),
-            (contract_b, "contract", 11_i64),
-        ]
-        .iter()
-        .enumerate()
-        {
+            (contract_b, "contract",   10_i64),
+            (contract_b, "contract",   11_i64),
+        ].iter().enumerate() {
             sqlx::query(
                 "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
                  VALUES ($1, $2, $3, $4, $5, $6)",
@@ -5984,22 +6072,10 @@ mod tests {
     fn create_active_indexer_router(pool: PgPool) -> axum::Router {
         let health_state = Arc::new(HealthState::new(60));
         let indexer_state = Arc::new(IndexerState::new());
-        indexer_state
-            .is_active_indexer
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        indexer_state.is_active_indexer.store(true, std::sync::atomic::Ordering::Relaxed);
         let prometheus_handle = crate::metrics::init_metrics();
         let config = crate::config::Config::default();
-        crate::routes::create_router(
-            pool,
-            vec!["admin-key".to_string()],
-            &[],
-            60,
-            health_state,
-            indexer_state,
-            prometheus_handle,
-            2000,
-            config,
-        )
+        crate::routes::create_router(pool, vec!["admin-key".to_string()], &[], 60, health_state, indexer_state, prometheus_handle, 2000, config)
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -6114,10 +6190,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
-        assert!(
-            v.get("indexer_paused").is_some(),
-            "indexer_paused must be present in /status"
-        );
+        assert!(v.get("indexer_paused").is_some(), "indexer_paused must be present in /status");
         assert_eq!(v["indexer_paused"], false);
     }
 
@@ -6266,10 +6339,7 @@ mod tests {
             .get("cache-control")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        assert!(
-            cc.contains("max-age=60"),
-            "expected max-age=60 in Cache-Control, got: {cc}"
-        );
+        assert!(cc.contains("max-age=60"), "expected max-age=60 in Cache-Control, got: {cc}");
     }
 }
 
@@ -6354,8 +6424,7 @@ pub async fn register_contract_schema(
 ) -> Result<impl IntoResponse, AppError> {
     validate_contract_id(&contract_id)?;
 
-    let validator = state
-        .schema_validator
+    let validator = state.schema_validator
         .as_ref()
         .ok_or_else(|| AppError::Internal("Schema validator not initialized".to_string()))?;
 
@@ -6369,7 +6438,7 @@ pub async fn register_contract_schema(
         Json(json!({
             "status": "ok",
             "message": "Schema registered successfully"
-        })),
+        }))
     ))
 }
 
@@ -6397,8 +6466,7 @@ pub async fn get_contract_schema(
 ) -> Result<impl IntoResponse, AppError> {
     validate_contract_id(&contract_id)?;
 
-    let validator = state
-        .schema_validator
+    let validator = state.schema_validator
         .as_ref()
         .ok_or_else(|| AppError::Internal("Schema validator not initialized".to_string()))?;
 
@@ -6434,8 +6502,7 @@ pub async fn delete_contract_schema(
 ) -> Result<impl IntoResponse, AppError> {
     validate_contract_id(&contract_id)?;
 
-    let validator = state
-        .schema_validator
+    let validator = state.schema_validator
         .as_ref()
         .ok_or_else(|| AppError::Internal("Schema validator not initialized".to_string()))?;
 
@@ -6450,7 +6517,7 @@ pub async fn delete_contract_schema(
             Json(json!({
                 "status": "ok",
                 "message": "Schema deleted successfully"
-            })),
+            }))
         ))
     } else {
         Err(AppError::NotFound)

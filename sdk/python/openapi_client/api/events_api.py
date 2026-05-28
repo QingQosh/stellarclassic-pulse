@@ -652,6 +652,9 @@ class EventsApi:
         contract_id: Annotated[StrictStr, Field(description="Stellar contract ID (56-char, starts with C)")],
         page: Annotated[Optional[StrictInt], Field(description="Page number (default: 1)")] = None,
         limit: Annotated[Optional[StrictInt], Field(description="Results per page, 1–100 (default: 20)")] = None,
+        cursor: Annotated[Optional[StrictStr], Field(description="Opaque cursor for keyset pagination")] = None,
+        sort: Annotated[Optional[StrictStr], Field(description="Sort order: asc or desc (default: desc)")] = None,
+        sort_by: Annotated[Optional[StrictStr], Field(description="Sort column: ledger (default), timestamp, or created_at")] = None,
         from_ledger: Annotated[Optional[StrictInt], Field(description="Return events at or after this ledger")] = None,
         to_ledger: Annotated[Optional[StrictInt], Field(description="Return events at or before this ledger")] = None,
         _request_timeout: Union[
@@ -676,6 +679,12 @@ class EventsApi:
         :type page: int
         :param limit: Results per page, 1–100 (default: 20)
         :type limit: int
+        :param cursor: Opaque cursor for keyset pagination (returned as next_cursor)
+        :type cursor: str
+        :param sort: Sort order: asc (oldest first) or desc (newest first, default)
+        :type sort: str
+        :param sort_by: Sort column: ledger (default), timestamp, or created_at
+        :type sort_by: str
         :param from_ledger: Return events at or after this ledger
         :type from_ledger: int
         :param to_ledger: Return events at or before this ledger
@@ -706,6 +715,9 @@ class EventsApi:
             contract_id=contract_id,
             page=page,
             limit=limit,
+            cursor=cursor,
+            sort=sort,
+            sort_by=sort_by,
             from_ledger=from_ledger,
             to_ledger=to_ledger,
             _request_auth=_request_auth,
@@ -736,6 +748,9 @@ class EventsApi:
         contract_id: Annotated[StrictStr, Field(description="Stellar contract ID (56-char, starts with C)")],
         page: Annotated[Optional[StrictInt], Field(description="Page number (default: 1)")] = None,
         limit: Annotated[Optional[StrictInt], Field(description="Results per page, 1–100 (default: 20)")] = None,
+        cursor: Annotated[Optional[StrictStr], Field(description="Opaque cursor for keyset pagination")] = None,
+        sort: Annotated[Optional[StrictStr], Field(description="Sort order: asc or desc (default: desc)")] = None,
+        sort_by: Annotated[Optional[StrictStr], Field(description="Sort column: ledger (default), timestamp, or created_at")] = None,
         from_ledger: Annotated[Optional[StrictInt], Field(description="Return events at or after this ledger")] = None,
         to_ledger: Annotated[Optional[StrictInt], Field(description="Return events at or before this ledger")] = None,
         _request_timeout: Union[
@@ -760,6 +775,12 @@ class EventsApi:
         :type page: int
         :param limit: Results per page, 1–100 (default: 20)
         :type limit: int
+        :param cursor: Opaque cursor for keyset pagination (returned as next_cursor)
+        :type cursor: str
+        :param sort: Sort order: asc (oldest first) or desc (newest first, default)
+        :type sort: str
+        :param sort_by: Sort column: ledger (default), timestamp, or created_at
+        :type sort_by: str
         :param from_ledger: Return events at or after this ledger
         :type from_ledger: int
         :param to_ledger: Return events at or before this ledger
@@ -790,6 +811,9 @@ class EventsApi:
             contract_id=contract_id,
             page=page,
             limit=limit,
+            cursor=cursor,
+            sort=sort,
+            sort_by=sort_by,
             from_ledger=from_ledger,
             to_ledger=to_ledger,
             _request_auth=_request_auth,
@@ -820,6 +844,9 @@ class EventsApi:
         contract_id: Annotated[StrictStr, Field(description="Stellar contract ID (56-char, starts with C)")],
         page: Annotated[Optional[StrictInt], Field(description="Page number (default: 1)")] = None,
         limit: Annotated[Optional[StrictInt], Field(description="Results per page, 1–100 (default: 20)")] = None,
+        cursor: Annotated[Optional[StrictStr], Field(description="Opaque cursor for keyset pagination")] = None,
+        sort: Annotated[Optional[StrictStr], Field(description="Sort order: asc or desc (default: desc)")] = None,
+        sort_by: Annotated[Optional[StrictStr], Field(description="Sort column: ledger (default), timestamp, or created_at")] = None,
         from_ledger: Annotated[Optional[StrictInt], Field(description="Return events at or after this ledger")] = None,
         to_ledger: Annotated[Optional[StrictInt], Field(description="Return events at or before this ledger")] = None,
         _request_timeout: Union[
@@ -844,6 +871,12 @@ class EventsApi:
         :type page: int
         :param limit: Results per page, 1–100 (default: 20)
         :type limit: int
+        :param cursor: Opaque cursor for keyset pagination (returned as next_cursor)
+        :type cursor: str
+        :param sort: Sort order: asc (oldest first) or desc (newest first, default)
+        :type sort: str
+        :param sort_by: Sort column: ledger (default), timestamp, or created_at
+        :type sort_by: str
         :param from_ledger: Return events at or after this ledger
         :type from_ledger: int
         :param to_ledger: Return events at or before this ledger
@@ -874,6 +907,9 @@ class EventsApi:
             contract_id=contract_id,
             page=page,
             limit=limit,
+            cursor=cursor,
+            sort=sort,
+            sort_by=sort_by,
             from_ledger=from_ledger,
             to_ledger=to_ledger,
             _request_auth=_request_auth,
@@ -899,6 +935,9 @@ class EventsApi:
         contract_id,
         page,
         limit,
+        cursor,
+        sort,
+        sort_by,
         from_ledger,
         to_ledger,
         _request_auth,
@@ -932,6 +971,18 @@ class EventsApi:
         if limit is not None:
             
             _query_params.append(('limit', limit))
+            
+        if cursor is not None:
+            
+            _query_params.append(('cursor', cursor))
+            
+        if sort is not None:
+            
+            _query_params.append(('sort', sort))
+            
+        if sort_by is not None:
+            
+            _query_params.append(('sort_by', sort_by))
             
         if from_ledger is not None:
             

@@ -276,24 +276,56 @@ pub fn create_router_with_tx_and_tenant_map(
         .route("/events/stream", get(handlers::stream_events))
         .route("/events/stream/multi", get(handlers::stream_events_multi))
         .route("/events/ws", get(handlers::ws_events))
-        .route("/events/contract/{contract_id}", get(handlers::get_events_by_contract))
-        .route("/events/contract/{contract_id}/stream", get(handlers::stream_events_by_contract))
-        .route("/events/tx/batch", axum::routing::post(handlers::get_events_by_tx_batch))
+        .route(
+            "/events/contract/{contract_id}",
+            get(handlers::get_events_by_contract),
+        )
+        .route(
+            "/events/contract/{contract_id}/stream",
+            get(handlers::stream_events_by_contract),
+        )
+        .route(
+            "/events/tx/batch",
+            axum::routing::post(handlers::get_events_by_tx_batch),
+        )
         .route("/events/tx/{tx_hash}", get(handlers::get_events_by_tx))
         .route(
             "/events/ledger-hash/{hash}",
             get(handlers::get_events_by_ledger_hash),
         )
         .route("/contracts", get(handlers::get_contracts))
-        .route("/admin/replay", axum::routing::post(handlers::replay_events))
-        .route("/admin/contracts/{contract_id}/abi", axum::routing::post(handlers::register_contract_abi))
-        .route("/admin/events/{id}/anonymize", axum::routing::post(handlers::anonymize_event))
-        .route("/admin/indexer/pause", axum::routing::post(handlers::pause_indexer))
-        .route("/admin/indexer/resume", axum::routing::post(handlers::resume_indexer))
-        .route("/subscriptions", axum::routing::post(subscriptions::create_subscription))
-        .route("/subscriptions/{id}", get(subscriptions::get_subscription).delete(subscriptions::cancel_subscription))
-        .route("/subscriptions/{id}/ack", axum::routing::post(subscriptions::ack_subscription));
-
+        .route(
+            "/admin/replay",
+            axum::routing::post(handlers::replay_events),
+        )
+        .route(
+            "/admin/contracts/{contract_id}/abi",
+            axum::routing::post(handlers::register_contract_abi),
+        )
+        .route(
+            "/admin/events/{id}/anonymize",
+            axum::routing::post(handlers::anonymize_event),
+        )
+        .route(
+            "/admin/indexer/pause",
+            axum::routing::post(handlers::pause_indexer),
+        )
+        .route(
+            "/admin/indexer/resume",
+            axum::routing::post(handlers::resume_indexer),
+        )
+        .route(
+            "/subscriptions",
+            axum::routing::post(subscriptions::create_subscription),
+        )
+        .route(
+            "/subscriptions/{id}",
+            get(subscriptions::get_subscription).delete(subscriptions::cancel_subscription),
+        )
+        .route(
+            "/subscriptions/{id}/ack",
+            axum::routing::post(subscriptions::ack_subscription),
+        );
 
     // Unversioned deprecated aliases (same handlers, add Deprecation header via middleware)
     let deprecated = Router::new()
@@ -355,13 +387,15 @@ pub fn create_router_with_tx_and_tenant_map(
             .route("/docs", get(handlers::swagger_ui))
             .nest("/v1", v1)
             .merge(deprecated)
-            .layer(axum::middleware::from_fn(|req: Request<Body>, next: axum::middleware::Next| async move {
-                let resp = next.run(req).await;
-                if resp.status() == axum::http::StatusCode::TOO_MANY_REQUESTS {
-                    metrics::record_rate_limit_rejected();
-                }
-                resp
-            }))
+            .layer(axum::middleware::from_fn(
+                |req: Request<Body>, next: axum::middleware::Next| async move {
+                    let resp = next.run(req).await;
+                    if resp.status() == axum::http::StatusCode::TOO_MANY_REQUESTS {
+                        metrics::record_rate_limit_rejected();
+                    }
+                    resp
+                },
+            ))
             .layer(GovernorLayer::new(governor_conf))
     } else {
         let governor_conf = Arc::new(
@@ -378,13 +412,15 @@ pub fn create_router_with_tx_and_tenant_map(
             .route("/docs", get(handlers::swagger_ui))
             .nest("/v1", v1)
             .merge(deprecated)
-            .layer(axum::middleware::from_fn(|req: Request<Body>, next: axum::middleware::Next| async move {
-                let resp = next.run(req).await;
-                if resp.status() == axum::http::StatusCode::TOO_MANY_REQUESTS {
-                    metrics::record_rate_limit_rejected();
-                }
-                resp
-            }))
+            .layer(axum::middleware::from_fn(
+                |req: Request<Body>, next: axum::middleware::Next| async move {
+                    let resp = next.run(req).await;
+                    if resp.status() == axum::http::StatusCode::TOO_MANY_REQUESTS {
+                        metrics::record_rate_limit_rejected();
+                    }
+                    resp
+                },
+            ))
             .layer(GovernorLayer::new(governor_conf))
     };
 
