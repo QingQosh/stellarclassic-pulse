@@ -73,6 +73,8 @@ pub struct PaginationParams {
     pub exact_count: Option<bool>,
     pub fields: Option<String>,
     pub contract_id: Option<String>,
+    /// Comma-separated list of contract IDs to filter by (max 20).
+    pub contract_ids: Option<String>,
     pub event_type: Option<EventType>,
     pub from_ledger: Option<i64>,
     pub to_ledger: Option<i64>,
@@ -83,6 +85,8 @@ pub struct PaginationParams {
     pub in_successful_call: Option<bool>,
     /// Filter by the first topic symbol (uses topic_0_sym generated column index).
     pub topic_sym: Option<String>,
+    /// Filter by topic array using JSONB containment (e.g., ?topic=["transfer"]).
+    pub topic: Option<String>,
     /// Full-text search query for event_data (uses event_data_tsv tsvector index).
     pub search: Option<String>,
     /// Filter events at or after this timestamp (ISO 8601 format).
@@ -235,7 +239,9 @@ pub struct BatchTxRequest {
 pub struct ContractSummary {
     pub contract_id: String,
     pub event_count: i64,
-    pub latest_ledger: i64,
+    pub first_seen_ledger: i64,
+    pub last_seen_ledger: i64,
+    pub last_event_at: DateTime<Utc>,
 }
 
 /// Aggregate statistics for indexed events.
@@ -283,6 +289,18 @@ impl PaginationParams {
         "schema_version",
         "anonymized",
     ];
+    pub const MAX_CONTRACT_IDS_FILTER: usize = 20;
+
+    /// Validate a column name against the allowlist and structural constraints.
+    /// Returns true if valid, false otherwise.
+    pub fn validate_column_name(col: &str) -> bool {
+        // Check against allowlist
+        if !Self::ALLOWED_FIELDS.contains(&col) {
+            return false;
+        }
+        // Structural check: only lowercase letters and underscores
+        col.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+    }
 
     pub fn columns(&self) -> Result<Vec<&str>, (Vec<String>, Vec<&'static str>)> {
         match &self.fields {
@@ -360,6 +378,9 @@ pub struct SorobanEvent {
     pub in_successful_call: bool,
     pub value: Value,
     pub topic: Option<Vec<Value>>,
+    /// Set by the indexer in multi-tenant mode; never serialized to JSON output.
+    #[serde(skip_serializing, default)]
+    pub tenant_id: Option<String>,
 }
 
 fn default_true() -> bool {

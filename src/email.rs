@@ -1,6 +1,7 @@
 use lettre::message::{header, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
+use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -15,7 +16,7 @@ pub struct EmailNotifier {
     smtp_host: String,
     smtp_port: u16,
     smtp_user: Option<String>,
-    smtp_password: Option<String>,
+    smtp_password: Option<SecretString>,
     from: String,
     to: Vec<String>,
     contract_filter: Vec<String>,
@@ -26,7 +27,7 @@ impl EmailNotifier {
         smtp_host: String,
         smtp_port: u16,
         smtp_user: Option<String>,
-        smtp_password: Option<String>,
+        smtp_password: Option<SecretString>,
         from: String,
         to: Vec<String>,
         contract_filter: Vec<String>,
@@ -182,8 +183,10 @@ impl EmailNotifier {
         let mut transport_builder = SmtpTransport::relay(&self.smtp_host)?.port(self.smtp_port);
 
         if let (Some(user), Some(password)) = (&self.smtp_user, &self.smtp_password) {
-            transport_builder =
-                transport_builder.credentials(Credentials::new(user.clone(), password.clone()));
+            transport_builder = transport_builder.credentials(Credentials::new(
+                user.clone(),
+                password.expose_secret().clone(),
+            ));
         }
 
         let mailer = transport_builder.build();
@@ -223,7 +226,7 @@ mod tests {
             "smtp.example.com".to_string(),
             587,
             Some("user".to_string()),
-            Some("pass".to_string()),
+            Some(SecretString::new("pass".to_string())),
             "from@example.com".to_string(),
             vec!["to@example.com".to_string()],
             vec![],
@@ -233,6 +236,14 @@ mod tests {
         assert_eq!(notifier.smtp_port, 587);
         assert_eq!(notifier.from, "from@example.com");
         assert_eq!(notifier.to.len(), 1);
+    }
+
+    #[test]
+    fn test_secret_string_redacted_in_debug() {
+        let secret = SecretString::new("my_password".to_string());
+        let debug_str = format!("{:?}", secret);
+        assert!(!debug_str.contains("my_password"));
+        assert!(debug_str.contains("[REDACTED]"));
     }
 
     #[test]

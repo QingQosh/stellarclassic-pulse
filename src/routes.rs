@@ -73,6 +73,8 @@ pub struct AppState {
     ),
     paths(
         handlers::health,
+        handlers::health_live,
+        handlers::health_ready,
         handlers::status,
         handlers::get_events,
         handlers::get_event_stats,
@@ -89,6 +91,7 @@ pub struct AppState {
         handlers::ws_events,
         handlers::get_contracts,
         handlers::replay_events,
+        handlers::start_reencrypt,
         handlers::register_contract_abi,
         handlers::anonymize_event,
         handlers::pause_indexer,
@@ -294,38 +297,16 @@ pub fn create_router_with_tx_and_tenant_map(
             get(handlers::get_events_by_ledger_hash),
         )
         .route("/contracts", get(handlers::get_contracts))
-        .route(
-            "/admin/replay",
-            axum::routing::post(handlers::replay_events),
-        )
-        .route(
-            "/admin/contracts/{contract_id}/abi",
-            axum::routing::post(handlers::register_contract_abi),
-        )
-        .route(
-            "/admin/events/{id}/anonymize",
-            axum::routing::post(handlers::anonymize_event),
-        )
-        .route(
-            "/admin/indexer/pause",
-            axum::routing::post(handlers::pause_indexer),
-        )
-        .route(
-            "/admin/indexer/resume",
-            axum::routing::post(handlers::resume_indexer),
-        )
-        .route(
-            "/subscriptions",
-            axum::routing::post(subscriptions::create_subscription),
-        )
-        .route(
-            "/subscriptions/{id}",
-            get(subscriptions::get_subscription).delete(subscriptions::cancel_subscription),
-        )
-        .route(
-            "/subscriptions/{id}/ack",
-            axum::routing::post(subscriptions::ack_subscription),
-        );
+        .route("/admin/replay", axum::routing::post(handlers::replay_events))
+        .route("/admin/reencrypt", axum::routing::post(handlers::start_reencrypt))
+        .route("/admin/contracts/{contract_id}/abi", axum::routing::post(handlers::register_contract_abi))
+        .route("/admin/events/{id}/anonymize", axum::routing::post(handlers::anonymize_event))
+        .route("/admin/indexer/pause", axum::routing::post(handlers::pause_indexer))
+        .route("/admin/indexer/resume", axum::routing::post(handlers::resume_indexer))
+        .route("/subscriptions", axum::routing::post(subscriptions::create_subscription))
+        .route("/subscriptions/{id}", get(subscriptions::get_subscription).delete(subscriptions::cancel_subscription))
+        .route("/subscriptions/{id}/ack", axum::routing::post(subscriptions::ack_subscription));
+
 
     // Unversioned deprecated aliases (same handlers, add Deprecation header via middleware)
     let deprecated = Router::new()
