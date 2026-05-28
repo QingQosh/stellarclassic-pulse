@@ -161,9 +161,8 @@ jobs:
       - run: cargo bench
 
   fuzz:
-    name: Fuzz (30s smoke run)
+    name: Fuzz (60s per target)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -171,12 +170,19 @@ jobs:
         with:
           save-if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
       - run: cargo install cargo-fuzz
-      - run: cargo fuzz run fuzz_validate_contract_id -- -max_total_time=30
+      - run: cargo fuzz run fuzz_validate_contract_id -- -max_total_time=60
         working-directory: fuzz
-      - run: cargo fuzz run fuzz_validate_tx_hash -- -max_total_time=30
+      - run: cargo fuzz run fuzz_validate_tx_hash -- -max_total_time=60
         working-directory: fuzz
-      - run: cargo fuzz run fuzz_pagination_params -- -max_total_time=30
+      - run: cargo fuzz run fuzz_pagination_params -- -max_total_time=60
         working-directory: fuzz
+      - name: Upload fuzz corpus artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus
+          path: fuzz/corpus/
+          retention-days: 30
 
   build:
     name: Release Build

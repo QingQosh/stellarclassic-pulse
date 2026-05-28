@@ -64,13 +64,19 @@ rustup toolchain install nightly
 cargo install cargo-fuzz
 ```
 
-Run a target (30-second smoke run):
+Run all fuzz targets locally (60 seconds each):
+
+```bash
+make fuzz
+```
+
+Or run a single target:
 
 ```bash
 cd fuzz
-cargo fuzz run fuzz_validate_contract_id -- -max_total_time=30
-cargo fuzz run fuzz_validate_tx_hash     -- -max_total_time=30
-cargo fuzz run fuzz_pagination_params   -- -max_total_time=30
+cargo fuzz run fuzz_validate_contract_id -- -max_total_time=60
+cargo fuzz run fuzz_validate_tx_hash     -- -max_total_time=60
+cargo fuzz run fuzz_pagination_params   -- -max_total_time=60
 ```
 
 To run indefinitely (until a crash is found):
@@ -79,7 +85,7 @@ To run indefinitely (until a crash is found):
 cargo fuzz run fuzz_validate_contract_id
 ```
 
-Corpus and crash artifacts are stored under `fuzz/corpus/` and `fuzz/artifacts/` respectively (both git-ignored).
+Corpus and crash artifacts are stored under `fuzz/corpus/` and `fuzz/artifacts/` respectively (both git-ignored). The CI pipeline runs fuzz tests for 60 seconds per target on every push and PR, and stores corpus artifacts for 30 days to accumulate interesting inputs over time.
 
 ## Pre-commit Hooks
 
