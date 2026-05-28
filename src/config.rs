@@ -176,6 +176,8 @@ pub struct Config {
     pub sse_keepalive_interval_ms: u64,
     pub sse_max_connections: usize,
     pub sse_drain_timeout_secs: u64,
+    /// Maximum number of contract IDs per SSE multi-stream connection (default 100).
+    pub sse_multi_max_contract_ids: usize,
     pub environment: Environment,
     pub max_body_size_bytes: usize,
     pub log_sample_rate: u32,
@@ -247,12 +249,8 @@ pub struct Config {
     pub pruning_interval_hours: u64,
     // Issue #325: SSE Last-Event-ID replay limit
     pub sse_replay_limit: u64,
-    // Issue #403: Batch TX max size limit
-    pub batch_tx_max_size: usize,
-    // Issue #404: Stats cache TTL
-    pub stats_cache_ttl_secs: u64,
-    // Issue #405: SSE shutdown grace period
-    pub sse_shutdown_grace_period_ms: u64,
+    // Issue #396: Indexer checkpoint persistence
+    pub indexer_ignore_checkpoint: bool,
 }
 
 impl Default for Config {
@@ -325,9 +323,7 @@ impl Default for Config {
             retention_days: 90,
             pruning_interval_hours: 24,
             sse_replay_limit: 500,
-            batch_tx_max_size: 100,
-            stats_cache_ttl_secs: 30,
-            sse_shutdown_grace_period_ms: 1000,
+            indexer_ignore_checkpoint: false,
         }
     }
 }
@@ -816,6 +812,16 @@ impl Config {
         )
         .unwrap_or(5);
 
+        let sse_multi_max_contract_ids = parse_int_range::<usize>(
+            "SSE_MULTI_MAX_CONTRACT_IDS",
+            &env_or_file_or("SSE_MULTI_MAX_CONTRACT_IDS", &file, "100"),
+            1,
+            usize::MAX,
+            "100",
+            &mut errors,
+        )
+        .unwrap_or(5);
+
         let max_body_size_bytes = parse_int::<usize>(
             "MAX_BODY_SIZE_BYTES",
             &env_or_file_or("MAX_BODY_SIZE_BYTES", &file, "1048576"),
@@ -947,6 +953,7 @@ impl Config {
             sse_keepalive_interval_ms,
             sse_max_connections,
             sse_drain_timeout_secs,
+            sse_multi_max_contract_ids,
             environment,
             max_body_size_bytes,
             log_sample_rate,
@@ -1022,27 +1029,13 @@ impl Config {
             sse_replay_limit: env_or_file("SSE_REPLAY_LIMIT", &file)
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(500),
-            batch_tx_max_size: parse_int::<usize>(
-                "BATCH_TX_MAX_SIZE",
-                &env_or_file_or("BATCH_TX_MAX_SIZE", &file, "100"),
-                "100",
+            max_ledger_range: parse_int::<u64>(
+                "MAX_LEDGER_RANGE",
+                &env_or_file_or("MAX_LEDGER_RANGE", &file, "100000"),
+                "100000",
                 &mut errors,
             )
-            .unwrap_or(100),
-            stats_cache_ttl_secs: parse_int::<u64>(
-                "STATS_CACHE_TTL_SECS",
-                &env_or_file_or("STATS_CACHE_TTL_SECS", &file, "30"),
-                "30",
-                &mut errors,
-            )
-            .unwrap_or(30),
-            sse_shutdown_grace_period_ms: parse_int::<u64>(
-                "SSE_SHUTDOWN_GRACE_PERIOD_MS",
-                &env_or_file_or("SSE_SHUTDOWN_GRACE_PERIOD_MS", &file, "1000"),
-                "1000",
-                &mut errors,
-            )
-            .unwrap_or(1000),
+            .unwrap_or(100_000),
         }
     }
 }
