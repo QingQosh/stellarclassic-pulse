@@ -80,3 +80,9 @@ zipkin-up: ## Start Zipkin container
 
 zipkin-down: ## Stop Zipkin container
 	docker stop zipkin || true && docker rm zipkin || true
+
+fuzz: ## Run fuzz tests locally (60 seconds each)
+	@command -v cargo-fuzz >/dev/null 2>&1 || cargo install cargo-fuzz
+	cd fuzz && cargo fuzz run fuzz_validate_contract_id -- -max_total_time=60
+	cd fuzz && cargo fuzz run fuzz_validate_tx_hash -- -max_total_time=60
+	cd fuzz && cargo fuzz run fuzz_pagination_params -- -max_total_time=60
