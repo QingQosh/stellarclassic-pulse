@@ -249,8 +249,8 @@ pub struct Config {
     pub pruning_interval_hours: u64,
     // Issue #325: SSE Last-Event-ID replay limit
     pub sse_replay_limit: u64,
-    /// Maximum ledger range for diff queries (default 100 000).
-    pub max_ledger_range: u64,
+    // Issue #396: Indexer checkpoint persistence
+    pub indexer_ignore_checkpoint: bool,
 }
 
 impl Default for Config {
@@ -323,6 +323,7 @@ impl Default for Config {
             retention_days: 90,
             pruning_interval_hours: 24,
             sse_replay_limit: 500,
+            indexer_ignore_checkpoint: false,
         }
     }
 }
