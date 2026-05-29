@@ -304,6 +304,10 @@ pub fn create_router_with_tx_and_tenant_map(
             "/events/tx/batch",
             axum::routing::post(handlers::get_events_by_tx_batch),
         )
+        .route(
+            "/admin/events/bulk",
+            axum::routing::post(handlers::bulk_insert_events),
+        )
         .route("/events/tx/{tx_hash}", get(handlers::get_events_by_tx))
         .route(
             "/events/ledger-hash/{hash}",
