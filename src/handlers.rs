@@ -1899,7 +1899,7 @@ pub async fn get_events(
         ("contract_id" = Option<String>, Query, description = "Filter by contract ID"),
     ),
     responses(
-        (status = 200, description = "Exported events (CSV or Parquet depending on format param)"),
+        (status = 200, description = "Exported events (CSV, Parquet, or JSON Lines depending on format param)"),
         (status = 400, description = "Invalid query parameters"),
         (status = 401, description = "API key required"),
     )
@@ -1923,6 +1923,7 @@ pub async fn export_events(
     }
 
     let want_parquet = params.format.as_deref() == Some("parquet");
+    let want_jsonl = params.format.as_deref() == Some("jsonl");
 
     #[cfg(not(feature = "parquet"))]
     if want_parquet {
@@ -2002,6 +2003,46 @@ pub async fn export_events(
 
     let returned_count = rows.len() as i64;
     let content_range = format!("items 0-{}/{}", returned_count.saturating_sub(1), total_count);
+
+    // JSON Lines format
+    if want_jsonl {
+        let mut jsonl = String::new();
+        for row in &rows {
+            let id: uuid::Uuid = row.try_get("id")?;
+            let contract_id: String = row.try_get("contract_id")?;
+            let event_type: String = row.try_get("event_type")?;
+            let tx_hash: String = row.try_get("tx_hash")?;
+            let ledger: i64 = row.try_get("ledger")?;
+            let timestamp: chrono::DateTime<chrono::Utc> = row.try_get("timestamp")?;
+            let event_data: serde_json::Value = row.try_get("event_data")?;
+            let created_at: chrono::DateTime<chrono::Utc> = row.try_get("created_at")?;
+            
+            let obj = serde_json::json!({
+                "id": id,
+                "contract_id": contract_id,
+                "event_type": event_type,
+                "tx_hash": tx_hash,
+                "ledger": ledger,
+                "timestamp": timestamp,
+                "event_data": event_data,
+                "created_at": created_at,
+            });
+            
+            jsonl.push_str(&obj.to_string());
+            jsonl.push('\n');
+        }
+        
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/x-ndjson")
+            .header(
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"events.jsonl\"",
+            )
+            .header("Content-Range", content_range)
+            .body(Body::from(jsonl))
+            .unwrap());
+    }
 
     #[cfg(feature = "parquet")]
     if want_parquet {
@@ -7248,126 +7289,6 @@ fn mask_event_data(data: &serde_json::Value) -> serde_json::Value {
         }
         _ => data.clone(),
     }
-}
-
-/// Export events in JSON Lines format
-#[utoipa::path(
-    get,
-    path = "/v1/events/export",
-    tag = "events",
-    params(
-        ("format" = Option<String>, Query, description = "Export format: csv, parquet, or jsonl"),
-        ("contract_id" = Option<String>, Query, description = "Filter by contract ID"),
-        ("event_type" = Option<models::EventType>, Query, description = "Filter by event type"),
-        ("from_ledger" = Option<i64>, Query, description = "Start ledger"),
-        ("to_ledger" = Option<i64>, Query, description = "End ledger"),
-    ),
-    responses(
-        (status = 200, description = "Exported events"),
-        (status = 400, description = "Invalid parameters"),
-        (status = 401, description = "Unauthorized"),
-    )
-)]
-pub async fn export_events_jsonl(
-    State(state): State<AppState>,
-    Query(params): Query<models::ExportParams>,
-) -> Result<Response<Body>, AppError> {
-    if params.format.as_deref() != Some("jsonl") {
-        return Err(AppError::Validation("format must be 'jsonl'".to_string()));
-    }
-    
-    if let (Some(from), Some(to)) = (params.from_ledger, params.to_ledger) {
-        if from > to {
-            return Err(AppError::Validation(
-                "from_ledger must be <= to_ledger".to_string(),
-            ));
-        }
-    }
-    
-    let max_rows = state.config.export_max_rows as i64;
-    let mut conditions: Vec<String> = Vec::new();
-    let mut bind_idx: i32 = 1;
-    
-    if params.contract_id.is_some() {
-        conditions.push(format!("contract_id = ${bind_idx}"));
-        bind_idx += 1;
-    }
-    if params.event_type.is_some() {
-        conditions.push(format!("event_type = ${bind_idx}"));
-        bind_idx += 1;
-    }
-    if params.from_ledger.is_some() {
-        conditions.push(format!("ledger >= ${bind_idx}"));
-        bind_idx += 1;
-    }
-    if params.to_ledger.is_some() {
-        conditions.push(format!("ledger <= ${bind_idx}"));
-        bind_idx += 1;
-    }
-    
-    let where_clause = if conditions.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", conditions.join(" AND "))
-    };
-    
-    let query_str = format!(
-        "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, created_at \
-         FROM events {where_clause} ORDER BY ledger ASC, id ASC LIMIT ${bind_idx}"
-    );
-    
-    let mut q = sqlx::query(&query_str);
-    if let Some(ref cid) = params.contract_id {
-        q = q.bind(cid);
-    }
-    if let Some(ref et) = params.event_type {
-        q = q.bind(et);
-    }
-    if let Some(fl) = params.from_ledger {
-        q = q.bind(fl);
-    }
-    if let Some(tl) = params.to_ledger {
-        q = q.bind(tl);
-    }
-    q = q.bind(max_rows);
-    
-    let rows = q.fetch_all(&state.pool).await?;
-    
-    let mut jsonl = String::new();
-    for row in &rows {
-        let id: uuid::Uuid = row.try_get("id")?;
-        let contract_id: String = row.try_get("contract_id")?;
-        let event_type: String = row.try_get("event_type")?;
-        let tx_hash: String = row.try_get("tx_hash")?;
-        let ledger: i64 = row.try_get("ledger")?;
-        let timestamp: chrono::DateTime<chrono::Utc> = row.try_get("timestamp")?;
-        let event_data: serde_json::Value = row.try_get("event_data")?;
-        let created_at: chrono::DateTime<chrono::Utc> = row.try_get("created_at")?;
-        
-        let obj = serde_json::json!({
-            "id": id,
-            "contract_id": contract_id,
-            "event_type": event_type,
-            "tx_hash": tx_hash,
-            "ledger": ledger,
-            "timestamp": timestamp,
-            "event_data": event_data,
-            "created_at": created_at,
-        });
-        
-        jsonl.push_str(&obj.to_string());
-        jsonl.push('\n');
-    }
-    
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/x-ndjson")
-        .header(
-            header::CONTENT_DISPOSITION,
-            "attachment; filename=\"events.jsonl\"",
-        )
-        .body(Body::from(jsonl))
-        .unwrap())
 }
 
 /// Get time-series aggregation of events

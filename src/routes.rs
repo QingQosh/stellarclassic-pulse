@@ -84,7 +84,6 @@ pub struct AppState {
         handlers::get_event_stats,
         handlers::get_events_diff,
         handlers::export_events,
-        handlers::export_events_jsonl,
         handlers::get_recent_events,
         handlers::get_events_by_contract,
         handlers::get_events_by_tx,
