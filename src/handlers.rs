@@ -1385,6 +1385,10 @@ pub async fn get_events(
             conditions.push(format!("in_successful_call = ${bind_idx}"));
             bind_idx += 1;
         }
+        if params.schema_version.is_some() {
+            conditions.push(format!("schema_version = ${bind_idx}"));
+            bind_idx += 1;
+        }
         if params.topic_sym.is_some() {
             conditions.push(format!("topic_0_sym = ${bind_idx}"));
             bind_idx += 1;
@@ -1475,6 +1479,9 @@ pub async fn get_events(
         }
         if let Some(isc) = params.in_successful_call {
             q = q.bind(isc);
+        }
+        if let Some(sv) = params.schema_version {
+            q = q.bind(sv);
         }
         if let Some(ref ts) = params.topic_sym {
             q = q.bind(ts);
@@ -1618,6 +1625,10 @@ pub async fn get_events(
         conditions.push(format!("in_successful_call = ${bind_idx}"));
         bind_idx += 1;
     }
+    if params.schema_version.is_some() {
+        conditions.push(format!("schema_version = ${bind_idx}"));
+        bind_idx += 1;
+    }
     if params.topic_sym.is_some() {
         conditions.push(format!("topic_0_sym = ${bind_idx}"));
         bind_idx += 1;
@@ -1698,6 +1709,9 @@ pub async fn get_events(
     }
     if let Some(isc) = params.in_successful_call {
         q = q.bind(isc);
+    }
+    if let Some(sv) = params.schema_version {
+        q = q.bind(sv);
     }
     if let Some(ref ts) = params.topic_sym {
         q = q.bind(ts);
