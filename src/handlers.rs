@@ -18,6 +18,7 @@ use std::convert::Infallible;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::Mutex;
+use tracing::{info_span, instrument};
 use uuid::Uuid;
 
 use crate::{
@@ -602,6 +603,7 @@ pub async fn swagger_ui() -> impl IntoResponse {
         (status = 503, description = "Too many SSE connections", body = ErrorResponse),
     )
 )]
+#[instrument(skip(state, headers, extensions), fields(contract_id = ?params.contract_id))]
 pub async fn stream_events(
     State(state): State<AppState>,
     Query(params): Query<StreamParams>,
@@ -662,6 +664,7 @@ pub async fn stream_events_by_contract(
         (status = 503, description = "Too many SSE connections", body = ErrorResponse),
     )
 )]
+#[instrument(skip(state, headers, extensions), fields(contract_ids = ?params.contract_ids))]
 pub async fn stream_events_multi(
     State(state): State<AppState>,
     Query(params): Query<crate::models::MultiStreamParams>,
@@ -1260,7 +1263,7 @@ fn ndjson_response(events: impl Iterator<Item = Value>) -> Response<Body> {
         (status = 400, description = "Invalid query parameters"),
     )
 )]
-
+#[instrument(skip(state, headers, extensions), fields(page = ?params.page, limit = ?params.limit, contract_id = ?params.contract_id))]
 pub async fn get_events(
     State(state): State<AppState>,
     Query(params): Query<PaginationParams>,
@@ -1503,7 +1506,9 @@ pub async fn get_events(
         }
         q = q.bind(limit);
 
+        let _db_span = info_span!("db_query", query_type = "get_events_cursor").entered();
         let rows = q.fetch_all(&state.read_pool).await?;
+        drop(_db_span);
 
         let has_more = rows.len() as i64 == limit;
         let next_cursor = if has_more {
@@ -1733,7 +1738,9 @@ pub async fn get_events(
     }
     q = q.bind(limit).bind(offset);
 
+    let _db_span = info_span!("db_query", query_type = "get_events_offset").entered();
     let rows = q.fetch_all(&state.read_pool).await?;
+    drop(_db_span);
 
     let has_more = rows.len() as i64 == limit;
     let next_cursor = if has_more {
@@ -1806,7 +1813,9 @@ pub async fn get_events(
         if let Some(tid) = tenant_id {
             cq = cq.bind(tid);
         }
+        let _count_span = info_span!("db_query", query_type = "count_events").entered();
         let count = cq.fetch_one(&state.read_pool).await?;
+        drop(_count_span);
         (count, false)
     } else {
         // In multi-tenant mode we can't use the pg_class estimate (it's for the whole table).
@@ -2281,6 +2290,7 @@ pub async fn get_recent_events(
         (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
+#[instrument(skip(state, extensions), fields(contract_id = %contract_id))]
 pub async fn get_events_by_contract(
     State(state): State<AppState>,
     Path(contract_id): Path<String>,
@@ -2438,6 +2448,7 @@ pub async fn get_events_by_contract(
         (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
+#[instrument(skip(state, extensions), fields(tx_hash = %tx_hash))]
 pub async fn get_events_by_tx(
     State(state): State<AppState>,
     Path(tx_hash): Path<String>,
@@ -2501,6 +2512,109 @@ pub async fn get_events_by_tx(
     responses(
         (status = 200, description = "Map of tx_hash -> events for all requested hashes"),
         (status = 400, description = "Invalid hashes or too many hashes", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 429, description = "Too many requests", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
+    )
+)]
+#[instrument(skip(state, body))]
+pub async fn bulk_insert_events(
+    State(state): State<AppState>,
+    Json(body): Json<crate::models::BulkInsertRequest>,
+) -> Result<Json<crate::models::BulkInsertResponse>, AppError> {
+    const MAX_BATCH_SIZE: usize = 1000;
+    
+    if body.events.is_empty() {
+        return Err(AppError::Validation("events list cannot be empty".to_string()));
+    }
+    
+    if body.events.len() > MAX_BATCH_SIZE {
+        return Err(AppError::Validation(format!(
+            "events list exceeds maximum of {} events",
+            MAX_BATCH_SIZE
+        )));
+    }
+    
+    let mut inserted = 0i64;
+    let mut skipped = 0i64;
+    let mut failed = 0i64;
+    let mut errors = Vec::new();
+    
+    for event in body.events {
+        // Validate contract_id
+        if let Err(e) = validate_contract_id(&event.contract_id) {
+            failed += 1;
+            errors.push(format!("Invalid contract_id: {}", e));
+            continue;
+        }
+        
+        // Validate tx_hash
+        if let Err(e) = validate_tx_hash(&event.tx_hash) {
+            failed += 1;
+            errors.push(format!("Invalid tx_hash: {}", e));
+            continue;
+        }
+        
+        // Validate event_type
+        let event_type = match event.event_type.as_str() {
+            "contract" | "diagnostic" | "system" => event.event_type.clone(),
+            _ => {
+                failed += 1;
+                errors.push(format!("Invalid event_type: {}", event.event_type));
+                continue;
+            }
+        };
+        
+        let id = Uuid::new_v4();
+        let result = sqlx::query(
+            "INSERT INTO events (id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, event_data_normalized, ledger_hash, in_successful_call, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+             ON CONFLICT (contract_id, tx_hash, ledger, event_type) DO NOTHING"
+        )
+        .bind(id)
+        .bind(&event.contract_id)
+        .bind(&event_type)
+        .bind(&event.tx_hash)
+        .bind(event.ledger)
+        .bind(event.timestamp)
+        .bind(&event.event_data)
+        .bind(&event.event_data_normalized)
+        .bind(&event.ledger_hash)
+        .bind(event.in_successful_call.unwrap_or(false))
+        .execute(&state.write_pool)
+        .await;
+        
+        match result {
+            Ok(result) => {
+                if result.rows_affected() > 0 {
+                    inserted += 1;
+                } else {
+                    skipped += 1;
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                errors.push(format!("Database error: {}", e));
+            }
+        }
+    }
+    
+    Ok(Json(crate::models::BulkInsertResponse {
+        inserted,
+        skipped,
+        failed,
+        errors,
+    }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/admin/events/bulk",
+    tag = "Admin",
+    request_body = crate::models::BulkInsertRequest,
+    responses(
+        (status = 200, description = "Bulk insert result", body = crate::models::BulkInsertResponse),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 429, description = "Too many requests", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse),

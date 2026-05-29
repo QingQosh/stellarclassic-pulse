@@ -237,6 +237,39 @@ pub struct BatchTxRequest {
     pub hashes: Vec<String>,
 }
 
+/// Request body for bulk event insertion.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct BulkInsertRequest {
+    /// List of events to insert (max 1000 per request).
+    pub events: Vec<BulkEventInput>,
+}
+
+/// Event input for bulk insertion.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct BulkEventInput {
+    pub contract_id: String,
+    pub event_type: String,
+    pub tx_hash: String,
+    pub ledger: i64,
+    pub timestamp: DateTime<Utc>,
+    pub event_data: Value,
+    #[serde(default)]
+    pub event_data_normalized: Option<Value>,
+    #[serde(default)]
+    pub ledger_hash: Option<String>,
+    #[serde(default)]
+    pub in_successful_call: Option<bool>,
+}
+
+/// Response for bulk event insertion.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct BulkInsertResponse {
+    pub inserted: i64,
+    pub skipped: i64,
+    pub failed: i64,
+    pub errors: Vec<String>,
+}
+
 #[derive(Debug, Serialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct ContractSummary {
     pub contract_id: String,
