@@ -7311,6 +7311,8 @@ pub async fn get_timeseries(
     State(state): State<AppState>,
     Query(params): Query<models::TimeseriesParams>,
 ) -> Result<Json<models::TimeseriesResponse>, AppError> {
+    let start = std::time::Instant::now();
+    
     let interval = match params.bucket.as_str() {
         "1h" => "1 hour",
         "1d" => "1 day",
@@ -7384,6 +7386,8 @@ pub async fn get_timeseries(
     
     let mut data: Vec<_> = buckets_map.into_values().collect();
     data.sort_by_key(|b| b.bucket_start);
+    
+    crate::metrics::record_timeseries_query_duration(start.elapsed());
     
     Ok(Json(models::TimeseriesResponse {
         bucket: params.bucket,
