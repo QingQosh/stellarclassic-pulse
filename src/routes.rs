@@ -252,11 +252,23 @@ pub fn create_router_with_tx_and_tenant_map(
 ) -> Router {
     let cors = build_cors(allowed_origins);
 
+    // Admin keys are independent of the regular API keys (issue #409).
+    let admin_api_keys: Vec<String> = {
+        use secrecy::ExposeSecret;
+        config
+            .admin_api_keys
+            .iter()
+            .map(|k| k.expose_secret().to_string())
+            .collect()
+    };
+
     let auth_state = Arc::new(middleware::AuthState {
         api_keys,
+        admin_api_keys: admin_api_keys.clone(),
         tenant_map: Arc::clone(&tenant_map),
         multi_tenant: config.multi_tenant,
     });
+    let admin_auth_state = Arc::new(middleware::AdminAuthState { admin_api_keys });
     let contract_count_cache = moka::future::Cache::builder()
         .max_capacity(config.contract_count_cache_size)
         .time_to_live(std::time::Duration::from_secs(
@@ -306,6 +318,23 @@ pub fn create_router_with_tx_and_tenant_map(
     // Use per_millisecond to avoid integer truncation: replenish 1 token every (60_000 / rate) ms.
     let replenish_ms = 60_000u64 / u64::from(rate_limit_per_minute.max(1));
     let burst = rate_limit_per_minute.max(1);
+
+    // Admin routes (issue #409): gated by a dedicated admin auth layer in
+    // addition to the global auth layer. The admin layer requires an
+    // ADMIN_API_KEY even when no regular API_KEY is configured.
+    let admin_routes = Router::new()
+        .route("/admin/replay", axum::routing::post(handlers::replay_events))
+        .route("/admin/reencrypt", axum::routing::post(handlers::start_reencrypt))
+        .route("/admin/contracts/{contract_id}/abi", axum::routing::post(handlers::register_contract_abi))
+        .route("/admin/events/{id}/anonymize", axum::routing::post(handlers::anonymize_event))
+        .route("/admin/indexer/pause", axum::routing::post(handlers::pause_indexer))
+        .route("/admin/indexer/resume", axum::routing::post(handlers::resume_indexer))
+        .route("/admin/contracts/{contract_id}/schema", axum::routing::post(handlers::register_contract_schema).get(handlers::get_contract_schema).delete(handlers::delete_contract_schema))
+        .route("/admin/contracts/{contract_id}/validate", axum::routing::post(handlers::validate_event_data_against_schema))
+        .route_layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&admin_auth_state),
+            middleware::admin_auth_middleware,
+        ));
 
     // Versioned v1 routes
     let v1 = Router::new()

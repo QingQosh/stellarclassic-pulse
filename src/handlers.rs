@@ -6880,6 +6880,81 @@ mod tests {
         )
     }
 
+    /// Build a router where admin endpoints require a dedicated ADMIN_API_KEY
+    /// (issue #409). A separate regular API key is also configured.
+    fn create_admin_auth_router(pool: PgPool) -> axum::Router {
+        let health_state = Arc::new(HealthState::new(60));
+        let indexer_state = Arc::new(IndexerState::new());
+        let prometheus_handle = crate::metrics::init_metrics();
+        let mut config = crate::config::Config::default();
+        config.admin_api_keys = vec![secrecy::SecretString::new("admin-secret".to_string())];
+        crate::routes::create_router(
+            pool,
+            vec!["regular-key".to_string()],
+            &[],
+            60,
+            health_state,
+            indexer_state,
+            prometheus_handle,
+            2000,
+            config,
+        )
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn admin_endpoint_rejects_missing_key_with_401(pool: PgPool) {
+        let app = create_admin_auth_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/indexer/pause")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn admin_endpoint_rejects_regular_key_with_403(pool: PgPool) {
+        let app = create_admin_auth_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/indexer/pause")
+                    .header("Authorization", "Bearer regular-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn admin_endpoint_accepts_admin_key(pool: PgPool) {
+        let app = create_admin_auth_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/indexer/pause")
+                    .header("Authorization", "Bearer admin-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // The admin key passes both auth layers. The pause handler may still
+        // reject (400) when no live indexer is attached, but it must NOT be
+        // blocked by the auth layers.
+        assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_ne!(response.status(), StatusCode::FORBIDDEN);
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn anonymize_event_returns_200_and_scrubs_data(pool: PgPool) {
         let event_id = Uuid::new_v4();

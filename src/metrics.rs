@@ -208,6 +208,16 @@ pub fn record_replay_job() {
     m::counter!("soroban_pulse_replay_jobs_total").increment(1);
 }
 
+/// Record the number of database migrations applied during a run (issue #411)
+pub fn record_migrations_applied(count: u64) {
+    m::counter!("soroban_pulse_migrations_applied_total").increment(count);
+}
+
+/// Set the gauge tracking the highest applied migration version (issue #411)
+pub fn set_last_migration_version(version: i64) {
+    m::gauge!("soroban_pulse_last_migration_version").set(version as f64);
+}
+
 /// Record events pruned
 pub fn increment_events_pruned(count: u64) {
     m::counter!("soroban_pulse_events_pruned_total").increment(count);
