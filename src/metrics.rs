@@ -182,6 +182,23 @@ pub fn record_email_failure() {
     m::counter!("soroban_pulse_email_failures_total").increment(1);
 }
 
+/// Record a full-text search query duration
+pub fn record_search_query_duration(duration: std::time::Duration) {
+    m::histogram!("soroban_pulse_search_query_duration_seconds").record(duration.as_secs_f64());
+}
+
+/// Increment the contract count cache invalidation counter
+pub fn record_contract_count_cache_invalidation() {
+    m::counter!("soroban_pulse_contract_count_cache_invalidations_total").increment(1);
+}
+
+/// Update the contract count cache hit ratio gauge (hits / (hits + misses))
+pub fn update_contract_count_cache_hit_ratio(hits: u64, misses: u64) {
+    let total = hits + misses;
+    let ratio = if total == 0 { 0.0 } else { hits as f64 / total as f64 };
+    m::gauge!("soroban_pulse_contract_count_cache_hit_ratio").set(ratio);
+}
+
 /// Record a Lua script timeout
 pub fn record_lua_timeout() {
     m::counter!("soroban_pulse_lua_timeout_total").increment(1);

@@ -203,6 +203,7 @@ pub fn create_router_with_tx(
     config: crate::config::Config,
     schema_validator: Option<Arc<crate::schema_validator::SchemaValidator>>,
 ) -> Router {
+    let (_, shutdown_rx) = tokio::sync::watch::channel(false);
     create_router_with_tx_and_tenant_map(
         pool,
         read_pool,
@@ -222,6 +223,7 @@ pub fn create_router_with_tx(
         config,
         schema_validator,
         Arc::new(std::collections::HashMap::new()),
+        shutdown_rx,
     )
 }
 
@@ -285,6 +287,19 @@ pub fn create_router_with_tx_and_tenant_map(
         stats_cache,
         shutdown_rx,
     };
+
+    // Spawn cache invalidation task: subscribe to the broadcast channel and
+    // evict the contract_count_cache entry whenever a new event is indexed.
+    {
+        let mut rx = app_state.event_tx.subscribe();
+        let cache = app_state.contract_count_cache.clone();
+        tokio::spawn(async move {
+            while let Ok(event) = rx.recv().await {
+                cache.invalidate(&event.contract_id).await;
+                crate::metrics::record_contract_count_cache_invalidation();
+            }
+        });
+    }
 
     // Build governor config: burst = rate_limit_per_minute, replenish 1 token per (60/rate) seconds.
     // per_second(n) means n tokens replenished per second; we want rate_limit_per_minute / 60.
@@ -392,6 +407,7 @@ pub fn create_router_with_tx_and_tenant_map(
                 .per_millisecond(replenish_ms)
                 .burst_size(burst)
                 .key_extractor(SmartIpKeyExtractor)
+                .use_headers()
                 .finish()
                 .expect("invalid governor config"),
         );
@@ -417,6 +433,7 @@ pub fn create_router_with_tx_and_tenant_map(
                 .per_millisecond(replenish_ms)
                 .burst_size(burst)
                 .key_extractor(PeerIpKeyExtractor)
+                .use_headers()
                 .finish()
                 .expect("invalid governor config"),
         );
@@ -684,6 +701,7 @@ mod tests {
                 .per_millisecond(60_000u64 / u64::from(burst.max(1)))
                 .burst_size(burst)
                 .key_extractor(SmartIpKeyExtractor)
+                .use_headers()
                 .finish()
                 .expect("invalid governor config"),
         );
@@ -726,8 +744,12 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
         assert!(
-            resp.headers().contains_key("retry-after")
-                || resp.headers().contains_key("x-ratelimit-after")
+            resp.headers().contains_key("retry-after"),
+            "expected Retry-After header on 429"
+        );
+        assert!(
+            resp.headers().contains_key("x-ratelimit-limit"),
+            "expected X-RateLimit-Limit header on 429"
         );
     }
 
