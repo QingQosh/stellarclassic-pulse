@@ -2073,6 +2073,8 @@ pub struct RecentParams {
     pub limit: Option<i64>,
     pub event_type: Option<crate::models::EventType>,
     pub contract_id: Option<String>,
+    /// Cursor for pagination (opaque, URL-safe).
+    pub cursor: Option<String>,
     /// Not supported — returns 400 if provided.
     pub from_ledger: Option<i64>,
     /// Not supported — returns 400 if provided.
@@ -2087,6 +2089,7 @@ pub struct RecentParams {
         ("limit" = Option<i64>, Query, description = "Number of most-recent events to return, 1–100 (default: 20)"),
         ("event_type" = Option<crate::models::EventType>, Query, description = "Filter by event type: contract, diagnostic, system"),
         ("contract_id" = Option<String>, Query, description = "Filter by contract ID"),
+        ("cursor" = Option<String>, Query, description = "Cursor for pagination (opaque, URL-safe)"),
     ),
     responses(
         (status = 200, description = "Most recently indexed events in descending ledger order"),
@@ -2120,6 +2123,16 @@ pub async fn get_recent_events(
         bind_idx += 1;
     }
 
+    // Handle cursor-based pagination
+    if let Some(ref cursor_str) = params.cursor {
+        let (cursor_ledger, cursor_id) = decode_cursor(cursor_str)?;
+        conditions.push(format!(
+            "(ledger, id) < (${}, ${})",
+            bind_idx, bind_idx + 1
+        ));
+        bind_idx += 2;
+    }
+
     let where_clause = if conditions.is_empty() {
         String::new()
     } else {
@@ -2139,9 +2152,21 @@ pub async fn get_recent_events(
     if let Some(ref et) = params.event_type {
         q = q.bind(et);
     }
-    q = q.bind(limit);
+    if let Some(ref cursor_str) = params.cursor {
+        let (cursor_ledger, cursor_id) = decode_cursor(cursor_str)?;
+        q = q.bind(cursor_ledger);
+        q = q.bind(cursor_id);
+    }
+    q = q.bind(limit + 1); // Fetch one extra to determine if there's a next page
 
     let rows = q.fetch_all(&state.pool).await?;
+    let has_next = rows.len() > limit as usize;
+    let rows = if has_next {
+        &rows[..limit as usize]
+    } else {
+        &rows
+    };
+
     let events: Vec<Value> = rows
         .iter()
         .map(|e| {
@@ -2154,10 +2179,18 @@ pub async fn get_recent_events(
         })
         .collect();
 
-    Ok(Json(json!({
+    let mut response = json!({
         "data": events,
         "limit": limit,
-    })))
+    });
+
+    if has_next && !rows.is_empty() {
+        let last_event = &rows[rows.len() - 1];
+        let next_cursor = encode_cursor(last_event.ledger, last_event.id);
+        response["next_cursor"] = json!(next_cursor);
+    }
+
+    Ok(Json(response))
 }
 
 #[utoipa::path(
