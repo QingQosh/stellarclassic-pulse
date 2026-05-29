@@ -1385,6 +1385,10 @@ pub async fn get_events(
             conditions.push(format!("in_successful_call = ${bind_idx}"));
             bind_idx += 1;
         }
+        if params.schema_version.is_some() {
+            conditions.push(format!("schema_version = ${bind_idx}"));
+            bind_idx += 1;
+        }
         if params.topic_sym.is_some() {
             conditions.push(format!("topic_0_sym = ${bind_idx}"));
             bind_idx += 1;
@@ -1475,6 +1479,9 @@ pub async fn get_events(
         }
         if let Some(isc) = params.in_successful_call {
             q = q.bind(isc);
+        }
+        if let Some(sv) = params.schema_version {
+            q = q.bind(sv);
         }
         if let Some(ref ts) = params.topic_sym {
             q = q.bind(ts);
@@ -1618,6 +1625,10 @@ pub async fn get_events(
         conditions.push(format!("in_successful_call = ${bind_idx}"));
         bind_idx += 1;
     }
+    if params.schema_version.is_some() {
+        conditions.push(format!("schema_version = ${bind_idx}"));
+        bind_idx += 1;
+    }
     if params.topic_sym.is_some() {
         conditions.push(format!("topic_0_sym = ${bind_idx}"));
         bind_idx += 1;
@@ -1698,6 +1709,9 @@ pub async fn get_events(
     }
     if let Some(isc) = params.in_successful_call {
         q = q.bind(isc);
+    }
+    if let Some(sv) = params.schema_version {
+        q = q.bind(sv);
     }
     if let Some(ref ts) = params.topic_sym {
         q = q.bind(ts);
@@ -2125,6 +2139,8 @@ pub struct RecentParams {
     pub limit: Option<i64>,
     pub event_type: Option<crate::models::EventType>,
     pub contract_id: Option<String>,
+    /// Cursor for pagination (opaque, URL-safe).
+    pub cursor: Option<String>,
     /// Not supported — returns 400 if provided.
     pub from_ledger: Option<i64>,
     /// Not supported — returns 400 if provided.
@@ -2139,6 +2155,7 @@ pub struct RecentParams {
         ("limit" = Option<i64>, Query, description = "Number of most-recent events to return, 1–100 (default: 20)"),
         ("event_type" = Option<crate::models::EventType>, Query, description = "Filter by event type: contract, diagnostic, system"),
         ("contract_id" = Option<String>, Query, description = "Filter by contract ID"),
+        ("cursor" = Option<String>, Query, description = "Cursor for pagination (opaque, URL-safe)"),
     ),
     responses(
         (status = 200, description = "Most recently indexed events in descending ledger order"),
@@ -2172,6 +2189,16 @@ pub async fn get_recent_events(
         bind_idx += 1;
     }
 
+    // Handle cursor-based pagination
+    if let Some(ref cursor_str) = params.cursor {
+        let (cursor_ledger, cursor_id) = decode_cursor(cursor_str)?;
+        conditions.push(format!(
+            "(ledger, id) < (${}, ${})",
+            bind_idx, bind_idx + 1
+        ));
+        bind_idx += 2;
+    }
+
     let where_clause = if conditions.is_empty() {
         String::new()
     } else {
@@ -2191,9 +2218,21 @@ pub async fn get_recent_events(
     if let Some(ref et) = params.event_type {
         q = q.bind(et);
     }
-    q = q.bind(limit);
+    if let Some(ref cursor_str) = params.cursor {
+        let (cursor_ledger, cursor_id) = decode_cursor(cursor_str)?;
+        q = q.bind(cursor_ledger);
+        q = q.bind(cursor_id);
+    }
+    q = q.bind(limit + 1); // Fetch one extra to determine if there's a next page
 
     let rows = q.fetch_all(&state.pool).await?;
+    let has_next = rows.len() > limit as usize;
+    let rows = if has_next {
+        &rows[..limit as usize]
+    } else {
+        &rows
+    };
+
     let events: Vec<Value> = rows
         .iter()
         .map(|e| {
@@ -2206,10 +2245,18 @@ pub async fn get_recent_events(
         })
         .collect();
 
-    Ok(Json(json!({
+    let mut response = json!({
         "data": events,
         "limit": limit,
-    })))
+    });
+
+    if has_next && !rows.is_empty() {
+        let last_event = &rows[rows.len() - 1];
+        let next_cursor = encode_cursor(last_event.ledger, last_event.id);
+        response["next_cursor"] = json!(next_cursor);
+    }
+
+    Ok(Json(response))
 }
 
 #[utoipa::path(
@@ -2681,6 +2728,111 @@ pub async fn anonymize_event(
     tracing::info!(event_id = %id, anonymized_at = %chrono::Utc::now(), "Event anonymized");
 
     Ok(Json(json!({ "id": id, "anonymized": true })))
+}
+
+/// Delete all events for a contract (GDPR right-to-erasure).
+/// Optionally anonymize instead of deleting with `anonymize_only=true`.
+/// Logs deletion request for audit purposes.
+#[utoipa::path(
+    delete,
+    path = "/v1/admin/events/contract/{contract_id}",
+    tag = "admin",
+    params(
+        ("contract_id" = String, Path, description = "Contract ID"),
+        ("anonymize_only" = Option<bool>, Query, description = "If true, anonymize instead of deleting (default: false)"),
+    ),
+    responses(
+        (status = 200, description = "Events deleted or anonymized"),
+        (status = 400, description = "Invalid contract_id", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    )
+)]
+pub async fn delete_contract_events(
+    State(state): State<AppState>,
+    Path(contract_id): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Value>, AppError> {
+    validate_contract_id(&contract_id)?;
+
+    let anonymize_only = params
+        .get("anonymize_only")
+        .and_then(|v| v.parse::<bool>().ok())
+        .unwrap_or(false);
+
+    let client_ip = headers
+        .get("x-forwarded-for")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("unknown");
+
+    if anonymize_only {
+        // Anonymize: set anonymized=true and hash tx_hash
+        use sha2::{Digest, Sha256};
+
+        let rows = sqlx::query("SELECT id, tx_hash FROM events WHERE contract_id = $1 AND anonymized = FALSE")
+            .bind(&contract_id)
+            .fetch_all(&state.pool)
+            .await?;
+
+        let count = rows.len() as u64;
+
+        for row in rows {
+            let id: Uuid = row.try_get("id")?;
+            let tx_hash: String = row.try_get("tx_hash")?;
+            let hashed_tx = {
+                let mut h = Sha256::new();
+                h.update(tx_hash.as_bytes());
+                format!("{:x}", h.finalize())
+            };
+
+            sqlx::query("UPDATE events SET anonymized = TRUE, event_data = $1, tx_hash = $2 WHERE id = $3")
+                .bind(json!({"anonymized": true}))
+                .bind(&hashed_tx)
+                .bind(id)
+                .execute(&state.pool)
+                .await?;
+        }
+
+        tracing::info!(
+            contract_id = %contract_id,
+            count = count,
+            client_ip = client_ip,
+            timestamp = %chrono::Utc::now(),
+            "Events anonymized for contract (GDPR)"
+        );
+
+        crate::metrics::record_events_deleted(count);
+
+        Ok(Json(json!({
+            "contract_id": contract_id,
+            "action": "anonymized",
+            "count": count,
+        })))
+    } else {
+        // Hard delete
+        let result = sqlx::query("DELETE FROM events WHERE contract_id = $1")
+            .bind(&contract_id)
+            .execute(&state.pool)
+            .await?;
+
+        let count = result.rows_affected();
+
+        tracing::info!(
+            contract_id = %contract_id,
+            count = count,
+            client_ip = client_ip,
+            timestamp = %chrono::Utc::now(),
+            "Events deleted for contract (GDPR right-to-erasure)"
+        );
+
+        crate::metrics::record_events_deleted(count);
+
+        Ok(Json(json!({
+            "contract_id": contract_id,
+            "action": "deleted",
+            "count": count,
+        })))
+    }
 }
 
 /// Pause the indexer loop without stopping the HTTP server.

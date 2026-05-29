@@ -83,6 +83,8 @@ pub struct PaginationParams {
     /// Sort column: `ledger`, `timestamp`, or `created_at` (default: ledger)
     pub sort_by: Option<SortBy>,
     pub in_successful_call: Option<bool>,
+    /// Filter by Soroban protocol schema version.
+    pub schema_version: Option<i32>,
     /// Filter by the first topic symbol (uses topic_0_sym generated column index).
     pub topic_sym: Option<String>,
     /// Filter by topic array using JSONB containment (e.g., ?topic=["transfer"]).
