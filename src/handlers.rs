@@ -1904,6 +1904,13 @@ pub async fn get_events(
     }
 
     let body = serde_json::Value::Object(body_obj);
+
+    // Content negotiation: return NDJSON when the client requests it (Issue #417)
+    if accepts_ndjson(&headers) {
+        let ndjson = ndjson_response(events.into_iter());
+        return Ok(ndjson.into_response());
+    }
+
     let mut response = Json(body).into_response();
     if let Some(ref tag) = etag {
         response.headers_mut().insert("ETag", tag.parse().unwrap());
@@ -1961,6 +1968,7 @@ fn csv_escape_field(value: &str) -> String {
 pub async fn export_events(
     State(state): State<AppState>,
     Query(params): Query<ExportParams>,
+    headers: HeaderMap,
 ) -> Result<Response<Body>, AppError> {
     if state.config.api_keys.is_empty() {
         return Err(AppError::Validation(
@@ -3516,23 +3524,39 @@ async fn store_event_with_idempotency(
         "topic": event.topic
     });
 
-    let result = sqlx::query(
-        r#"
-        INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (tx_hash, contract_id, event_type) DO NOTHING
-        "#,
-    )
-    .bind(&event.contract_id)
-    .bind(&event.event_type)
-    .bind(&event.tx_hash)
-    .bind(ledger)
-    .bind(timestamp)
-    .bind(event_data)
-    .execute(pool)
-    .await?;
+    let contract_id = event.contract_id.clone();
+    let event_type = event.event_type.clone();
+    let tx_hash = event.tx_hash.clone();
 
-    Ok(result.rows_affected())
+    let rows_affected = crate::error::with_deadlock_retry(3, || {
+        let pool = pool.clone();
+        let contract_id = contract_id.clone();
+        let event_type = event_type.clone();
+        let tx_hash = tx_hash.clone();
+        let event_data = event_data.clone();
+        async move {
+            sqlx::query(
+                r#"
+                INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (tx_hash, contract_id, event_type) DO NOTHING
+                "#,
+            )
+            .bind(contract_id)
+            .bind(event_type)
+            .bind(tx_hash)
+            .bind(ledger)
+            .bind(timestamp)
+            .bind(event_data)
+            .execute(&pool)
+            .await
+            .map(|r| r.rows_affected())
+        }
+    })
+    .await
+    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+
+    Ok(rows_affected)
 }
 
 #[cfg(test)]
