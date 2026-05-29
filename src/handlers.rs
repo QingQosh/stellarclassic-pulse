@@ -101,8 +101,18 @@ fn decode_cursor(cursor: &str) -> Result<(i64, Uuid), AppError> {
     let ledger = ledger_str
         .parse::<i64>()
         .map_err(|_| AppError::Validation("invalid cursor".to_string()))?;
+    if ledger <= 0 {
+        return Err(AppError::Validation("invalid cursor".to_string()));
+    }
+    // Reject astronomically large ledger values (Stellar ledger sequence is a u32)
+    if ledger > i64::from(u32::MAX) {
+        return Err(AppError::Validation("invalid cursor".to_string()));
+    }
     let id =
         Uuid::parse_str(id_str).map_err(|_| AppError::Validation("invalid cursor".to_string()))?;
+    if id.get_version() != Some(uuid::Version::Random) {
+        return Err(AppError::Validation("invalid cursor".to_string()));
+    }
     Ok((ledger, id))
 }
 
@@ -1719,7 +1729,14 @@ pub async fn get_events(
     }
     q = q.bind(limit).bind(offset);
 
-    let rows = q.fetch_all(&state.read_pool).await?;
+    let rows = if params.search.is_some() {
+        let t0 = std::time::Instant::now();
+        let r = q.fetch_all(&state.read_pool).await?;
+        crate::metrics::record_search_query_duration(t0.elapsed());
+        r
+    } else {
+        q.fetch_all(&state.read_pool).await?
+    };
 
     let has_more = rows.len() as i64 == limit;
     let next_cursor = if has_more {
@@ -2263,8 +2280,10 @@ pub async fn get_events_by_contract(
     // Fetch total count. Skip cache in multi-tenant mode to avoid cross-tenant leakage.
     let total: i64 = if params.from_ledger.is_none() && params.to_ledger.is_none() && tenant_id.is_none() {
         if let Some(cached) = state.contract_count_cache.get(&contract_id).await {
+            crate::metrics::update_contract_count_cache_hit_ratio(1, 0);
             cached
         } else {
+            crate::metrics::update_contract_count_cache_hit_ratio(0, 1);
             let count: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE contract_id = $1")
                     .bind(&contract_id)
@@ -6866,6 +6885,243 @@ mod tests {
             cc.contains("max-age=60"),
             "expected max-age=60 in Cache-Control, got: {cc}"
         );
+    }
+
+    // ── Issue #413: full-text search uses GIN index ──────────────────────────
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn fulltext_search_returns_matching_events(pool: PgPool) {
+        sqlx::query(
+            "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+             VALUES ($1, $2, $3, $4, NOW(), $5)",
+        )
+        .bind("CSEARCH1")
+        .bind("contract")
+        .bind("s".repeat(64))
+        .bind(1_i64)
+        .bind(json!({"value": {"amount": "transfer"}, "topic": []}))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+             VALUES ($1, $2, $3, $4, NOW(), $5)",
+        )
+        .bind("CSEARCH2")
+        .bind("contract")
+        .bind("t".repeat(64))
+        .bind(2_i64)
+        .bind(json!({"value": {"amount": "unrelated"}, "topic": []}))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let app = create_test_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events?search=transfer")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let data = v["data"].as_array().unwrap();
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0]["contract_id"], json!("CSEARCH1"));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn fulltext_search_uses_gin_index(pool: PgPool) {
+        // EXPLAIN ANALYZE the tsv query and verify it mentions the GIN index
+        let plan: String = sqlx::query_scalar(
+            "EXPLAIN SELECT id FROM events WHERE event_data_tsv @@ plainto_tsquery('english', 'transfer')"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            plan.to_lowercase().contains("gin") || plan.to_lowercase().contains("idx_events_event_data_tsv"),
+            "expected GIN index in query plan, got: {plan}"
+        );
+    }
+
+    // ── Issue #414: cursor validation ────────────────────────────────────────
+
+    #[test]
+    fn decode_cursor_rejects_negative_ledger() {
+        let cursor = URL_SAFE_NO_PAD.encode(format!("-1:{}", Uuid::new_v4()));
+        assert!(matches!(
+            decode_cursor(&cursor),
+            Err(AppError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn decode_cursor_rejects_zero_ledger() {
+        let cursor = URL_SAFE_NO_PAD.encode(format!("0:{}", Uuid::new_v4()));
+        assert!(matches!(
+            decode_cursor(&cursor),
+            Err(AppError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn decode_cursor_rejects_i64_max_ledger() {
+        let cursor = URL_SAFE_NO_PAD.encode(format!("{}:{}", i64::MAX, Uuid::new_v4()));
+        assert!(matches!(
+            decode_cursor(&cursor),
+            Err(AppError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn decode_cursor_rejects_non_v4_uuid() {
+        // UUID v1 (time-based)
+        let v1_uuid = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
+        let cursor = URL_SAFE_NO_PAD.encode(format!("100:{v1_uuid}"));
+        assert!(matches!(
+            decode_cursor(&cursor),
+            Err(AppError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn decode_cursor_rejects_invalid_uuid() {
+        let cursor = URL_SAFE_NO_PAD.encode("100:not-a-uuid");
+        assert!(matches!(
+            decode_cursor(&cursor),
+            Err(AppError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn decode_cursor_accepts_valid_input() {
+        let id = Uuid::new_v4();
+        let cursor = URL_SAFE_NO_PAD.encode(format!("100:{id}"));
+        let (ledger, decoded_id) = decode_cursor(&cursor).unwrap();
+        assert_eq!(ledger, 100);
+        assert_eq!(decoded_id, id);
+    }
+
+    // ── Issue #415: contract count cache invalidation ────────────────────────
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn contract_count_cache_invalidated_on_new_event(pool: PgPool) {
+        use tokio::sync::broadcast;
+
+        let (event_tx, _) = broadcast::channel::<crate::models::SorobanEvent>(16);
+        let health_state = Arc::new(crate::config::HealthState::new(60));
+        let indexer_state = Arc::new(crate::config::IndexerState::new());
+        let prometheus_handle = crate::metrics::init_metrics();
+        let config = crate::config::Config::default();
+        let (_, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let app = crate::routes::create_router_with_tx_and_tenant_map(
+            pool.clone(),
+            pool.clone(),
+            vec![],
+            &[],
+            60,
+            false,
+            health_state,
+            indexer_state,
+            prometheus_handle,
+            event_tx.clone(),
+            15000,
+            1000,
+            2000,
+            None,
+            None,
+            config,
+            None,
+            Arc::new(std::collections::HashMap::new()),
+            shutdown_rx,
+        );
+
+        let contract_id = "CCACHEINVAL1234567890123456789012345678901234567890123456";
+
+        // Seed one event so the contract endpoint returns data
+        sqlx::query(
+            "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+             VALUES ($1, $2, $3, $4, NOW(), $5)",
+        )
+        .bind(contract_id)
+        .bind("contract")
+        .bind("c".repeat(64))
+        .bind(1_i64)
+        .bind(json!({}))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // First request — populates cache with count=1
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/events/contract/{contract_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["total"], json!(1));
+
+        // Insert a second event directly into DB (bypassing the indexer)
+        sqlx::query(
+            "INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+             VALUES ($1, $2, $3, $4, NOW(), $5)",
+        )
+        .bind(contract_id)
+        .bind("contract")
+        .bind("d".repeat(64))
+        .bind(2_i64)
+        .bind(json!({}))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Broadcast a new event for this contract — triggers cache invalidation
+        let _ = event_tx.send(crate::models::SorobanEvent {
+            contract_id: contract_id.to_string(),
+            event_type: "contract".to_string(),
+            tx_hash: "d".repeat(64),
+            ledger: 2,
+            ledger_closed_at: Utc::now().to_rfc3339(),
+            ledger_hash: None,
+            in_successful_call: true,
+            topic: None,
+            value: serde_json::Value::Null,
+            tenant_id: None,
+        });
+
+        // Give the background task a moment to process the invalidation
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Second request — cache was invalidated, should re-query and return count=2
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/events/contract/{contract_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["total"], json!(2));
     }
 }
 
