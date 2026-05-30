@@ -639,3 +639,24 @@ mod tests {
         assert!(result.rpc_cursor.is_none());
     }
 }
+#[derive(Debug, Serialize)]
+pub struct PaginatedResponse<T> {
+    pub data: Vec<T>,
+    pub page: i64,
+    pub limit: i64,
+    pub total: i64,
+    pub has_more: bool,
+}
+
+impl<T> PaginatedResponse<T> {
+    pub fn new(data: Vec<T>, page: i64, limit: i64, total: i64) -> Self {
+        let has_more = (page * limit) < total;
+        Self {
+            data,
+            page,
+            limit,
+            total,
+            has_more,
+        }
+    }
+}

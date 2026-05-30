@@ -23,10 +23,10 @@ use utoipa::OpenApi;
 use uuid::Uuid;
 
 use crate::{
-    config::{Config, HealthState, IndexerState},
+    aggregation, config::{Config, HealthState, IndexerState},
     handlers, metrics, middleware,
     models::SorobanEvent,
-    subscriptions,
+    saved_queries, subscriptions,
 };
 
 type ContractCountCache = moka::future::Cache<String, i64>;

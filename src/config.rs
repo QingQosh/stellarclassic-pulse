@@ -250,6 +250,28 @@ pub struct Config {
     pub email_from: Option<String>,
     pub email_to: Vec<String>,
     pub email_contract_filter: Vec<String>,
+    // SMS notification fields (Issue #473)
+    pub twilio_account_sid: Option<String>,
+    pub twilio_auth_token: Option<SecretString>,
+    pub twilio_from_number: Option<String>,
+    pub sms_to_numbers: Vec<String>,
+    pub sms_contract_filter: Vec<String>,
+    // Notification retry policies (Issue #474)
+    pub webhook_retry_policy: crate::retry_policy::RetryPolicy,
+    pub email_retry_policy: crate::retry_policy::RetryPolicy,
+    pub sms_retry_policy: crate::retry_policy::RetryPolicy,
+    // SMS notification fields (Issue #473)
+    pub twilio_account_sid: Option<String>,
+    pub twilio_auth_token: Option<SecretString>,
+    pub twilio_from_number: Option<String>,
+    pub sms_to_numbers: Vec<String>,
+    pub sms_contract_filter: Vec<String>,
+    // Notification retry policies (Issue #474)
+    pub webhook_retry_policy: crate::retry_policy::RetryPolicy,
+    pub email_retry_policy: crate::retry_policy::RetryPolicy,
+    pub sms_retry_policy: crate::retry_policy::RetryPolicy,
+    pub email_to: Vec<String>,
+    pub email_contract_filter: Vec<String>,
     // Redis stream fields
     pub redis_url: Option<String>,
     pub redis_stream_key: Option<String>,
