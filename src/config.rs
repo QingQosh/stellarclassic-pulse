@@ -270,6 +270,10 @@ pub struct Config {
     pub max_ledger_range: u64,
     /// Queries exceeding this duration (ms) are logged at WARN level (issue #421).
     pub slow_query_threshold_ms: u64,
+    /// Path to Lua event transformation script (lua feature only).
+    pub event_transform_script: Option<String>,
+    /// Execution timeout for Lua scripts in milliseconds (default: 100).
+    pub event_transform_timeout_ms: u64,
 }
 
 impl Default for Config {
@@ -350,6 +354,8 @@ impl Default for Config {
             rpc_max_events_per_page: 200,
             max_ledger_range: 100_000,
             slow_query_threshold_ms: 1000,
+            event_transform_script: None,
+            event_transform_timeout_ms: 100,
         }
     }
 }
@@ -1143,6 +1149,14 @@ impl Config {
                 &mut errors,
             )
             .unwrap_or(1000),
+            event_transform_script: std::env::var("EVENT_TRANSFORM_SCRIPT").ok(),
+            event_transform_timeout_ms: parse_int::<u64>(
+                "EVENT_TRANSFORM_TIMEOUT_MS",
+                &env_or_file_or("EVENT_TRANSFORM_TIMEOUT_MS", &file, "100"),
+                "100",
+                &mut errors,
+            )
+            .unwrap_or(100),
         }
     }
 }
