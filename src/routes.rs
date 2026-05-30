@@ -323,6 +323,7 @@ pub fn create_router_with_tx_and_tenant_map(
     // addition to the global auth layer. The admin layer requires an
     // ADMIN_API_KEY even when no regular API_KEY is configured.
     let admin_routes = Router::new()
+        .route("/admin/lua/preview", axum::routing::post(handlers::lua_preview))
         .route("/admin/replay", axum::routing::post(handlers::replay_events))
         .route("/admin/reencrypt", axum::routing::post(handlers::start_reencrypt))
         .route("/admin/contracts/{contract_id}/abi", axum::routing::post(handlers::register_contract_abi))

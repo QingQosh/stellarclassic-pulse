@@ -89,6 +89,14 @@ pub struct PaginationParams {
     pub topic_sym: Option<String>,
     /// Filter by topic array using JSONB containment (e.g., ?topic=["transfer"]).
     pub topic: Option<String>,
+    /// Filter by exact value of topic[0] (e.g. "transfer"). Uses topic_0_sym index.
+    pub topic_0: Option<String>,
+    /// Filter by exact value of topic[1]. Uses GIN index on event_data->'topic'.
+    pub topic_1: Option<String>,
+    /// Filter by exact value of topic[2]. Uses GIN index on event_data->'topic'.
+    pub topic_2: Option<String>,
+    /// Filter by exact value of topic[3]. Uses GIN index on event_data->'topic'.
+    pub topic_3: Option<String>,
     /// Full-text search query for event_data (uses event_data_tsv tsvector index).
     pub search: Option<String>,
     /// Filter events at or after this timestamp (ISO 8601 format).
@@ -443,6 +451,32 @@ pub struct RpcError {
     #[allow(dead_code)]
     pub code: i64,
     pub message: String,
+}
+
+/// Request body for POST /v1/admin/lua/preview
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct LuaPreviewRequest {
+    /// The Lua script to preview. Must define a `transform_event(event)` function.
+    pub script: String,
+    /// IDs of events to apply the script to (max 20).
+    pub event_ids: Vec<uuid::Uuid>,
+}
+
+/// One entry in the preview response — original event alongside the transformed result.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct LuaPreviewItem {
+    pub event_id: uuid::Uuid,
+    pub original: serde_json::Value,
+    /// `null` when the script returned `nil` (event would be skipped).
+    pub transformed: Option<serde_json::Value>,
+    /// Non-null when the script raised an error for this event.
+    pub error: Option<String>,
+}
+
+/// Response body for POST /v1/admin/lua/preview
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct LuaPreviewResponse {
+    pub results: Vec<LuaPreviewItem>,
 }
 
 #[derive(Debug, Deserialize)]

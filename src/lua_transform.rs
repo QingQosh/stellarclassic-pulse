@@ -4,7 +4,7 @@
 //! before they are stored in the database. Scripts can modify event data or
 //! return nil to skip events entirely.
 
-use crate::models::SorobanEvent;
+use crate::models::{LuaPreviewItem, SorobanEvent};
 use crate::metrics;
 use anyhow::{Context, Result};
 use mlua::{Lua, Table, Value as LuaValue};
@@ -280,6 +280,88 @@ impl LuaTransformer {
                 value.type_name()
             )),
         }
+    }
+
+    /// Preview a Lua script against a list of events **without writing to the DB**.
+    ///
+    /// Applies the same CPU instruction limit, memory limit, and timeout as the
+    /// production transformer. Each event is transformed independently; an error
+    /// on one event does not abort the rest.
+    ///
+    /// Returns one [`LuaPreviewItem`] per input event containing the original
+    /// event data, the transformed result (or `None` when the script returns
+    /// `nil`), and any per-event error message.
+    pub async fn preview_events(
+        script: String,
+        events: Vec<SorobanEvent>,
+        timeout_ms: u64,
+    ) -> Vec<LuaPreviewItem> {
+        let timeout = Duration::from_millis(timeout_ms);
+        let mut results = Vec::with_capacity(events.len());
+
+        for event in events {
+            let event_id = uuid::Uuid::new_v4(); // placeholder; caller should supply real IDs
+            let original = serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
+            let script_clone = script.clone();
+
+            let outcome = tokio::time::timeout(
+                timeout,
+                tokio::task::spawn_blocking(move || {
+                    Self::preview_event_sync(&script_clone, event)
+                }),
+            )
+            .await;
+
+            let item = match outcome {
+                Ok(Ok(Ok(Some(transformed)))) => LuaPreviewItem {
+                    event_id,
+                    original,
+                    transformed: serde_json::to_value(&transformed).ok(),
+                    error: None,
+                },
+                Ok(Ok(Ok(None))) => LuaPreviewItem {
+                    event_id,
+                    original,
+                    transformed: None,
+                    error: None,
+                },
+                Ok(Ok(Err(e))) => LuaPreviewItem {
+                    event_id,
+                    original,
+                    transformed: None,
+                    error: Some(e.to_string()),
+                },
+                Ok(Err(e)) => LuaPreviewItem {
+                    event_id,
+                    original,
+                    transformed: None,
+                    error: Some(format!("internal error: {e}")),
+                },
+                Err(_) => LuaPreviewItem {
+                    event_id,
+                    original,
+                    transformed: None,
+                    error: Some(format!(
+                        "script timeout after {}ms",
+                        timeout_ms
+                    )),
+                },
+            };
+            results.push(item);
+        }
+
+        results
+    }
+
+    /// Synchronous single-event preview used inside `spawn_blocking`.
+    /// Compiles the script from a string (not a file) and applies the same limits.
+    fn preview_event_sync(script: &str, event: SorobanEvent) -> Result<Option<SorobanEvent>> {
+        let lua = Lua::new();
+        lua.set_memory_limit(LUA_MEMORY_LIMIT_MB * 1024 * 1024)?;
+        lua.load(script)
+            .exec()
+            .context("failed to compile preview script")?;
+        Self::transform_sync(&lua, event)
     }
 }
 

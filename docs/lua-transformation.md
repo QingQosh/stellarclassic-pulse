@@ -278,6 +278,86 @@ See `examples/transform_example.lua` for a comprehensive example demonstrating:
 - Limited to synchronous operations
 - Cannot modify the event schema (add/remove top-level fields)
 
+---
+
+## Preview Endpoint
+
+Before deploying a new Lua script to production, you can test it against real
+events using the preview endpoint. The script runs in memory — **no database
+writes occur**.
+
+### `POST /v1/admin/lua/preview`
+
+**Authentication:** `Authorization: Bearer <ADMIN_API_KEY>`
+
+**Request body:**
+
+```json
+{
+  "script": "function transform_event(e)\n  e.value.tag = 'preview'\n  return e\nend",
+  "event_ids": [
+    "11111111-1111-1111-1111-111111111111",
+    "22222222-2222-2222-2222-222222222222"
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `script` | string | Full Lua script text. Must define `transform_event(event)`. |
+| `event_ids` | UUID[] | IDs of existing events to test against. Maximum **20**. |
+
+**Response:**
+
+```json
+{
+  "results": [
+    {
+      "event_id": "11111111-1111-1111-1111-111111111111",
+      "original":    { "contractId": "CABC...", "value": { "amount": 100 } },
+      "transformed": { "contractId": "CABC...", "value": { "amount": 100, "tag": "preview" } },
+      "error": null
+    },
+    {
+      "event_id": "22222222-2222-2222-2222-222222222222",
+      "original":    { "contractId": "CDEF...", "value": {} },
+      "transformed": null,
+      "error": "Instruction limit exceeded"
+    }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `original` | The event data as it exists in the database. |
+| `transformed` | The event data after the script ran. `null` when the script returned `nil` (event would be skipped) or an error occurred. |
+| `error` | Per-event error message (script compilation failure, timeout, instruction/memory limit). `null` on success. |
+
+### Resource limits during preview
+
+The preview applies the same limits as the production transformer:
+
+| Limit | Value |
+|-------|-------|
+| CPU instructions | 1 000 000 per event |
+| Memory | 64 MB per event |
+| Timeout | `EVENT_TRANSFORM_TIMEOUT_MS` (default 100 ms) |
+
+### cURL example
+
+```bash
+curl -X POST https://your-host/v1/admin/lua/preview \
+  -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "script": "function transform_event(e)\n  if e.value.amount then\n    e.value.amount = e.value.amount * 2\n  end\n  return e\nend",
+    "event_ids": ["YOUR-EVENT-UUID"]
+  }'
+```
+
+---
+
 ## Future Enhancements
 
 Potential future improvements:

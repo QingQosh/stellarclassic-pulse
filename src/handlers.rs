@@ -1300,6 +1300,10 @@ fn ndjson_response(events: impl Iterator<Item = Value>) -> Response<Body> {
         ("sort" = Option<String>, Query, description = "Sort order: asc (oldest first) or desc (newest first, default)"),
         ("sort_by" = Option<crate::models::SortBy>, Query, description = "Sort column: ledger (default), timestamp, or created_at"),
         ("topic_sym" = Option<String>, Query, description = "Filter by first topic symbol (uses topic_0_sym generated column index)"),
+        ("topic_0" = Option<String>, Query, description = "Filter by exact value of topic[0] (e.g. 'transfer'). Uses the topic_0_sym generated-column index for O(log n) lookups."),
+        ("topic_1" = Option<String>, Query, description = "Filter by exact value of topic[1]. Uses GIN index on event_data->'topic'."),
+        ("topic_2" = Option<String>, Query, description = "Filter by exact value of topic[2]. Uses GIN index on event_data->'topic'."),
+        ("topic_3" = Option<String>, Query, description = "Filter by exact value of topic[3]. Uses GIN index on event_data->'topic'."),
         ("search" = Option<String>, Query, description = "Full-text search query for event_data (searches all string values in the JSON)"),
         ("compact" = Option<bool>, Query, description = "Return event_data as a base64-encoded gzip-compressed JSON string instead of the full JSON object. Clients that need the full data can decode it; clients that only need metadata can ignore it. Default: false."),
     ),
@@ -1456,6 +1460,24 @@ pub async fn get_events(
             conditions.push(format!("event_data->'topic' @> ${bind_idx}::jsonb"));
             bind_idx += 1;
         }
+        // topic_0 uses the generated topic_0_sym column index for efficiency
+        if params.topic_0.is_some() {
+            conditions.push(format!("topic_0_sym = ${bind_idx}"));
+            bind_idx += 1;
+        }
+        // topic_1/2/3 use GIN index on event_data->'topic'
+        if params.topic_1.is_some() {
+            conditions.push(format!("event_data->'topic'->1 @> ${bind_idx}::jsonb"));
+            bind_idx += 1;
+        }
+        if params.topic_2.is_some() {
+            conditions.push(format!("event_data->'topic'->2 @> ${bind_idx}::jsonb"));
+            bind_idx += 1;
+        }
+        if params.topic_3.is_some() {
+            conditions.push(format!("event_data->'topic'->3 @> ${bind_idx}::jsonb"));
+            bind_idx += 1;
+        }
         if params.search.is_some() {
             conditions.push(format!(
                 "event_data_tsv @@ plainto_tsquery('english', ${bind_idx})"
@@ -1547,6 +1569,18 @@ pub async fn get_events(
         }
         if let Some(ref tf) = topic_filter {
             q = q.bind(tf.to_string());
+        }
+        if let Some(ref t0) = params.topic_0 {
+            q = q.bind(t0);
+        }
+        if let Some(ref t1) = params.topic_1 {
+            q = q.bind(serde_json::json!(t1).to_string());
+        }
+        if let Some(ref t2) = params.topic_2 {
+            q = q.bind(serde_json::json!(t2).to_string());
+        }
+        if let Some(ref t3) = params.topic_3 {
+            q = q.bind(serde_json::json!(t3).to_string());
         }
         if let Some(ref search) = params.search {
             q = q.bind(search);
@@ -3382,6 +3416,90 @@ async fn get_indexed_ledger_range(
         (status = 403, description = "Forbidden - not the active indexer"),
     )
 )]
+/// Preview how a Lua transformation script would affect a set of events
+/// without writing any changes to the database.
+///
+/// Applies the same CPU instruction limit, memory limit, and timeout as the
+/// production transformer so operator can verify safety before deploying.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/lua/preview",
+    tag = "admin",
+    request_body = models::LuaPreviewRequest,
+    params(
+        ("X-Admin-API-Key" = String, Header, description = "Admin API key"),
+    ),
+    responses(
+        (status = 200, description = "Preview results — original and transformed event data side-by-side",
+            body = models::LuaPreviewResponse),
+        (status = 400, description = "Invalid request — too many event_ids or empty script"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "One or more event_ids not found"),
+    )
+)]
+pub async fn lua_preview(
+    State(state): State<AppState>,
+    Json(req): Json<models::LuaPreviewRequest>,
+) -> Result<Json<models::LuaPreviewResponse>, AppError> {
+    const MAX_PREVIEW_EVENTS: usize = 20;
+
+    if req.script.trim().is_empty() {
+        return Err(AppError::Validation("script must not be empty".into()));
+    }
+    if req.event_ids.is_empty() {
+        return Err(AppError::Validation("event_ids must not be empty".into()));
+    }
+    if req.event_ids.len() > MAX_PREVIEW_EVENTS {
+        return Err(AppError::Validation(format!(
+            "event_ids must contain at most {MAX_PREVIEW_EVENTS} entries"
+        )));
+    }
+
+    // Fetch the requested events from the DB (read-only)
+    let ids: Vec<uuid::Uuid> = req.event_ids.clone();
+    let rows = sqlx::query_as::<_, crate::models::Event>(
+        "SELECT * FROM events WHERE id = ANY($1) LIMIT 20",
+    )
+    .bind(&ids)
+    .fetch_all(&state.read_pool)
+    .await?;
+
+    if rows.is_empty() {
+        return Err(AppError::NotFound);
+    }
+
+    // Map Event → SorobanEvent for the transformer
+    let events: Vec<crate::models::SorobanEvent> = rows
+        .into_iter()
+        .map(|r| crate::models::SorobanEvent {
+            contract_id: r.contract_id,
+            event_type: format!("{:?}", r.event_type).to_lowercase(),
+            tx_hash: r.tx_hash,
+            ledger: r.ledger as u64,
+            ledger_closed_at: r.timestamp.to_rfc3339(),
+            ledger_hash: r.ledger_hash,
+            in_successful_call: r.in_successful_call,
+            value: r.event_data.clone(),
+            topic: r.event_data
+                .get("topic")
+                .and_then(|t| t.as_array())
+                .cloned(),
+        })
+        .collect();
+
+    let timeout_ms = state.config.event_transform_timeout_ms;
+
+    let mut results =
+        crate::lua_transform::LuaTransformer::preview_events(req.script, events, timeout_ms).await;
+
+    // Re-attach the caller-supplied UUIDs so the response matches the request
+    for (item, id) in results.iter_mut().zip(req.event_ids.iter()) {
+        item.event_id = *id;
+    }
+
+    Ok(Json(models::LuaPreviewResponse { results }))
+}
+
 pub async fn replay_events(
     State(state): State<AppState>,
     Json(request): Json<models::ReplayRequest>,
@@ -7998,6 +8116,246 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // -----------------------------------------------------------------------
+    // #444 — Topic filter tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: insert an event with a known topic[0] sym value.
+    async fn insert_event_with_topic(pool: &PgPool, contract_id: &str, topic_sym: &str) -> Uuid {
+        let id = Uuid::new_v4();
+        let event_data = json!({ "topic": [{ "sym": topic_sym }], "value": {} });
+        sqlx::query(
+            "INSERT INTO events (id, contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+             VALUES ($1, $2, 'contract', $3, $4, NOW(), $5)",
+        )
+        .bind(id)
+        .bind(contract_id)
+        .bind(format!("{id}"))
+        .bind(1_i64)
+        .bind(&event_data)
+        .execute(pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn topic_0_filter_returns_matching_events(pool: PgPool) {
+        let cid = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0000";
+        insert_event_with_topic(&pool, cid, "transfer").await;
+        insert_event_with_topic(&pool, cid, "mint").await;
+
+        let app = create_test_router(pool);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events?topic_0=transfer")
+                    .header("Authorization", "Bearer test-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let events = v["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1, "only the 'transfer' event should be returned");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn topic_0_filter_returns_empty_when_no_match(pool: PgPool) {
+        let cid = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0001";
+        insert_event_with_topic(&pool, cid, "mint").await;
+
+        let app = create_test_router(pool);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events?topic_0=transfer")
+                    .header("Authorization", "Bearer test-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let events = v["events"].as_array().unwrap();
+        assert!(events.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // #446 — Lua preview endpoint tests
+    // -----------------------------------------------------------------------
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn lua_preview_rejects_empty_script(pool: PgPool) {
+        let app = create_admin_router(pool);
+        let body = serde_json::to_string(&json!({
+            "script": "",
+            "event_ids": [Uuid::new_v4()]
+        }))
+        .unwrap();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/lua/preview")
+                    .header("Authorization", "Bearer admin-key")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn lua_preview_rejects_too_many_event_ids(pool: PgPool) {
+        let ids: Vec<_> = (0..21).map(|_| Uuid::new_v4()).collect();
+        let app = create_admin_router(pool);
+        let body = serde_json::to_string(&json!({
+            "script": "function transform_event(e) return e end",
+            "event_ids": ids
+        }))
+        .unwrap();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/lua/preview")
+                    .header("Authorization", "Bearer admin-key")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn lua_preview_returns_404_when_events_not_found(pool: PgPool) {
+        let app = create_admin_router(pool);
+        let body = serde_json::to_string(&json!({
+            "script": "function transform_event(e) return e end",
+            "event_ids": [Uuid::new_v4()]
+        }))
+        .unwrap();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/lua/preview")
+                    .header("Authorization", "Bearer admin-key")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn lua_preview_does_not_modify_database(pool: PgPool) {
+        let event_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO events (id, contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+             VALUES ($1, 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0002',
+                     'contract', $2, 1, NOW(), $3)",
+        )
+        .bind(event_id)
+        .bind(format!("{event_id}"))
+        .bind(json!({"value": 42, "topic": []}))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let app = create_admin_router(pool.clone());
+        // Script that would change the value field
+        let body = serde_json::to_string(&json!({
+            "script": "function transform_event(e) e.value = {value=999} return e end",
+            "event_ids": [event_id]
+        }))
+        .unwrap();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/lua/preview")
+                    .header("Authorization", "Bearer admin-key")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Preview must succeed
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // DB must be unchanged
+        let row: Value = sqlx::query_scalar("SELECT event_data FROM events WHERE id = $1")
+            .bind(event_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row["value"], 42, "database must not be modified by preview");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn lua_preview_requires_admin_key(pool: PgPool) {
+        let app = create_admin_auth_router(pool);
+        let body = serde_json::to_string(&json!({
+            "script": "function transform_event(e) return e end",
+            "event_ids": [Uuid::new_v4()]
+        }))
+        .unwrap();
+
+        // No auth
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/lua/preview")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // Regular API key (not admin)
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/admin/lua/preview")
+                    .header("Authorization", "Bearer regular-key")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 }
 
