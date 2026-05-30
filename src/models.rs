@@ -200,6 +200,9 @@ pub struct ExportParams {
     pub contract_id: Option<String>,
     /// Output format: "csv" (default), "parquet", or "jsonl"
     pub format: Option<String>,
+    /// Optional JSON object mapping source field names to target field names.
+    /// Example: `{"event_data":"raw_data","ledger":"ledger_seq"}`
+    pub field_map: Option<String>,
 }
 
 /// Request body for POST /v1/admin/mask-events
