@@ -12,6 +12,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::{DateTime, Utc};
 use futures::stream::{self, Stream, StreamExt};
 use reqwest;
+use secrecy::ExposeSecret;
 use serde_json::{json, Value};
 use sqlx::Row;
 use std::convert::Infallible;
@@ -1234,6 +1235,9 @@ fn filter_fields(
             "ledger_hash" => {
                 map.insert(col.to_string(), json!(event.ledger_hash));
             }
+            "anonymized" => {
+                map.insert(col.to_string(), json!(event.anonymized));
+            }
             "in_successful_call" => {
                 map.insert(col.to_string(), json!(event.in_successful_call));
             }
@@ -1243,9 +1247,6 @@ fn filter_fields(
             "schema_version" => {
                 map.insert(col.to_string(), json!(event.schema_version));
             }
-            "anonymized" => {
-                map.insert(col.to_string(), json!(event.anonymized));
-            }
             _ => {}
         }
     }
@@ -1253,6 +1254,24 @@ fn filter_fields(
 }
 
 /// Returns true if the client prefers NDJSON via the Accept header.
+fn extract_api_key_from_headers(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .or_else(|| headers.get("X-Api-Key").and_then(|h| h.to_str().ok()))
+}
+
+fn is_admin_request(headers: &HeaderMap, admin_api_keys: &[secrecy::SecretString]) -> bool {
+    extract_api_key_from_headers(headers)
+        .map(|provided_key| {
+            admin_api_keys
+                .iter()
+                .any(|expected| expected.expose_secret().as_str() == provided_key)
+        })
+        .unwrap_or(false)
+}
+
 fn accepts_ndjson(headers: &axum::http::HeaderMap) -> bool {
     headers
         .get(header::ACCEPT)
@@ -1296,6 +1315,7 @@ fn ndjson_response(events: impl Iterator<Item = Value>) -> Response<Body> {
         ("from_ledger" = Option<i64>, Query, description = "Return events at or after this ledger"),
         ("to_ledger" = Option<i64>, Query, description = "Return events at or before this ledger"),
         ("ledger_hash" = Option<String>, Query, description = "Filter by ledger hash"),
+        ("anonymized" = Option<bool>, Query, description = "Filter events by anonymized status (admin only)"),
         ("from_timestamp" = Option<String>, Query, description = "Return events at or after this timestamp (ISO 8601 format, e.g., 2026-03-14T00:00:00Z)"),
         ("to_timestamp" = Option<String>, Query, description = "Return events at or before this timestamp (ISO 8601 format, e.g., 2026-03-14T00:00:00Z)"),
         ("sort" = Option<String>, Query, description = "Sort order: asc (oldest first) or desc (newest first, default)"),
@@ -1357,6 +1377,12 @@ pub async fn get_events(
                 "from_timestamp must be <= to_timestamp".to_string(),
             ));
         }
+    }
+
+    if params.anonymized.is_some() && !is_admin_request(&headers, &state.config.admin_api_keys) {
+        return Err(AppError::Forbidden(
+            "anonymized filter requires admin privileges".to_string(),
+        ));
     }
 
     // Validate contract_id if provided
@@ -1443,6 +1469,10 @@ pub async fn get_events(
         }
         if params.ledger_hash.is_some() {
             conditions.push(format!("ledger_hash = ${bind_idx}"));
+            bind_idx += 1;
+        }
+        if params.anonymized.is_some() {
+            conditions.push(format!("anonymized = ${bind_idx}"));
             bind_idx += 1;
         }
         if params.in_successful_call.is_some() {
@@ -1543,6 +1573,9 @@ pub async fn get_events(
         }
         if let Some(ref hash) = params.ledger_hash {
             q = q.bind(hash);
+        }
+        if let Some(anonymized) = params.anonymized {
+            q = q.bind(anonymized);
         }
         if let Some(isc) = params.in_successful_call {
             q = q.bind(isc);
@@ -1700,6 +1733,10 @@ pub async fn get_events(
         conditions.push(format!("ledger_hash = ${bind_idx}"));
         bind_idx += 1;
     }
+    if params.anonymized.is_some() {
+        conditions.push(format!("anonymized = ${bind_idx}"));
+        bind_idx += 1;
+    }
     if params.in_successful_call.is_some() {
         conditions.push(format!("in_successful_call = ${bind_idx}"));
         bind_idx += 1;
@@ -1788,6 +1825,9 @@ pub async fn get_events(
     }
     if let Some(ref hash) = params.ledger_hash {
         q = q.bind(hash);
+    }
+    if let Some(anonymized) = params.anonymized {
+        q = q.bind(anonymized);
     }
     if let Some(isc) = params.in_successful_call {
         q = q.bind(isc);
@@ -7286,6 +7326,80 @@ mod tests {
         let events = v["data"].as_array().unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["event_data"], json!({"anonymized": true}));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_events_anonymized_filter_requires_admin(pool: PgPool) {
+        let app = create_admin_auth_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events?anonymized=true")
+                    .header("Authorization", "Bearer regular-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn get_events_anonymized_filter_admin_key_allows_query(pool: PgPool) {
+        let event_id_true = Uuid::new_v4();
+        let event_id_false = Uuid::new_v4();
+        let contract_id = "C1234567890123456789012345678901234567890123456789012345";
+        let now = Utc::now();
+
+        sqlx::query(
+            "INSERT INTO events (id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, anonymized)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)",
+        )
+        .bind(event_id_true)
+        .bind(contract_id)
+        .bind("contract")
+        .bind("a".repeat(64))
+        .bind(1_i64)
+        .bind(now)
+        .bind(json!({"value": 1}))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO events (id, contract_id, event_type, tx_hash, ledger, timestamp, event_data, anonymized)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE)",
+        )
+        .bind(event_id_false)
+        .bind(contract_id)
+        .bind("contract")
+        .bind("b".repeat(64))
+        .bind(2_i64)
+        .bind(now)
+        .bind(json!({"value": 2}))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let app = create_admin_auth_router(pool);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/events?anonymized=true")
+                    .header("Authorization", "Bearer admin-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let events = v["data"].as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["anonymized"], json!(true));
     }
 
     // ── Diff endpoint tests ──────────────────────────────────────────────────

@@ -86,6 +86,8 @@ pub struct PaginationParams {
     pub in_successful_call: Option<bool>,
     /// Filter by Soroban protocol schema version.
     pub schema_version: Option<i32>,
+    /// Filter by anonymized status. Requires an ADMIN_API_KEY.
+    pub anonymized: Option<bool>,
     /// Filter by the first topic symbol (uses topic_0_sym generated column index).
     pub topic_sym: Option<String>,
     /// Filter by topic array using JSONB containment (e.g., ?topic=["transfer"]).
@@ -510,6 +512,7 @@ mod tests {
             sort_by: None,
             in_successful_call: None,
             schema_version: None,
+            anonymized: None,
             topic_sym: None,
             topic: None,
             search: None,
