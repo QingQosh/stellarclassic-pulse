@@ -146,16 +146,8 @@ pub struct PaginationParams {
     pub to_timestamp: Option<String>,
     /// Return event_data as base64-encoded gzip-compressed JSON (default: false).
     pub compact: Option<bool>,
-    /// Comma-separated list of contract IDs to exclude from results.
-    pub exclude_contract_ids: Option<String>,
-    /// Comma-separated list of event types to exclude from results.
-    pub exclude_event_types: Option<String>,
-    /// Latitude for geospatial filtering (requires near_lon and radius_km).
-    pub near_lat: Option<f64>,
-    /// Longitude for geospatial filtering (requires near_lat and radius_km).
-    pub near_lon: Option<f64>,
-    /// Radius in kilometers for geospatial filtering (requires near_lat and near_lon).
-    pub radius_km: Option<f64>,
+    /// Filter events by contract ID prefix (minimum 4 characters, uses LIKE 'prefix%').
+    pub contract_id_prefix: Option<String>,
 }
 
 /// Sort order for event list endpoints.
@@ -230,6 +222,8 @@ impl SearchParams {
 pub struct StreamParams {
     pub contract_id: Option<String>,
     pub fields: Option<String>,
+    /// Filter by event type: contract, diagnostic, system
+    pub event_type: Option<EventType>,
 }
 
 /// Query parameters for the multi-contract SSE stream endpoint.
@@ -237,6 +231,8 @@ pub struct StreamParams {
 pub struct MultiStreamParams {
     /// Comma-separated list of contract IDs to subscribe to.
     pub contract_ids: Option<String>,
+    /// Filter by event type: contract, diagnostic, system
+    pub event_type: Option<EventType>,
 }
 
 /// Standard error response body returned by all error responses.
@@ -259,6 +255,10 @@ pub struct ExportParams {
     /// Optional JSON object mapping source field names to target field names.
     /// Example: `{"event_data":"raw_data","ledger":"ledger_seq"}`
     pub field_map: Option<String>,
+    /// Optional ISO 8601 timestamp filter (start)
+    pub from_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    /// Optional ISO 8601 timestamp filter (end)
+    pub to_timestamp: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Request body for POST /v1/admin/mask-events
@@ -448,6 +448,49 @@ pub struct ContractSummary {
     pub first_seen_ledger: i64,
     pub last_seen_ledger: i64,
     pub last_event_at: DateTime<Utc>,
+}
+
+/// Detailed per-contract summary returned by GET /v1/contracts/:contract_id/summary.
+#[derive(Debug, Serialize, Clone, utoipa::ToSchema)]
+pub struct ContractDetailSummary {
+    pub contract_id: String,
+    pub total_events: i64,
+    pub first_event_at: Option<DateTime<Utc>>,
+    pub last_event_at: Option<DateTime<Utc>>,
+    pub unique_tx_count: i64,
+    pub ledger_range: LedgerRange,
+    pub event_type_breakdown: EventTypeBreakdown,
+    /// Whether the data was served from the materialized view (true) or a live query (false).
+    pub from_cache: bool,
+}
+
+#[derive(Debug, Serialize, Clone, utoipa::ToSchema)]
+pub struct LedgerRange {
+    pub min: Option<i64>,
+    pub max: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Clone, utoipa::ToSchema)]
+pub struct EventTypeBreakdown {
+    pub contract: i64,
+    pub diagnostic: i64,
+    pub system: i64,
+}
+
+/// A single result from the contract ID prefix search endpoint.
+#[derive(Debug, Serialize, sqlx::FromRow, utoipa::ToSchema)]
+pub struct ContractSearchResult {
+    pub contract_id: String,
+    pub event_count: i64,
+    pub last_event_at: Option<DateTime<Utc>>,
+}
+
+/// Query parameters for GET /v1/contracts/search
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct ContractSearchParams {
+    /// Prefix to search for (minimum 4 characters).
+    pub q: Option<String>,
+    pub limit: Option<i64>,
 }
 
 /// Aggregate statistics for indexed events.
@@ -781,5 +824,26 @@ mod tests {
         assert!(result.events.is_empty());
         assert_eq!(result.latest_ledger, 1234600);
         assert!(result.rpc_cursor.is_none());
+    }
+}
+#[derive(Debug, Serialize)]
+pub struct PaginatedResponse<T> {
+    pub data: Vec<T>,
+    pub page: i64,
+    pub limit: i64,
+    pub total: i64,
+    pub has_more: bool,
+}
+
+impl<T> PaginatedResponse<T> {
+    pub fn new(data: Vec<T>, page: i64, limit: i64, total: i64) -> Self {
+        let has_more = (page * limit) < total;
+        Self {
+            data,
+            page,
+            limit,
+            total,
+            has_more,
+        }
     }
 }
