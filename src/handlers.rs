@@ -86,6 +86,8 @@ use crate::{
         EventTypeBreakdown, LedgerRange,
     },
     routes::AppState,
+    notification_formatter,
+    pagerduty,
 };
 use std::sync::atomic::Ordering;
 
@@ -167,6 +169,36 @@ fn maybe_add_tenant_condition(
         conditions.push(format!("tenant_id = ${bind_idx}"));
         *bind_idx += 1;
     }
+}
+
+/// Encode a cursor with a tag indicating the sort column.
+fn encode_cursor_tagged(tag: &str, value: &str, id: Uuid) -> String {
+    URL_SAFE_NO_PAD.encode(format!("{tag}:{value}:{id}"))
+}
+
+/// Decode a tagged cursor back to (tag, value, id).
+fn decode_cursor_tagged(cursor: &str) -> Result<(String, String, Uuid), AppError> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(cursor)
+        .map_err(|_| AppError::Validation("invalid cursor".to_string()))?;
+    let s = std::str::from_utf8(&bytes)
+        .map_err(|_| AppError::Validation("invalid cursor".to_string()))?;
+    
+    let parts: Vec<&str> = s.splitn(3, ':').collect();
+    if parts.len() != 3 {
+        return Err(AppError::Validation("invalid cursor format".to_string()));
+    }
+    
+    let tag = parts[0].to_string();
+    let value = parts[1].to_string();
+    let id = Uuid::parse_str(parts[2])
+        .map_err(|_| AppError::Validation("invalid cursor".to_string()))?;
+    
+    if id.get_version() != Some(uuid::Version::Random) {
+        return Err(AppError::Validation("invalid cursor".to_string()));
+    }
+    
+    Ok((tag, value, id))
 }
 
 /// Encode a (ledger, id) pair as an opaque URL-safe base64 cursor.
@@ -1857,6 +1889,22 @@ pub async fn get_events(
             conditions.push(format!("timestamp <= ${bind_idx}"));
             bind_idx += 1;
         }
+        // Exclusion filters (Issue #463)
+        if !exclude_contract_ids_list.is_empty() {
+            conditions.push(format!("contract_id != ALL(${bind_idx}::text[])"));
+            bind_idx += 1;
+        }
+        if !exclude_event_types_list.is_empty() {
+            conditions.push(format!("event_type != ALL(${bind_idx}::text[])"));
+            bind_idx += 1;
+        }
+        // Geospatial filtering (Issue #465)
+        if let (Some(lat), Some(lon), Some(radius)) = (params.near_lat, params.near_lon, params.radius_km) {
+            conditions.push(format!(
+                "earth_distance(ll_to_earth(latitude, longitude), ll_to_earth(${bind_idx}, ${bind_idx + 1})) <= ${bind_idx + 2} * 1000"
+            ));
+            bind_idx += 3;
+        }
         maybe_add_tenant_condition(&mut conditions, &mut bind_idx, tenant_id);
 
         let where_clause = format!("WHERE {}", conditions.join(" AND "));
@@ -1964,6 +2012,17 @@ pub async fn get_events(
         }
         if let Some(ts) = to_ts {
             q = q.bind(ts);
+        }
+        // Bind exclusion filters (Issue #463)
+        if !exclude_contract_ids_list.is_empty() {
+            q = q.bind(&exclude_contract_ids_list);
+        }
+        if !exclude_event_types_list.is_empty() {
+            q = q.bind(&exclude_event_types_list);
+        }
+        // Bind geospatial filters (Issue #465)
+        if let (Some(lat), Some(lon), Some(radius)) = (params.near_lat, params.near_lon, params.radius_km) {
+            q = q.bind(lat).bind(lon).bind(radius);
         }
         if let Some(tid) = tenant_id {
             q = q.bind(tid);
@@ -2138,6 +2197,22 @@ pub async fn get_events(
         conditions.push(format!("timestamp <= ${bind_idx}"));
         bind_idx += 1;
     }
+    // Exclusion filters (Issue #463)
+    if !exclude_contract_ids_list.is_empty() {
+        conditions.push(format!("contract_id != ALL(${bind_idx}::text[])"));
+        bind_idx += 1;
+    }
+    if !exclude_event_types_list.is_empty() {
+        conditions.push(format!("event_type != ALL(${bind_idx}::text[])"));
+        bind_idx += 1;
+    }
+    // Geospatial filtering (Issue #465)
+    if let (Some(lat), Some(lon), Some(radius)) = (params.near_lat, params.near_lon, params.radius_km) {
+        conditions.push(format!(
+            "earth_distance(ll_to_earth(latitude, longitude), ll_to_earth(${bind_idx}, ${bind_idx + 1})) <= ${bind_idx + 2} * 1000"
+        ));
+        bind_idx += 3;
+    }
     maybe_add_tenant_condition(&mut conditions, &mut bind_idx, tenant_id);
 
     let where_clause = if conditions.is_empty() {
@@ -2224,6 +2299,17 @@ pub async fn get_events(
     if let Some(ts) = to_ts {
         q = q.bind(ts);
     }
+    // Bind exclusion filters (Issue #463)
+    if !exclude_contract_ids_list.is_empty() {
+        q = q.bind(&exclude_contract_ids_list);
+    }
+    if !exclude_event_types_list.is_empty() {
+        q = q.bind(&exclude_event_types_list);
+    }
+    // Bind geospatial filters (Issue #465)
+    if let (Some(lat), Some(lon), Some(radius)) = (params.near_lat, params.near_lon, params.radius_km) {
+        q = q.bind(lat).bind(lon).bind(radius);
+    }
     if let Some(tid) = tenant_id {
         q = q.bind(tid);
     }
@@ -2289,8 +2375,17 @@ pub async fn get_events(
         if let Some(tl) = params.to_ledger {
             cq = cq.bind(tl);
         }
+        if let Some(ref hash) = params.ledger_hash {
+            cq = cq.bind(hash);
+        }
+        if let Some(anonymized) = params.anonymized {
+            cq = cq.bind(anonymized);
+        }
         if let Some(isc) = params.in_successful_call {
             cq = cq.bind(isc);
+        }
+        if let Some(sv) = params.schema_version {
+            cq = cq.bind(sv);
         }
         if let Some(ref ts) = params.topic_sym {
             cq = cq.bind(ts);
@@ -2306,6 +2401,17 @@ pub async fn get_events(
         }
         if let Some(ts) = to_ts {
             cq = cq.bind(ts);
+        }
+        // Bind exclusion filters for count query (Issue #463)
+        if !exclude_contract_ids_list.is_empty() {
+            cq = cq.bind(&exclude_contract_ids_list);
+        }
+        if !exclude_event_types_list.is_empty() {
+            cq = cq.bind(&exclude_event_types_list);
+        }
+        // Bind geospatial filters for count query (Issue #465)
+        if let (Some(lat), Some(lon), Some(radius)) = (params.near_lat, params.near_lon, params.radius_km) {
+            cq = cq.bind(lat).bind(lon).bind(radius);
         }
         if let Some(tid) = tenant_id {
             cq = cq.bind(tid);
