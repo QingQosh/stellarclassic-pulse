@@ -1,3 +1,5 @@
+use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use hickory_resolver::TokioAsyncResolver;
 use lettre::message::{header, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
@@ -10,6 +12,57 @@ use tokio::time::{interval, sleep};
 use tracing::{error, info, warn};
 
 use crate::{metrics, models::SorobanEvent, retry_policy::RetryPolicy};
+
+/// Extract the sending domain from a `From` address for the SPF check.
+/// Handles both bare `user@example.com` and `Name <user@example.com>` forms.
+fn sender_domain(from: &str) -> Option<String> {
+    let domain = from.rsplit('@').next()?.trim_end_matches('>').trim();
+    if domain.is_empty() {
+        None
+    } else {
+        Some(domain.to_string())
+    }
+}
+
+/// Verify that the sending domain publishes an SPF record (Issue #486).
+///
+/// Performs a DNS TXT lookup for the domain of `from` and logs a warning if no
+/// `v=spf1` record is present (or the lookup fails), incrementing the
+/// `soroban_pulse_email_spf_check_failed_total` counter. Best-effort: it never
+/// blocks startup or email delivery, it only surfaces a deliverability problem.
+pub async fn verify_spf_record(from: &str) {
+    let Some(domain) = sender_domain(from) else {
+        warn!(from = %from, "Cannot determine sending domain for SPF check");
+        metrics::record_email_spf_check_failed();
+        return;
+    };
+
+    let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
+    match resolver.txt_lookup(format!("{domain}.")).await {
+        Ok(lookup) => {
+            let has_spf = lookup.iter().any(|txt| {
+                txt.txt_data().iter().any(|chunk| {
+                    String::from_utf8_lossy(chunk)
+                        .trim_start()
+                        .starts_with("v=spf1")
+                })
+            });
+            if has_spf {
+                info!(domain = %domain, "SPF record found for sending domain");
+            } else {
+                warn!(
+                    domain = %domain,
+                    "No SPF record found for sending domain; email may be marked as spam"
+                );
+                metrics::record_email_spf_check_failed();
+            }
+        }
+        Err(e) => {
+            warn!(domain = %domain, error = %e, "SPF TXT lookup failed for sending domain");
+            metrics::record_email_spf_check_failed();
+        }
+    }
+}
 
 /// Batched email notification sender.
 /// Collects events for up to 1 minute, then sends a single summary email.
@@ -251,7 +304,21 @@ mod tests {
     }
 
     #[test]
+    fn test_sender_domain_extraction() {
+        assert_eq!(
+            sender_domain("pulse@example.com").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            sender_domain("Soroban Pulse <pulse@mail.example.com>").as_deref(),
+            Some("mail.example.com")
+        );
+        assert_eq!(sender_domain("trailing@").as_deref(), None);
+    }
+
+    #[test]
     fn test_email_notifier_creation() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/unused").unwrap();
         let notifier = EmailNotifier::new(
             "smtp.example.com".to_string(),
             587,
@@ -260,6 +327,8 @@ mod tests {
             "from@example.com".to_string(),
             vec!["to@example.com".to_string()],
             vec![],
+            RetryPolicy::default(),
+            pool,
         );
 
         assert_eq!(notifier.smtp_host, "smtp.example.com");

@@ -261,6 +261,13 @@ async fn main() -> anyhow::Result<()> {
                     "Email notifications enabled"
                 );
 
+                // SPF deliverability check (Issue #486): warn at startup if the
+                // sending domain has no SPF record. Best-effort and non-blocking.
+                let spf_from = from.clone();
+                tokio::spawn(async move {
+                    email::verify_spf_record(&spf_from).await;
+                });
+
                 notifier.spawn(email_rx);
             } else {
                 warn!(

@@ -777,3 +777,64 @@ Expected output on PostgreSQL 14+:
 ```
 
 (`x` = EXTENDED, `l` = lz4)
+
+---
+
+## Email Deliverability (SPF, DKIM, DMARC)
+
+Notification emails are only useful if they reach the inbox. The three standard
+sender-authentication mechanisms below should all be configured for the sending
+domain (the domain of `EMAIL_FROM`). Misconfiguration is the most common cause
+of alerts landing in spam or being rejected outright.
+
+### SPF (Sender Policy Framework)
+
+SPF lists the hosts allowed to send mail for your domain. Publish a TXT record
+at the domain apex:
+
+```
+example.com.  IN  TXT  "v=spf1 include:_spf.your-provider.com -all"
+```
+
+Replace `include:_spf.your-provider.com` with the include provided by your email
+provider (SendGrid, SES, Mailgun, your own relay, etc.). Use `-all` (hard fail)
+once you are confident every legitimate source is listed; `~all` (soft fail) is
+a safer starting point.
+
+On startup the service performs a DNS TXT lookup for the `EMAIL_FROM` domain and
+logs a warning (`No SPF record found for sending domain`) if no `v=spf1` record
+is present. Each failed check increments the
+`soroban_pulse_email_spf_check_failed_total` Prometheus counter. The check is
+best-effort and never blocks startup or delivery.
+
+### DKIM (DomainKeys Identified Mail)
+
+DKIM cryptographically signs each message. Publish the public key as a TXT
+record at `<selector>._domainkey.<domain>`:
+
+```
+pulse._domainkey.example.com.  IN  TXT  "v=DKIM1; k=rsa; p=<base64-public-key>"
+```
+
+### DMARC (Domain-based Message Authentication, Reporting & Conformance)
+
+DMARC tells receivers what to do when SPF/DKIM fail and where to send reports.
+Publish a TXT record at `_dmarc.<domain>`:
+
+```
+_dmarc.example.com.  IN  TXT  "v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com; adkim=s; aspf=s"
+```
+
+Start with `p=none` to collect reports without affecting delivery, then move to
+`p=quarantine` and finally `p=reject` as confidence grows.
+
+### Deliverability checklist
+
+- [ ] `EMAIL_FROM` uses a domain you control (not a free mailbox provider).
+- [ ] **SPF** TXT record published and includes every sending source.
+- [ ] **DKIM** key generated, `DKIM_PRIVATE_KEY_PATH` / `DKIM_SELECTOR` set, and the public key published in DNS.
+- [ ] **DMARC** record published (`p=none` → `quarantine` → `reject`).
+- [ ] Forward and reverse DNS (PTR) of the sending host match.
+- [ ] Startup logs show no `No SPF record found` warning.
+- [ ] `soroban_pulse_email_spf_check_failed_total` stays at 0.
+- [ ] A test email passes inspection at a tool such as [mail-tester.com](https://www.mail-tester.com/).
