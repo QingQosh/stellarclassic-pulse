@@ -9,7 +9,122 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, sleep};
 use tracing::{error, info, warn};
 
+use chrono::{DateTime, Timelike, Utc};
+
 use crate::{metrics, models::SorobanEvent, retry_policy::RetryPolicy};
+
+/// Issue #479: How often a notification channel flushes its batched events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Schedule {
+    /// Flush on every batch tick (legacy behavior — roughly once per minute).
+    Immediate,
+    /// One digest per hour, on the hour (UTC).
+    HourlyDigest,
+    /// One digest per day at the configured UTC hour (default 09:00).
+    DailyDigest { hour: u32 },
+    /// Flush according to a cron expression (UTC). Uses the `cron` crate's
+    /// 6/7-field syntax (seconds first).
+    CustomCron(String),
+}
+
+impl Schedule {
+    /// Build a [`Schedule`] from the `EMAIL_SCHEDULE` value.
+    ///
+    /// Unknown values fall back to [`Schedule::Immediate`]. `daily_hour` is
+    /// clamped to a valid 0–23 hour; `cron_expr` is only used for `custom_cron`.
+    pub fn parse(value: &str, daily_hour: u32, cron_expr: Option<String>) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "hourly_digest" => Schedule::HourlyDigest,
+            "daily_digest" => Schedule::DailyDigest {
+                hour: daily_hour.min(23),
+            },
+            "custom_cron" => Schedule::CustomCron(cron_expr.unwrap_or_default()),
+            _ => Schedule::Immediate,
+        }
+    }
+
+    /// Whether a batch should be flushed at `now`, given the last successful
+    /// send at `last_sent`. This is a pure function so it can be unit-tested
+    /// without a running scheduler.
+    pub fn is_due(&self, now: DateTime<Utc>, last_sent: DateTime<Utc>) -> bool {
+        match self {
+            Schedule::Immediate => true,
+            Schedule::HourlyDigest => {
+                // Due once the wall-clock hour advances past the last send.
+                now.timestamp().div_euclid(3600) > last_sent.timestamp().div_euclid(3600)
+            }
+            Schedule::DailyDigest { hour } => {
+                let scheduled = now
+                    .date_naive()
+                    .and_hms_opt(*hour, 0, 0)
+                    .map(|naive| naive.and_utc());
+                match scheduled {
+                    Some(scheduled) => now >= scheduled && last_sent < scheduled,
+                    None => false,
+                }
+            }
+            Schedule::CustomCron(expr) => {
+                use std::str::FromStr;
+                match cron::Schedule::from_str(expr) {
+                    Ok(schedule) => schedule
+                        .after(&last_sent)
+                        .next()
+                        .is_some_and(|next| next <= now),
+                    Err(_) => false,
+                }
+            }
+        }
+    }
+}
+
+/// Issue #479: A UTC quiet-hours window during which non-critical
+/// notifications are suppressed (deferred until the window closes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuietHours {
+    /// Minutes since UTC midnight when the window opens.
+    start_min: u32,
+    /// Minutes since UTC midnight when the window closes.
+    end_min: u32,
+}
+
+impl QuietHours {
+    /// Parse a `start`/`end` pair of `HH:MM` strings into a window.
+    ///
+    /// Returns `None` when either bound is missing or unparseable, or when the
+    /// window is empty (start == end), which disables quiet hours.
+    pub fn parse(start: Option<&str>, end: Option<&str>) -> Option<QuietHours> {
+        let start_min = parse_hh_mm(start?)?;
+        let end_min = parse_hh_mm(end?)?;
+        if start_min == end_min {
+            return None;
+        }
+        Some(QuietHours { start_min, end_min })
+    }
+
+    /// Whether `now` falls inside the quiet-hours window. Handles windows that
+    /// wrap past midnight (e.g. 22:00–07:00).
+    pub fn contains(&self, now: DateTime<Utc>) -> bool {
+        let minute_of_day = now.hour() * 60 + now.minute();
+        if self.start_min < self.end_min {
+            minute_of_day >= self.start_min && minute_of_day < self.end_min
+        } else {
+            // Wrap-around window (e.g. 22:00–07:00).
+            minute_of_day >= self.start_min || minute_of_day < self.end_min
+        }
+    }
+}
+
+/// Parse an `HH:MM` 24-hour string into minutes since midnight.
+fn parse_hh_mm(value: &str) -> Option<u32> {
+    let value = value.trim();
+    let (h, m) = value.split_once(':')?;
+    let hours: u32 = h.trim().parse().ok()?;
+    let minutes: u32 = m.trim().parse().ok()?;
+    if hours > 23 || minutes > 59 {
+        return None;
+    }
+    Some(hours * 60 + minutes)
+}
 
 /// Batched email notification sender.
 /// Collects events for up to 1 minute, then sends a single summary email.
@@ -22,6 +137,10 @@ pub struct EmailNotifier {
     to: Vec<String>,
     contract_filter: Vec<String>,
     retry_policy: RetryPolicy,
+    /// Issue #479: when batched events are flushed.
+    schedule: Schedule,
+    /// Issue #479: optional UTC window during which delivery is suppressed.
+    quiet_hours: Option<QuietHours>,
     pool: sqlx::PgPool,
 }
 
@@ -35,6 +154,8 @@ impl EmailNotifier {
         to: Vec<String>,
         contract_filter: Vec<String>,
         retry_policy: RetryPolicy,
+        schedule: Schedule,
+        quiet_hours: Option<QuietHours>,
         pool: sqlx::PgPool,
     ) -> Self {
         Self {
@@ -46,6 +167,8 @@ impl EmailNotifier {
             to,
             contract_filter,
             retry_policy,
+            schedule,
+            quiet_hours,
             pool,
         }
     }
@@ -56,18 +179,32 @@ impl EmailNotifier {
         mut event_rx: tokio::sync::broadcast::Receiver<SorobanEvent>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
+            // Evaluate the schedule once a minute. Events accumulate in the
+            // buffer until the configured schedule says a flush is due and we
+            // are outside of any quiet-hours window (Issue #479).
             let mut batch_interval = interval(Duration::from_secs(60));
             batch_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
             let mut events_buffer: Vec<SorobanEvent> = Vec::new();
+            let mut last_sent = Utc::now();
 
             loop {
                 tokio::select! {
                     _ = batch_interval.tick() => {
-                        if !events_buffer.is_empty() {
-                            self.send_batch_email(&events_buffer).await;
-                            events_buffer.clear();
+                        let now = Utc::now();
+                        if events_buffer.is_empty() || !self.schedule.is_due(now, last_sent) {
+                            continue;
                         }
+                        // Suppress (defer) non-critical notifications during
+                        // quiet hours; the buffer is flushed once the window
+                        // closes on a later tick.
+                        if self.quiet_hours.is_some_and(|q| q.contains(now)) {
+                            info!("In quiet hours, deferring email notification");
+                            continue;
+                        }
+                        self.send_batch_email(&events_buffer).await;
+                        events_buffer.clear();
+                        last_sent = now;
                     }
                     result = event_rx.recv() => {
                         match result {
@@ -87,7 +224,7 @@ impl EmailNotifier {
                                 );
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                // Channel closed, send any remaining events and exit
+                                // Channel closed, flush any remaining events and exit.
                                 if !events_buffer.is_empty() {
                                     self.send_batch_email(&events_buffer).await;
                                 }
@@ -247,11 +384,20 @@ mod tests {
             in_successful_call: true,
             value: json!({"test": "data"}),
             topic: None,
+            ..Default::default()
         }
+    }
+
+    fn ts(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
     }
 
     #[test]
     fn test_email_notifier_creation() {
+        // `connect_lazy` builds a pool handle without opening a connection,
+        // so this stays a pure unit test (no live database required).
+        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/soroban_pulse_test")
+            .expect("lazy pool");
         let notifier = EmailNotifier::new(
             "smtp.example.com".to_string(),
             587,
@@ -260,12 +406,17 @@ mod tests {
             "from@example.com".to_string(),
             vec!["to@example.com".to_string()],
             vec![],
+            RetryPolicy::default(),
+            Schedule::Immediate,
+            None,
+            pool,
         );
 
         assert_eq!(notifier.smtp_host, "smtp.example.com");
         assert_eq!(notifier.smtp_port, 587);
         assert_eq!(notifier.from, "from@example.com");
         assert_eq!(notifier.to.len(), 1);
+        assert_eq!(notifier.schedule, Schedule::Immediate);
     }
 
     #[test]
@@ -296,5 +447,110 @@ mod tests {
 
         // Empty filter means all events pass
         assert!(filter.is_empty() || filter.contains(&event.contract_id));
+    }
+
+    // --- Issue #479: schedule evaluation ---
+
+    #[test]
+    fn test_schedule_parse() {
+        assert_eq!(Schedule::parse("immediate", 9, None), Schedule::Immediate);
+        assert_eq!(
+            Schedule::parse("hourly_digest", 9, None),
+            Schedule::HourlyDigest
+        );
+        assert_eq!(
+            Schedule::parse("daily_digest", 7, None),
+            Schedule::DailyDigest { hour: 7 }
+        );
+        // Out-of-range hour is clamped.
+        assert_eq!(
+            Schedule::parse("daily_digest", 99, None),
+            Schedule::DailyDigest { hour: 23 }
+        );
+        assert_eq!(
+            Schedule::parse("custom_cron", 9, Some("0 0 * * * *".to_string())),
+            Schedule::CustomCron("0 0 * * * *".to_string())
+        );
+        // Unknown values fall back to immediate.
+        assert_eq!(Schedule::parse("weekly", 9, None), Schedule::Immediate);
+    }
+
+    #[test]
+    fn test_immediate_always_due() {
+        let now = ts("2026-06-25T03:00:00Z");
+        assert!(Schedule::Immediate.is_due(now, now));
+    }
+
+    #[test]
+    fn test_hourly_digest_due_on_new_hour() {
+        let last = ts("2026-06-25T08:30:00Z");
+        // Still the same hour -> not due.
+        assert!(!Schedule::HourlyDigest.is_due(ts("2026-06-25T08:45:00Z"), last));
+        // Crossed into a new hour -> due.
+        assert!(Schedule::HourlyDigest.is_due(ts("2026-06-25T09:01:00Z"), last));
+    }
+
+    #[test]
+    fn test_daily_digest_sends_once_per_day() {
+        let schedule = Schedule::DailyDigest { hour: 9 };
+        let last = ts("2026-06-24T09:00:00Z");
+
+        // Before the scheduled hour today -> not due.
+        assert!(!schedule.is_due(ts("2026-06-25T08:59:00Z"), last));
+        // At/after the scheduled hour and not yet sent today -> due.
+        assert!(schedule.is_due(ts("2026-06-25T09:00:00Z"), last));
+        // Already sent today -> not due again.
+        let sent_today = ts("2026-06-25T09:00:00Z");
+        assert!(!schedule.is_due(ts("2026-06-25T18:00:00Z"), sent_today));
+    }
+
+    #[test]
+    fn test_custom_cron_due() {
+        // "At second 0 of minute 0 of every hour" (6-field cron, seconds first).
+        let schedule = Schedule::CustomCron("0 0 * * * *".to_string());
+        let last = ts("2026-06-25T08:30:00Z");
+        // 09:00:00 occurs between last and now -> due.
+        assert!(schedule.is_due(ts("2026-06-25T09:00:30Z"), last));
+        // No top-of-hour boundary crossed yet -> not due.
+        assert!(!schedule.is_due(ts("2026-06-25T08:45:00Z"), last));
+    }
+
+    #[test]
+    fn test_custom_cron_invalid_expression_never_due() {
+        let schedule = Schedule::CustomCron("not a cron".to_string());
+        let last = ts("2026-06-25T08:30:00Z");
+        assert!(!schedule.is_due(ts("2026-06-25T09:00:00Z"), last));
+    }
+
+    // --- Issue #479: quiet hours ---
+
+    #[test]
+    fn test_quiet_hours_parse() {
+        assert!(QuietHours::parse(Some("22:00"), Some("07:00")).is_some());
+        // Missing bound disables quiet hours.
+        assert!(QuietHours::parse(Some("22:00"), None).is_none());
+        // Empty window disables quiet hours.
+        assert!(QuietHours::parse(Some("09:00"), Some("09:00")).is_none());
+        // Invalid time disables quiet hours.
+        assert!(QuietHours::parse(Some("25:00"), Some("07:00")).is_none());
+    }
+
+    #[test]
+    fn test_quiet_hours_wraps_past_midnight() {
+        let quiet = QuietHours::parse(Some("22:00"), Some("07:00")).unwrap();
+        assert!(quiet.contains(ts("2026-06-25T23:30:00Z"))); // late night
+        assert!(quiet.contains(ts("2026-06-25T03:00:00Z"))); // early morning
+        assert!(!quiet.contains(ts("2026-06-25T12:00:00Z"))); // midday
+        // Boundaries: start inclusive, end exclusive.
+        assert!(quiet.contains(ts("2026-06-25T22:00:00Z")));
+        assert!(!quiet.contains(ts("2026-06-25T07:00:00Z")));
+    }
+
+    #[test]
+    fn test_quiet_hours_same_day_window() {
+        let quiet = QuietHours::parse(Some("09:00"), Some("17:00")).unwrap();
+        assert!(quiet.contains(ts("2026-06-25T12:00:00Z")));
+        assert!(!quiet.contains(ts("2026-06-25T08:00:00Z")));
+        assert!(!quiet.contains(ts("2026-06-25T18:00:00Z")));
     }
 }

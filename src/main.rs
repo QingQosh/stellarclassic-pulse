@@ -252,12 +252,22 @@ async fn main() -> anyhow::Result<()> {
                     config.email_to.clone(),
                     config.email_contract_filter.clone(),
                     config.email_retry_policy.clone(),
+                    email::Schedule::parse(
+                        &config.email_schedule,
+                        config.email_daily_digest_hour,
+                        config.email_cron.clone(),
+                    ),
+                    email::QuietHours::parse(
+                        config.email_quiet_hours_start.as_deref(),
+                        config.email_quiet_hours_end.as_deref(),
+                    ),
                     pool.clone(),
                 );
 
                 info!(
                     smtp_host = %smtp_host,
                     recipients = config.email_to.len(),
+                    schedule = %config.email_schedule,
                     "Email notifications enabled"
                 );
 

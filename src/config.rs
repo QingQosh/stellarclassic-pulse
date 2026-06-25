@@ -250,6 +250,16 @@ pub struct Config {
     pub email_from: Option<String>,
     pub email_to: Vec<String>,
     pub email_contract_filter: Vec<String>,
+    // Issue #479: notification scheduling
+    /// One of: immediate (default), hourly_digest, daily_digest, custom_cron.
+    pub email_schedule: String,
+    /// UTC hour (0–23) for daily_digest delivery (default 9).
+    pub email_daily_digest_hour: u32,
+    /// Cron expression used when email_schedule == custom_cron.
+    pub email_cron: Option<String>,
+    /// Quiet-hours window (UTC, HH:MM) during which delivery is suppressed.
+    pub email_quiet_hours_start: Option<String>,
+    pub email_quiet_hours_end: Option<String>,
     // SMS notification fields (Issue #473)
     pub twilio_account_sid: Option<String>,
     pub twilio_auth_token: Option<SecretString>,
@@ -385,6 +395,11 @@ impl Default for Config {
             email_from: None,
             email_to: Vec::new(),
             email_contract_filter: Vec::new(),
+            email_schedule: "immediate".to_string(),
+            email_daily_digest_hour: 9,
+            email_cron: None,
+            email_quiet_hours_start: None,
+            email_quiet_hours_end: None,
             redis_url: None,
             redis_stream_key: None,
             redis_buffer_max_size: 10_000,
@@ -1169,6 +1184,24 @@ impl Config {
                         .collect()
                 })
                 .unwrap_or_default(),
+            // Issue #479: notification scheduling
+            email_schedule: env_or_file("EMAIL_SCHEDULE", &file)
+                .map(|v| v.trim().to_ascii_lowercase())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "immediate".to_string()),
+            email_daily_digest_hour: env_or_file("EMAIL_DAILY_DIGEST_HOUR", &file)
+                .and_then(|v| v.trim().parse().ok())
+                .filter(|h| *h <= 23)
+                .unwrap_or(9),
+            email_cron: env_or_file("EMAIL_CRON", &file)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
+            email_quiet_hours_start: env_or_file("EMAIL_QUIET_HOURS_START", &file)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
+            email_quiet_hours_end: env_or_file("EMAIL_QUIET_HOURS_END", &file)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
             redis_url: env_or_file("REDIS_URL", &file),
             redis_stream_key: env_or_file("REDIS_STREAM_KEY", &file),
             redis_buffer_max_size: env_or_file("REDIS_BUFFER_MAX_SIZE", &file)
