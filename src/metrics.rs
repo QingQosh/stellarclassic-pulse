@@ -187,6 +187,32 @@ pub fn record_email_failure() {
     m::counter!("soroban_pulse_email_failures_total").increment(1);
 }
 
+/// Record a notification channel failover event (#499)
+pub fn record_notification_failover(channel_type: &str) {
+    m::counter!(
+        "soroban_pulse_notification_failover_total",
+        "channel_type" => channel_type.to_string()
+    )
+    .increment(1);
+}
+
+/// Record notification cost in USD cents (#501)
+pub fn record_notification_cost_cents(cents: u64) {
+    // Convert cents to USD for the metric value
+    m::counter!("soroban_pulse_notification_cost_usd_total")
+        .increment(cents as f64 / 100.0);
+}
+
+/// Record a test notification attempt (#502)
+pub fn record_notification_test(channel_type: &str, success: bool) {
+    m::counter!(
+        "soroban_pulse_notification_test_total",
+        "channel_type" => channel_type.to_string(),
+        "result" => if success { "success" } else { "failure" }
+    )
+    .increment(1);
+}
+
 /// Record a full-text search query duration
 pub fn record_search_query_duration(duration: std::time::Duration) {
     m::histogram!("soroban_pulse_search_query_duration_seconds").record(duration.as_secs_f64());

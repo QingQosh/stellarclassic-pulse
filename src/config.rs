@@ -317,6 +317,8 @@ pub struct Config {
     
     // Stats cache TTL
     pub stats_cache_ttl_secs: u64,
+    // Issue #501: Monthly notification budget (USD); 0 = no limit
+    pub notification_monthly_budget_usd: Option<f64>,
 }
 
 impl Default for Config {
@@ -417,6 +419,7 @@ impl Default for Config {
             pagerduty_auto_resolve: true,
             pagerduty_auto_resolve_threshold_minutes: 30,
             stats_cache_ttl_secs: 30,
+            notification_monthly_budget_usd: None,
         }
     }
 }
@@ -1265,6 +1268,8 @@ impl Config {
             stats_cache_ttl_secs: env_or_file("STATS_CACHE_TTL_SECS", &file)
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(30),
+            notification_monthly_budget_usd: env_or_file("NOTIFICATION_MONTHLY_BUDGET_USD", &file)
+                .and_then(|v| v.parse::<f64>().ok()),
         }
     }
 }
