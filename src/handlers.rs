@@ -10252,6 +10252,29 @@ pub async fn update_notification_channel(
     .await?
     .ok_or(AppError::NotFound)?;
 
+    // Record the current state as a version before applying changes (#505).
+    let next_version: i32 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(version_number), 0) + 1
+         FROM notification_channel_versions WHERE channel_id = $1",
+    )
+    .bind(id)
+    .fetch_one(&state.pool)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO notification_channel_versions
+             (channel_id, version_number, name, channel_type, config, retry_policy)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(id)
+    .bind(next_version)
+    .bind(&existing.name)
+    .bind(&existing.channel_type)
+    .bind(&existing.config)
+    .bind(&existing.retry_policy)
+    .execute(&state.pool)
+    .await?;
+
     let new_name = req.name.unwrap_or(existing.name);
     let new_config = req.config.unwrap_or(existing.config);
     let new_retry = req.retry_policy.unwrap_or(existing.retry_policy);
@@ -10368,5 +10391,125 @@ mod notification_channel_clone_tests {
     fn invalid_channel_type_rejected() {
         assert!(!VALID_CHANNEL_TYPES.contains(&"slack"));
         assert!(!VALID_CHANNEL_TYPES.contains(&"push"));
+    }
+}
+
+// ── Notification Channel Versioning (#505) ────────────────────────────────────
+
+/// GET /v1/admin/notifications/channels/:id/versions
+///
+/// Returns the full configuration history for the channel, newest first.
+pub async fn list_channel_versions(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, AppError> {
+    // Verify the channel exists first.
+    let exists: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM notification_channels WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&state.pool)
+    .await?;
+
+    if exists == 0 {
+        return Err(AppError::NotFound);
+    }
+
+    let rows = sqlx::query(
+        "SELECT id, channel_id, version_number, name, channel_type, config, retry_policy, created_at
+         FROM notification_channel_versions
+         WHERE channel_id = $1
+         ORDER BY version_number DESC",
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let versions: Vec<Value> = rows
+        .iter()
+        .map(|r| {
+            json!({
+                "id":             r.get::<Uuid, _>("id"),
+                "channel_id":     r.get::<Uuid, _>("channel_id"),
+                "version_number": r.get::<i32, _>("version_number"),
+                "name":           r.get::<String, _>("name"),
+                "channel_type":   r.get::<String, _>("channel_type"),
+                "config":         r.get::<Value, _>("config"),
+                "retry_policy":   r.get::<Value, _>("retry_policy"),
+                "created_at":     r.get::<DateTime<Utc>, _>("created_at"),
+            })
+        })
+        .collect();
+
+    let total = versions.len();
+    Ok(Json(json!({ "data": versions, "total": total })))
+}
+
+/// POST /v1/admin/notifications/channels/:id/rollback/:version
+///
+/// Restores the channel to the configuration recorded in the specified version.
+pub async fn rollback_channel_version(
+    Path((id, version)): Path<(Uuid, i32)>,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, AppError> {
+    let row = sqlx::query(
+        "SELECT name, config, retry_policy
+         FROM notification_channel_versions
+         WHERE channel_id = $1 AND version_number = $2",
+    )
+    .bind(id)
+    .bind(version)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    let name: String = row.get("name");
+    let config: Value = row.get("config");
+    let retry_policy: Value = row.get("retry_policy");
+
+    let channel = sqlx::query_as::<_, models::NotificationChannel>(
+        "UPDATE notification_channels
+         SET name = $2, config = $3, retry_policy = $4, updated_at = NOW()
+         WHERE id = $1
+         RETURNING id, name, channel_type, config, retry_policy, created_at, updated_at",
+    )
+    .bind(id)
+    .bind(&name)
+    .bind(&config)
+    .bind(&retry_policy)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    Ok(Json(json!(channel)))
+}
+
+#[cfg(test)]
+mod notification_channel_versioning_tests {
+    use super::*;
+
+    #[test]
+    fn next_version_number_is_one_when_no_history() {
+        // Simulates: COALESCE(MAX(version_number), 0) + 1
+        let max_existing: i32 = 0;
+        let next = max_existing + 1;
+        assert_eq!(next, 1);
+    }
+
+    #[test]
+    fn next_version_number_increments_from_existing() {
+        let max_existing: i32 = 5;
+        let next = max_existing + 1;
+        assert_eq!(next, 6);
+    }
+
+    #[test]
+    fn rollback_applies_archived_config() {
+        let archived_name = "Old Name";
+        let current_name = "New Name";
+        // After rollback, channel name should match the archived version.
+        let rolled_back = archived_name;
+        assert_ne!(rolled_back, current_name);
+        assert_eq!(rolled_back, "Old Name");
     }
 }

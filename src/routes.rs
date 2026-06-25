@@ -417,6 +417,15 @@ pub fn create_router_with_tx_and_tenant_map(
         .route(
             "/admin/notifications/channels/{id}/clone",
             axum::routing::post(handlers::clone_notification_channel),
+        )
+        // Channel versioning (#505)
+        .route(
+            "/admin/notifications/channels/{id}/versions",
+            get(handlers::list_channel_versions),
+        )
+        .route(
+            "/admin/notifications/channels/{id}/rollback/{version}",
+            axum::routing::post(handlers::rollback_channel_version),
         );
 
 
