@@ -26,6 +26,8 @@ Email notifications are configured via environment variables:
 - `EMAIL_SMTP_USER`: SMTP authentication username (required by most servers)
 - `EMAIL_SMTP_PASSWORD`: SMTP authentication password (required by most servers)
 - `EMAIL_CONTRACT_FILTER`: Comma-separated list of contract IDs to filter notifications
+- `EMAIL_FORMAT`: Email body format — `text` (default), `html`, or `both`. See [HTML Emails](#html-emails).
+- `EMAIL_API_BASE_URL`: Base URL used to build clickable links in HTML emails (default: `https://soroban-pulse.example.com`)
 
 ## Example Configuration
 
@@ -106,6 +108,38 @@ Contract: CDEF456...
   - Type: contract, Ledger: 1234572, TxHash: pqr678...
   - Type: system, Ledger: 1234573, TxHash: stu901...
 ```
+
+## HTML Emails
+
+Issue #482: By default emails are sent as plain text. For non-technical stakeholders, Soroban Pulse can also render a formatted HTML email using a [Handlebars](https://handlebarsjs.com/) template.
+
+### Configuration
+
+Set `EMAIL_FORMAT` to choose the body format:
+
+| Value | Behavior |
+|-------|----------|
+| `text` (default) | Plain-text body only |
+| `html` | HTML body only |
+| `both` | `multipart/alternative` message containing **both** plain-text and HTML parts; the recipient's client renders whichever it supports |
+
+```bash
+EMAIL_FORMAT=both
+EMAIL_API_BASE_URL=https://pulse.your-domain.com
+```
+
+### What the HTML email contains
+
+- A summary table of events grouped by contract
+- **Color-coded event-type badges** (e.g. `contract`, `system`, `diagnostic` each get a distinct color)
+- Formatted timestamps (ledger close time)
+- **Clickable links**: each contract links to its event-history endpoint and each transaction hash links to its event lookup, built from `EMAIL_API_BASE_URL`
+
+The HTML template lives at `notification_templates/email.html.hbs` and is embedded into the binary at compile time. All event values are HTML-escaped to prevent markup injection.
+
+### Compatibility
+
+The template uses table-based layout and inline styles for broad compatibility with major email clients including Gmail, Outlook, and Apple Mail. When `EMAIL_FORMAT=both`, clients that cannot render HTML fall back to the plain-text part automatically.
 
 ## Batching Behavior
 
