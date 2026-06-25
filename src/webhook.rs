@@ -47,6 +47,14 @@ pub async fn deliver_with_retry_policy(
     pool: Option<&sqlx::PgPool>,
     retry_policy: &crate::retry_policy::RetryPolicy,
 ) {
+    // Deduplication (Issue #478): skip delivery if this event was already
+    // notified (e.g. after a re-index of a ledger range).
+    if let Some(pool) = pool {
+        if !crate::notification_dedup::should_deliver(pool, &event).await {
+            return;
+        }
+    }
+
     let body = match serde_json::to_vec(&event) {
         Ok(b) => b,
         Err(e) => {
@@ -96,7 +104,16 @@ pub async fn deliver_with_retry_policy(
     }).await;
 
     match result {
-        Ok(()) => return, // Success
+        Ok(()) => {
+            // Mark the event as notified so a re-index does not re-deliver it
+            // (Issue #478).
+            if let Some(pool) = pool {
+                if let Err(e) = crate::notification_dedup::mark_notified(pool, &event).await {
+                    error!(error = %e, "Failed to mark event as notified");
+                }
+            }
+            return; // Success
+        }
         Err(error_msg) => {
             error!(
                 url = %url,
