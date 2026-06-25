@@ -442,10 +442,13 @@ pub fn create_router_with_tx_and_tenant_map(
         ));
 
     // Health endpoints — exempt from rate limiting.
+    // The unsubscribe endpoint is public (reached from email links) and must
+    // bypass both auth and rate limiting (Issue #483).
     let health_routes = Router::new()
         .route("/health", get(handlers::health))
         .route("/healthz/live", get(handlers::health_live))
         .route("/healthz/ready", get(handlers::health_ready))
+        .route("/unsubscribe", get(handlers::unsubscribe))
         .route("/metrics", get(handlers::metrics));
 
     // All other routes — subject to rate limiting.
