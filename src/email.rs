@@ -11,6 +11,121 @@ use tracing::{error, info, warn};
 
 use crate::{metrics, models::SorobanEvent, retry_policy::RetryPolicy};
 
+/// Issue #480: Languages with a bundled email notification template.
+///
+/// Each entry corresponds to a Handlebars file stored under the
+/// `notification_templates/` directory (e.g. `email_en.hbs`).
+pub const SUPPORTED_LANGUAGES: &[&str] = &["en", "es", "zh", "ja"];
+
+/// Normalize a user-supplied language code to one we have a template for.
+///
+/// Unknown or empty values fall back to English so notifications are never
+/// dropped just because of an unrecognized language setting.
+pub fn normalize_language(language: &str) -> &'static str {
+    match language.trim().to_ascii_lowercase().as_str() {
+        "es" => "es",
+        "zh" => "zh",
+        "ja" => "ja",
+        _ => "en",
+    }
+}
+
+/// Return the raw Handlebars template source for a normalized language.
+///
+/// Templates are embedded at compile time so they ship with the binary and do
+/// not depend on the process working directory at runtime.
+fn template_source(language: &str) -> &'static str {
+    match normalize_language(language) {
+        "es" => include_str!("../notification_templates/email_es.hbs"),
+        "zh" => include_str!("../notification_templates/email_zh.hbs"),
+        "ja" => include_str!("../notification_templates/email_ja.hbs"),
+        _ => include_str!("../notification_templates/email_en.hbs"),
+    }
+}
+
+/// Build the localized email subject line for a batch of `count` events.
+pub fn localized_subject(language: &str, count: usize) -> String {
+    match normalize_language(language) {
+        "es" => format!("Soroban Pulse: {} nuevo(s) evento(s) indexado(s)", count),
+        "zh" => format!("Soroban Pulse：已索引 {} 个新事件", count),
+        "ja" => format!(
+            "Soroban Pulse: {} 件の新しいイベントをインデックスしました",
+            count
+        ),
+        _ => format!(
+            "Soroban Pulse: {} new event{} indexed",
+            count,
+            if count == 1 { "" } else { "s" }
+        ),
+    }
+}
+
+/// Build the Handlebars rendering context for a batch of events.
+///
+/// Events are grouped by contract (preserving first-seen order) and each group
+/// exposes up to 10 events plus a `more_count` for the remainder.
+fn build_context(events: &[SorobanEvent]) -> serde_json::Value {
+    use serde_json::json;
+
+    let mut order: Vec<String> = Vec::new();
+    let mut by_contract: HashMap<String, Vec<&SorobanEvent>> = HashMap::new();
+    for event in events {
+        if !by_contract.contains_key(&event.contract_id) {
+            order.push(event.contract_id.clone());
+        }
+        by_contract
+            .entry(event.contract_id.clone())
+            .or_default()
+            .push(event);
+    }
+
+    let contracts: Vec<serde_json::Value> = order
+        .iter()
+        .map(|contract_id| {
+            let contract_events = &by_contract[contract_id];
+            let shown: Vec<serde_json::Value> = contract_events
+                .iter()
+                .take(10)
+                .map(|event| {
+                    json!({
+                        "event_type": event.event_type,
+                        "ledger": event.ledger,
+                        "tx_hash": event.tx_hash,
+                        "ledger_closed_at": event.ledger_closed_at,
+                    })
+                })
+                .collect();
+            let more = contract_events.len().saturating_sub(10);
+            json!({
+                "contract_id": contract_id,
+                "event_count": contract_events.len(),
+                "events": shown,
+                "more_count": if more > 0 { Some(more) } else { None },
+            })
+        })
+        .collect();
+
+    json!({
+        "event_count": events.len(),
+        "contracts": contracts,
+    })
+}
+
+/// Render the localized plain-text email body for a batch of events.
+///
+/// Issue #480: the template is selected from [`SUPPORTED_LANGUAGES`]; unknown
+/// languages fall back to English via [`normalize_language`].
+pub fn render_body(
+    language: &str,
+    events: &[SorobanEvent],
+) -> Result<String, handlebars::RenderError> {
+    let mut hb = handlebars::Handlebars::new();
+    // Plain-text output: don't HTML-escape contract IDs, hashes, etc.
+    hb.register_escape_fn(handlebars::no_escape);
+    let context = build_context(events);
+    hb.render_template(template_source(language), &context)
+}
+
 /// Batched email notification sender.
 /// Collects events for up to 1 minute, then sends a single summary email.
 pub struct EmailNotifier {
@@ -22,6 +137,8 @@ pub struct EmailNotifier {
     to: Vec<String>,
     contract_filter: Vec<String>,
     retry_policy: RetryPolicy,
+    /// Issue #480: language used to render notification templates (default `en`).
+    language: String,
     pool: sqlx::PgPool,
 }
 
@@ -35,6 +152,7 @@ impl EmailNotifier {
         to: Vec<String>,
         contract_filter: Vec<String>,
         retry_policy: RetryPolicy,
+        language: String,
         pool: sqlx::PgPool,
     ) -> Self {
         Self {
@@ -46,6 +164,7 @@ impl EmailNotifier {
             to,
             contract_filter,
             retry_policy,
+            language,
             pool,
         }
     }
@@ -129,55 +248,18 @@ impl EmailNotifier {
             }
         }
 
-        // Group events by contract ID for better readability
-        let mut by_contract: HashMap<String, Vec<&SorobanEvent>> = HashMap::new();
-        for event in events {
-            by_contract
-                .entry(event.contract_id.clone())
-                .or_default()
-                .push(event);
-        }
+        // Issue #480: render the summary in the configured language using a
+        // Handlebars template stored under `notification_templates/`.
+        let subject = localized_subject(&self.language, events.len());
 
-        let subject = format!(
-            "Soroban Pulse: {} new event{} indexed",
-            events.len(),
-            if events.len() == 1 { "" } else { "s" }
-        );
-
-        let mut body = String::new();
-        body.push_str(&format!(
-            "Soroban Pulse indexed {} new event{} in the last minute.\n\n",
-            events.len(),
-            if events.len() == 1 { "" } else { "s" }
-        ));
-
-        for (contract_id, contract_events) in by_contract.iter() {
-            body.push_str(&format!(
-                "Contract: {}\n  Events: {}\n",
-                contract_id,
-                contract_events.len()
-            ));
-
-            for event in contract_events.iter().take(10) {
-                body.push_str(&format!(
-                    "  - Type: {}, Ledger: {}, TxHash: {}\n",
-                    event.event_type, event.ledger, event.tx_hash
-                ));
+        let body = match render_body(&self.language, events) {
+            Ok(body) => body,
+            Err(e) => {
+                error!(error = %e, language = %self.language, "Failed to render email template");
+                metrics::record_email_failure();
+                return;
             }
-
-            if contract_events.len() > 10 {
-                body.push_str(&format!(
-                    "  ... and {} more event{}\n",
-                    contract_events.len() - 10,
-                    if contract_events.len() - 10 == 1 {
-                        ""
-                    } else {
-                        "s"
-                    }
-                ));
-            }
-            body.push('\n');
-        }
+        };
 
         // Build and send email
         if let Err(e) = self.send_email(&subject, &body).await {
@@ -252,6 +334,10 @@ mod tests {
 
     #[test]
     fn test_email_notifier_creation() {
+        // `connect_lazy` builds a pool handle without opening a connection,
+        // so this stays a pure unit test (no live database required).
+        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/soroban_pulse_test")
+            .expect("lazy pool");
         let notifier = EmailNotifier::new(
             "smtp.example.com".to_string(),
             587,
@@ -260,12 +346,16 @@ mod tests {
             "from@example.com".to_string(),
             vec!["to@example.com".to_string()],
             vec![],
+            RetryPolicy::default(),
+            "en".to_string(),
+            pool,
         );
 
         assert_eq!(notifier.smtp_host, "smtp.example.com");
         assert_eq!(notifier.smtp_port, 587);
         assert_eq!(notifier.from, "from@example.com");
         assert_eq!(notifier.to.len(), 1);
+        assert_eq!(notifier.language, "en");
     }
 
     #[test]
@@ -296,5 +386,91 @@ mod tests {
 
         // Empty filter means all events pass
         assert!(filter.is_empty() || filter.contains(&event.contract_id));
+    }
+
+    // --- Issue #480: multi-language template rendering ---
+
+    #[test]
+    fn test_normalize_language_falls_back_to_en() {
+        assert_eq!(normalize_language("en"), "en");
+        assert_eq!(normalize_language("ES"), "es");
+        assert_eq!(normalize_language(" zh "), "zh");
+        assert_eq!(normalize_language("ja"), "ja");
+        // Unknown / empty languages fall back to English.
+        assert_eq!(normalize_language("fr"), "en");
+        assert_eq!(normalize_language(""), "en");
+    }
+
+    #[test]
+    fn test_render_body_english() {
+        let events = vec![mock_event("CONTRACT_A", 100), mock_event("CONTRACT_A", 101)];
+        let body = render_body("en", &events).expect("render en");
+        assert!(body.contains("indexed 2 new event"));
+        assert!(body.contains("Contract: CONTRACT_A"));
+        assert!(body.contains("Type: contract"));
+        assert!(body.contains("TxHash: abc123"));
+    }
+
+    #[test]
+    fn test_render_body_spanish() {
+        let events = vec![mock_event("CONTRACT_A", 100)];
+        let body = render_body("es", &events).expect("render es");
+        assert!(body.contains("indexó 1"));
+        assert!(body.contains("Contrato: CONTRACT_A"));
+        assert!(body.contains("Tipo: contract"));
+    }
+
+    #[test]
+    fn test_render_body_chinese() {
+        let events = vec![mock_event("CONTRACT_A", 100)];
+        let body = render_body("zh", &events).expect("render zh");
+        assert!(body.contains("个新事件"));
+        assert!(body.contains("合约：CONTRACT_A"));
+        assert!(body.contains("类型：contract"));
+    }
+
+    #[test]
+    fn test_render_body_japanese() {
+        let events = vec![mock_event("CONTRACT_A", 100)];
+        let body = render_body("ja", &events).expect("render ja");
+        assert!(body.contains("件の新しいイベント"));
+        assert!(body.contains("コントラクト: CONTRACT_A"));
+        assert!(body.contains("種類: contract"));
+    }
+
+    #[test]
+    fn test_render_body_unknown_language_uses_english() {
+        let events = vec![mock_event("CONTRACT_A", 100)];
+        let body = render_body("fr", &events).expect("render fallback");
+        assert!(body.contains("indexed 1 new event"));
+    }
+
+    #[test]
+    fn test_render_body_truncates_after_ten_events() {
+        let events: Vec<SorobanEvent> = (0..13)
+            .map(|i| mock_event("CONTRACT_A", 100 + i))
+            .collect();
+        let body = render_body("en", &events).expect("render truncated");
+        assert!(body.contains("... and 3 more event"));
+    }
+
+    #[test]
+    fn test_all_supported_languages_render() {
+        let events = vec![mock_event("CONTRACT_A", 100)];
+        for lang in SUPPORTED_LANGUAGES {
+            let body = render_body(lang, &events)
+                .unwrap_or_else(|e| panic!("render {lang} failed: {e}"));
+            assert!(!body.trim().is_empty(), "empty body for {lang}");
+        }
+        assert_eq!(SUPPORTED_LANGUAGES.len(), 4);
+    }
+
+    #[test]
+    fn test_localized_subject() {
+        assert!(localized_subject("en", 1).contains("1 new event indexed"));
+        assert!(localized_subject("en", 2).contains("2 new events indexed"));
+        assert!(localized_subject("es", 3).contains("3"));
+        assert!(localized_subject("zh", 4).contains("已索引 4"));
+        assert!(localized_subject("ja", 5).contains("5"));
     }
 }

@@ -8,6 +8,7 @@ The email notification feature allows operators to receive email alerts when spe
 - **Contract Filtering**: Optional filtering to only receive notifications for specific contracts
 - **SMTP Support**: Works with any SMTP server (Gmail, SendGrid, AWS SES, etc.)
 - **Multiple Recipients**: Send notifications to multiple email addresses
+- **Multi-Language Templates**: Render notifications in English, Spanish, Chinese, or Japanese (Issue #480)
 - **Secure**: SMTP credentials are never logged or exposed in metrics
 
 ## Configuration
@@ -26,6 +27,56 @@ Email notifications are configured via environment variables:
 - `EMAIL_SMTP_USER`: SMTP authentication username (required by most servers)
 - `EMAIL_SMTP_PASSWORD`: SMTP authentication password (required by most servers)
 - `EMAIL_CONTRACT_FILTER`: Comma-separated list of contract IDs to filter notifications
+- `EMAIL_LANGUAGE`: Language used to render the notification template (default: `en`). See [Multi-Language Support](#multi-language-support).
+
+## Multi-Language Support
+
+Issue #480: Soroban Pulse renders notification emails using [Handlebars](https://handlebarsjs.com/) templates, allowing international teams to receive alerts in their preferred language.
+
+### Supported Languages
+
+| Code | Language | Template file |
+|------|----------|---------------|
+| `en` | English (default) | `notification_templates/email_en.hbs` |
+| `es` | Spanish | `notification_templates/email_es.hbs` |
+| `zh` | Chinese (Simplified) | `notification_templates/email_zh.hbs` |
+| `ja` | Japanese | `notification_templates/email_ja.hbs` |
+
+Set the language with the `EMAIL_LANGUAGE` environment variable:
+
+```bash
+EMAIL_LANGUAGE=es
+```
+
+Unknown or unset values fall back to English, so a misconfigured language never drops notifications.
+
+### Listing Available Templates
+
+The available templates can be queried at runtime via the admin API:
+
+```bash
+curl -H "X-Admin-Api-Key: $ADMIN_API_KEY" \
+  https://your-host/v1/admin/notification-templates
+```
+
+```json
+{
+  "default_language": "en",
+  "count": 4,
+  "templates": [
+    { "language": "en", "engine": "handlebars", "format": "text", "file": "notification_templates/email_en.hbs" },
+    { "language": "es", "engine": "handlebars", "format": "text", "file": "notification_templates/email_es.hbs" },
+    { "language": "zh", "engine": "handlebars", "format": "text", "file": "notification_templates/email_zh.hbs" },
+    { "language": "ja", "engine": "handlebars", "format": "text", "file": "notification_templates/email_ja.hbs" }
+  ]
+}
+```
+
+### Adding a New Language
+
+1. Create `notification_templates/email_<code>.hbs` using the existing templates as a reference. The rendering context exposes `event_count` and a `contracts` array; each contract exposes `contract_id`, `event_count`, an `events` array (`event_type`, `ledger`, `tx_hash`, `ledger_closed_at`), and an optional `more_count`.
+2. Register the language code in `SUPPORTED_LANGUAGES`, `normalize_language`, `template_source`, and `localized_subject` in `src/email.rs`.
+3. Add a rendering unit test for the new language in `src/email.rs`.
 
 ## Example Configuration
 

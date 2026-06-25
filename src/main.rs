@@ -252,12 +252,14 @@ async fn main() -> anyhow::Result<()> {
                     config.email_to.clone(),
                     config.email_contract_filter.clone(),
                     config.email_retry_policy.clone(),
+                    config.email_language.clone(),
                     pool.clone(),
                 );
 
                 info!(
                     smtp_host = %smtp_host,
                     recipients = config.email_to.len(),
+                    language = %config.email_language,
                     "Email notifications enabled"
                 );
 
