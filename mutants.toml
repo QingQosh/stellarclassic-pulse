@@ -1,0 +1,91 @@
+# Mutation testing configuration for SorobanPulse
+#
+# This file configures cargo-mutants, which automatically introduces small mutations
+# (bugs) into the code and verifies that the test suite catches each one.
+#
+# For more information: https://docs.rs/cargo-mutants/
+
+# Relative to the workspace root
+output-dir = "target/mutants"
+
+# Patterns for code to exclude from mutation
+exclude = [
+    # Skip entire crates
+    # "path:src/bin/**",
+
+    # Skip documentation
+    "regex:^\\s*//.*$",
+
+    # Skip debug-only code
+    "regex:debug_assert",
+
+    # Skip panic messages (mutations to messages don't add much value)
+    "regex:panic!.*\",",
+
+    # Skip format strings in logging
+    "regex:log::.*!\\(.*format!",
+    "regex:tracing::.*!\\(.*format!",
+
+    # Skip trivial Copy types
+    "regex:Copy.*trait",
+]
+
+# Per-module configuration for core business logic
+[module.src.indexer]
+description = "Event indexer background worker"
+skip = false
+
+[module.src.handlers]
+description = "API request handlers"
+skip = false
+
+[module.src.models]
+description = "Data models and domain types"
+skip = false
+
+[module.src.config]
+description = "Configuration and environment handling"
+skip = false
+
+[module.src.subscriptions]
+description = "Subscription management"
+skip = false
+
+[module.src.webhook]
+description = "Webhook delivery logic"
+skip = false
+
+[module.src.notification_dedup]
+description = "Notification deduplication"
+skip = false
+
+[module.src.bloom_filter]
+description = "Bloom filter deduplication"
+skip = false
+
+[module.src.notification_rate_limit]
+description = "Rate limiting for notifications"
+skip = false
+
+[module.src.content_filter]
+description = "Content filtering for notifications"
+skip = false
+
+[module.src.xdr_validation]
+description = "XDR validation for Stellar events"
+skip = false
+
+# Test configuration
+[test]
+# Only run doc tests and unit tests for mutation testing
+# Exclude slow integration tests
+# This helps keep mutation testing fast while still catching bugs
+timeout = 300
+verbose = false
+
+# Reporting configuration
+[report]
+# Generate detailed HTML report
+format = "html"
+# Also generate summary in text format
+summary = true
