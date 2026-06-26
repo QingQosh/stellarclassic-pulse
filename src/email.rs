@@ -11,6 +11,34 @@ use uuid::Uuid;
 
 use chrono::{DateTime, Timelike, Utc};
 
+/// Verify SMTP credentials by attempting a connection without sending an email.
+/// Used when creating or updating email notification channels (#503).
+pub async fn validate_smtp_config(
+    smtp_host: String,
+    smtp_port: u16,
+    smtp_user: Option<String>,
+    smtp_password: Option<String>,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let mut builder = SmtpTransport::relay(&smtp_host)
+            .map_err(|e| format!("invalid SMTP host: {}", e))?
+            .port(smtp_port);
+
+        if let (Some(user), Some(pass)) = (smtp_user, smtp_password) {
+            builder = builder.credentials(Credentials::new(user, pass));
+        }
+
+        let transport = builder.build();
+        match transport.test_connection() {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("SMTP server rejected the connection or credentials".to_string()),
+            Err(e) => Err(format!("SMTP connection failed: {}", e)),
+        }
+    })
+    .await
+    .map_err(|e| format!("SMTP validation task error: {}", e))?
+}
+
 use crate::{metrics, models::SorobanEvent, retry_policy::RetryPolicy};
 
 /// Issue #479: How often a notification channel flushes its batched events.

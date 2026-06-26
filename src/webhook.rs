@@ -6,6 +6,24 @@ use tokio::time::sleep;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
+/// Validate that `url` is reachable and returns a 2xx response.
+/// Used when creating or updating webhook notification channels (#503).
+pub async fn validate_webhook_url(url: &str) -> Result<(), String> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("failed to build HTTP client: {}", e))?;
+
+    match client.head(url).send().await {
+        Ok(resp) if resp.status().is_success() => Ok(()),
+        Ok(resp) => Err(format!(
+            "webhook URL returned non-2xx status: {}",
+            resp.status()
+        )),
+        Err(e) => Err(format!("webhook URL is unreachable: {}", e)),
+    }
+}
+
 use crate::{metrics, models::SorobanEvent};
 
 type HmacSha256 = Hmac<Sha256>;
