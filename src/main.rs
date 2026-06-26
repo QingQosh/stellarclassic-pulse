@@ -37,6 +37,7 @@ mod schema_validator;
 mod stats_refresh;
 mod subscriptions;
 mod webhook;
+mod notification_rate_limit;
 mod notification_formatter;
 mod pagerduty;
 mod retry_policy;
@@ -202,12 +203,26 @@ async fn main() -> anyhow::Result<()> {
         let webhook_url = webhook_url.clone();
         let webhook_secret = config.webhook_secret.clone();
         let webhook_contract_filter = config.webhook_contract_filter.clone();
+        let webhook_retry_policy = config.webhook_retry_policy.clone();
+        let webhook_pool = pool.clone();
+        // Per-channel rate limiter (Issue #476). `None` when no limit configured.
+        let webhook_rate_limiter = notification_rate_limit::ChannelRateLimiter::from_config(
+            &notification_rate_limit::RateLimitConfig::new(
+                config.webhook_rate_limit_per_minute,
+                config.webhook_rate_limit_per_hour,
+            ),
+        );
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
             .expect("Failed to build webhook HTTP client");
 
-        info!(url = %webhook_url, "Webhook delivery enabled");
+        info!(
+            url = %webhook_url,
+            rate_limit_per_minute = ?config.webhook_rate_limit_per_minute,
+            rate_limit_per_hour = ?config.webhook_rate_limit_per_hour,
+            "Webhook delivery enabled"
+        );
 
         tokio::spawn(async move {
             let mut rx = webhook_rx;
