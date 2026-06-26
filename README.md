@@ -9,6 +9,52 @@ A lightweight Rust backend service that indexes Soroban smart contract events on
 - **PostgreSQL** + **SQLx** (database + migrations)
 - **Stellar Soroban RPC** (event source)
 
+## System Architecture
+
+For a comprehensive overview of the system design, components, data flows, and deployment strategies, see [docs/architecture.md](docs/architecture.md).
+
+### Quick Overview
+
+The system consists of four main components:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  Stellar RPC (Event Source)                 │
+└────────────────────────┬────────────────────────────────────┘
+                         │ (Poll Events)
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                                                             │
+│  ┌──────────────────┐         ┌──────────────────────────┐ │
+│  │ Event Indexer    │────────▶│  PostgreSQL Database     │ │
+│  │ (Background)     │         │  (Events, Subscriptions) │ │
+│  └──────────────────┘         └──────────────────────────┘ │
+│         │                             ▲                    │
+│         │                             │                    │
+│  ┌──────▼────────────────────────────┴───────────────────┐ │
+│  │  REST API + Server-Sent Events (Axum)               │ │
+│  │  (Query Events, Subscribe, Webhooks)                │ │
+│  └─────────────────────────────────────────────────────┘ │
+│                                                             │
+│              SorobanPulse Service                           │
+└─────────────────────────────────────────────────────────────┘
+                         │
+        ┌────────────────┼────────────────┐
+        ▼                ▼                ▼
+    Web Clients    Mobile Apps        SDKs
+```
+
+Key features:
+- **Multi-replica support** with PostgreSQL advisory locks for leader election
+- **Event deduplication** using Bloom filters
+- **Real-time subscriptions** via Server-Sent Events
+- **Webhook delivery** with retry logic and HMAC verification
+- **Notification system** supporting email, AWS Kinesis, and GCP Pub/Sub
+- **Rate limiting** per IP address
+- **OpenAPI 3.0** documentation
+
+See [docs/architecture.md](docs/architecture.md) for detailed component descriptions, data flows, deployment topologies, and more.
+
 ## Project Structure
 
 ```
