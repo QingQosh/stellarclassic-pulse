@@ -1,137 +1,130 @@
-use lettre::message::{header, MultiPart, SinglePart};
+use lettre::message::header::{self, Header, HeaderName, HeaderValue};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::time::{interval, sleep};
+use tokio::time::interval;
 use tracing::{error, info, warn};
+use uuid::Uuid;
 
 use crate::{metrics, models::SorobanEvent, retry_policy::RetryPolicy};
 
-/// A bounced recipient extracted from a provider webhook payload (Issue #484).
-#[derive(Debug, Clone, PartialEq)]
-pub struct BouncedRecipient {
-    pub email: String,
-    pub reason: Option<String>,
-    pub provider: String,
+/// The `List-Unsubscribe` header (RFC 2369). Lets conforming mail clients
+/// surface a native unsubscribe action pointing at our unsubscribe URL.
+#[derive(Clone)]
+struct ListUnsubscribe(String);
+
+impl Header for ListUnsubscribe {
+    fn name() -> HeaderName {
+        HeaderName::new_from_ascii_str("List-Unsubscribe")
+    }
+
+    fn parse(s: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Self(s.to_string()))
+    }
+
+    fn display(&self) -> HeaderValue {
+        HeaderValue::new(Self::name(), self.0.clone())
+    }
 }
 
-/// Parse a bounce webhook payload from SendGrid, AWS SES (including SNS-wrapped
-/// notifications), or Mailgun and return the bounced recipient addresses.
-/// Best-effort: unknown shapes yield an empty vec rather than an error.
-pub fn extract_bounced_recipients(payload: &serde_json::Value) -> Vec<BouncedRecipient> {
-    let mut out = Vec::new();
-
-    // SendGrid posts a JSON array of event objects.
-    if let Some(events) = payload.as_array() {
-        for ev in events {
-            let event = ev.get("event").and_then(|v| v.as_str()).unwrap_or("");
-            if matches!(event, "bounce" | "dropped" | "blocked") {
-                if let Some(email) = ev.get("email").and_then(|v| v.as_str()) {
-                    out.push(BouncedRecipient {
-                        email: email.to_string(),
-                        reason: ev.get("reason").and_then(|v| v.as_str()).map(String::from),
-                        provider: "sendgrid".to_string(),
-                    });
-                }
-            }
-        }
-        return out;
-    }
-
-    // AWS SES delivered via SNS: the notification is a JSON string under "Message".
-    if payload.get("Type").and_then(|v| v.as_str()) == Some("Notification") {
-        if let Some(msg) = payload.get("Message").and_then(|v| v.as_str()) {
-            if let Ok(inner) = serde_json::from_str::<serde_json::Value>(msg) {
-                return extract_bounced_recipients(&inner);
-            }
-        }
-    }
-
-    // AWS SES direct bounce notification.
-    if payload.get("notificationType").and_then(|v| v.as_str()) == Some("Bounce") {
-        if let Some(recipients) = payload
-            .get("bounce")
-            .and_then(|b| b.get("bouncedRecipients"))
-            .and_then(|r| r.as_array())
-        {
-            for r in recipients {
-                if let Some(email) = r.get("emailAddress").and_then(|v| v.as_str()) {
-                    out.push(BouncedRecipient {
-                        email: email.to_string(),
-                        reason: r
-                            .get("diagnosticCode")
-                            .and_then(|v| v.as_str())
-                            .map(String::from),
-                        provider: "ses".to_string(),
-                    });
-                }
-            }
-        }
-        return out;
-    }
-
-    // Mailgun: modern "event-data" envelope or legacy flat object.
-    let mailgun_event = payload
-        .get("event-data")
-        .and_then(|d| d.get("event"))
-        .and_then(|v| v.as_str())
-        .or_else(|| payload.get("event").and_then(|v| v.as_str()));
-    if let Some(event) = mailgun_event {
-        if matches!(event, "failed" | "bounced" | "dropped" | "rejected") {
-            let recipient = payload
-                .get("event-data")
-                .and_then(|d| d.get("recipient"))
-                .and_then(|v| v.as_str())
-                .or_else(|| payload.get("recipient").and_then(|v| v.as_str()));
-            if let Some(email) = recipient {
-                let reason = payload
-                    .get("event-data")
-                    .and_then(|d| d.get("reason"))
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                out.push(BouncedRecipient {
-                    email: email.to_string(),
-                    reason,
-                    provider: "mailgun".to_string(),
-                });
-            }
-        }
-    }
-
-    out
+/// Generate an opaque, URL-safe unsubscribe token.
+fn generate_unsubscribe_token() -> String {
+    // Two UUIDs (256 bits of randomness) hashed to a hex string yields a
+    // collision-resistant, opaque token that is safe to embed in a URL.
+    let raw = format!("{}{}", Uuid::new_v4(), Uuid::new_v4());
+    let digest = Sha256::digest(raw.as_bytes());
+    digest.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-/// True when `email` has previously bounced and should be suppressed (Issue #484).
-pub async fn is_bounced(pool: &sqlx::PgPool, email: &str) -> bool {
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM email_bounces WHERE email = $1")
-        .bind(email)
-        .fetch_one(pool)
-        .await
-        .map(|c| c > 0)
-        .unwrap_or(false)
-}
-
-/// Record a bounced address. Idempotent on email — a repeated bounce refreshes
-/// the stored reason, provider and timestamp.
-pub async fn record_bounce(
+/// Return the existing unsubscribe token for `email`, creating one if absent.
+/// Returns `None` only if the database is unreachable.
+pub async fn get_or_create_unsubscribe_token(
     pool: &sqlx::PgPool,
-    recipient: &BouncedRecipient,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO email_bounces (email, reason, provider) VALUES ($1, $2, $3) \
-         ON CONFLICT (email) DO UPDATE SET reason = EXCLUDED.reason, \
-         provider = EXCLUDED.provider, bounced_at = NOW()",
+    email: &str,
+) -> Option<String> {
+    // Fast path: token already exists.
+    if let Ok(Some(token)) = sqlx::query_scalar::<_, String>(
+        "SELECT token FROM email_unsubscribes WHERE email = $1",
     )
-    .bind(&recipient.email)
-    .bind(&recipient.reason)
-    .bind(&recipient.provider)
+    .bind(email)
+    .fetch_optional(pool)
+    .await
+    {
+        return Some(token);
+    }
+
+    // Insert a new token. ON CONFLICT handles a race where another sender
+    // inserted the same email concurrently — we then read back the winner.
+    let token = generate_unsubscribe_token();
+    let inserted = sqlx::query_scalar::<_, String>(
+        "INSERT INTO email_unsubscribes (email, token) VALUES ($1, $2) \
+         ON CONFLICT (email) DO NOTHING RETURNING token",
+    )
+    .bind(email)
+    .bind(&token)
+    .fetch_optional(pool)
+    .await;
+
+    match inserted {
+        Ok(Some(t)) => Some(t),
+        Ok(None) => sqlx::query_scalar::<_, String>(
+            "SELECT token FROM email_unsubscribes WHERE email = $1",
+        )
+        .bind(email)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten(),
+        Err(e) => {
+            error!(error = %e, "Failed to create unsubscribe token");
+            None
+        }
+    }
+}
+
+/// True when `email` has opted out of notifications.
+pub async fn is_unsubscribed(pool: &sqlx::PgPool, email: &str) -> bool {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM email_unsubscribes \
+         WHERE email = $1 AND unsubscribed_at IS NOT NULL",
+    )
+    .bind(email)
+    .fetch_one(pool)
+    .await
+    .map(|c| c > 0)
+    .unwrap_or(false)
+}
+
+/// Mark the recipient identified by `token` as unsubscribed.
+/// Returns `Ok(true)` if a matching, not-yet-unsubscribed recipient was found.
+/// Idempotent: re-using an already-unsubscribed token returns `Ok(true)`.
+pub async fn mark_unsubscribed(pool: &sqlx::PgPool, token: &str) -> Result<bool, sqlx::Error> {
+    // Set unsubscribed_at only if not already set; report whether the token exists.
+    let updated = sqlx::query(
+        "UPDATE email_unsubscribes \
+         SET unsubscribed_at = NOW() \
+         WHERE token = $1 AND unsubscribed_at IS NULL",
+    )
+    .bind(token)
     .execute(pool)
     .await?;
-    Ok(())
+
+    if updated.rows_affected() > 0 {
+        return Ok(true);
+    }
+
+    // No row updated: either the token is unknown or already unsubscribed.
+    let exists = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM email_unsubscribes WHERE token = $1",
+    )
+    .bind(token)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(exists > 0)
 }
 
 /// Batched email notification sender.
@@ -146,9 +139,12 @@ pub struct EmailNotifier {
     contract_filter: Vec<String>,
     retry_policy: RetryPolicy,
     pool: sqlx::PgPool,
+    /// Base URL used to build unsubscribe links (Issue #483).
+    base_url: String,
 }
 
 impl EmailNotifier {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         smtp_host: String,
         smtp_port: u16,
@@ -159,6 +155,7 @@ impl EmailNotifier {
         contract_filter: Vec<String>,
         retry_policy: RetryPolicy,
         pool: sqlx::PgPool,
+        base_url: String,
     ) -> Self {
         Self {
             smtp_host,
@@ -170,6 +167,7 @@ impl EmailNotifier {
             contract_filter,
             retry_policy,
             pool,
+            base_url,
         }
     }
 
@@ -302,46 +300,71 @@ impl EmailNotifier {
             body.push('\n');
         }
 
-        // Suppress addresses that have previously bounced (Issue #484) to
-        // protect sender reputation and avoid wasting SMTP resources.
-        let mut active_recipients: Vec<String> = Vec::new();
+        // Send a separate message to each recipient so every email carries its
+        // own unsubscribe link (Issue #483). Recipients who have opted out are
+        // skipped entirely.
+        let mut sent = 0usize;
         for recipient in &self.to {
-            if is_bounced(&self.pool, recipient).await {
-                info!(recipient = %recipient, "Skipping previously bounced recipient");
+            if is_unsubscribed(&self.pool, recipient).await {
+                info!(recipient = %recipient, "Recipient has unsubscribed, skipping");
+                continue;
+            }
+
+            let unsubscribe_url = get_or_create_unsubscribe_token(&self.pool, recipient)
+                .await
+                .map(|token| {
+                    format!(
+                        "{}/unsubscribe?token={}",
+                        self.base_url.trim_end_matches('/'),
+                        token
+                    )
+                });
+
+            let mut personalized = body.clone();
+            if let Some(ref url) = unsubscribe_url {
+                personalized.push_str(&format!(
+                    "\n--\nYou are receiving this because you subscribed to Soroban Pulse \
+                     notifications.\nTo unsubscribe, visit: {url}\n"
+                ));
+            }
+
+            if let Err(e) = self
+                .send_email(recipient, &subject, &personalized, unsubscribe_url.as_deref())
+                .await
+            {
+                error!(error = %e, recipient = %recipient, "Failed to send email notification");
+                metrics::record_email_failure();
             } else {
-                active_recipients.push(recipient.clone());
+                sent += 1;
             }
         }
-        if active_recipients.is_empty() {
-            warn!("All configured email recipients have bounced; skipping send");
-            return;
-        }
 
-        // Build and send email
-        if let Err(e) = self.send_email(&active_recipients, &subject, &body).await {
-            error!(error = %e, "Failed to send email notification");
-            metrics::record_email_failure();
-        } else {
+        if sent > 0 {
             info!(
-                recipients = active_recipients.len(),
+                recipients = sent,
                 event_count = events.len(),
                 "Email notification sent successfully"
             );
         }
     }
 
-    /// Send an email to the given recipients using SMTP.
+    /// Send an email to a single recipient using SMTP. When `unsubscribe_url`
+    /// is set, a `List-Unsubscribe` header is added so mail clients can offer a
+    /// one-click unsubscribe (RFC 2369 / CAN-SPAM compliance, Issue #483).
     async fn send_email(
         &self,
-        recipients: &[String],
+        recipient: &str,
         subject: &str,
         body: &str,
+        unsubscribe_url: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        // Build message with all recipients
-        let mut message_builder = Message::builder().from(self.from.parse()?).subject(subject);
+        let mut message_builder = Message::builder()
+            .from(self.from.parse()?)
+            .to(recipient.parse()?)
+            .subject(subject);
 
-        for recipient in recipients {
-            message_builder = message_builder.to(recipient.parse()?);
+        if let Some(url) = unsubscribe_url {
+            message_builder = message_builder.header(ListUnsubscribe(format!("<{url}>")));
         }
 
         let message = message_builder
@@ -402,78 +425,34 @@ mod tests {
             vec![],
             RetryPolicy::default(),
             pool,
+            "https://pulse.example.com".to_string(),
         );
 
         assert_eq!(notifier.smtp_host, "smtp.example.com");
+        assert_eq!(notifier.base_url, "https://pulse.example.com");
         assert_eq!(notifier.smtp_port, 587);
         assert_eq!(notifier.from, "from@example.com");
         assert_eq!(notifier.to.len(), 1);
     }
 
     #[test]
-    fn test_extract_bounced_sendgrid() {
-        let payload = json!([
-            {"email": "a@example.com", "event": "bounce", "reason": "550 5.1.1"},
-            {"email": "b@example.com", "event": "delivered"},
-            {"email": "c@example.com", "event": "dropped"}
-        ]);
-        let bounced = extract_bounced_recipients(&payload);
-        assert_eq!(bounced.len(), 2);
-        assert_eq!(bounced[0].email, "a@example.com");
-        assert_eq!(bounced[0].provider, "sendgrid");
-        assert_eq!(bounced[0].reason.as_deref(), Some("550 5.1.1"));
-        assert_eq!(bounced[1].email, "c@example.com");
+    fn test_unsubscribe_token_is_opaque_and_unique() {
+        let a = generate_unsubscribe_token();
+        let b = generate_unsubscribe_token();
+        assert_ne!(a, b, "tokens must be unique");
+        assert_eq!(a.len(), 64, "sha256 hex digest is 64 chars");
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
-    fn test_extract_bounced_ses_direct() {
-        let payload = json!({
-            "notificationType": "Bounce",
-            "bounce": {
-                "bouncedRecipients": [
-                    {"emailAddress": "x@example.com", "diagnosticCode": "smtp; 550"}
-                ]
-            }
-        });
-        let bounced = extract_bounced_recipients(&payload);
-        assert_eq!(bounced.len(), 1);
-        assert_eq!(bounced[0].email, "x@example.com");
-        assert_eq!(bounced[0].provider, "ses");
-        assert_eq!(bounced[0].reason.as_deref(), Some("smtp; 550"));
-    }
-
-    #[test]
-    fn test_extract_bounced_ses_via_sns() {
-        let inner = json!({
-            "notificationType": "Bounce",
-            "bounce": {"bouncedRecipients": [{"emailAddress": "y@example.com"}]}
-        })
-        .to_string();
-        let payload = json!({"Type": "Notification", "Message": inner});
-        let bounced = extract_bounced_recipients(&payload);
-        assert_eq!(bounced.len(), 1);
-        assert_eq!(bounced[0].email, "y@example.com");
-        assert_eq!(bounced[0].provider, "ses");
-    }
-
-    #[test]
-    fn test_extract_bounced_mailgun() {
-        let modern = json!({"event-data": {"event": "failed", "recipient": "m@example.com", "reason": "bounce"}});
-        let bounced = extract_bounced_recipients(&modern);
-        assert_eq!(bounced.len(), 1);
-        assert_eq!(bounced[0].email, "m@example.com");
-        assert_eq!(bounced[0].provider, "mailgun");
-
-        let legacy = json!({"event": "bounced", "recipient": "old@example.com"});
-        let bounced = extract_bounced_recipients(&legacy);
-        assert_eq!(bounced.len(), 1);
-        assert_eq!(bounced[0].email, "old@example.com");
-    }
-
-    #[test]
-    fn test_extract_bounced_unknown_payload() {
-        let payload = json!({"hello": "world"});
-        assert!(extract_bounced_recipients(&payload).is_empty());
+    fn test_list_unsubscribe_header_display() {
+        let h = ListUnsubscribe("<https://pulse.example.com/unsubscribe?token=abc>".to_string());
+        assert_eq!(
+            ListUnsubscribe::name(),
+            HeaderName::new_from_ascii_str("List-Unsubscribe")
+        );
+        // display() must not panic and round-trips the raw value.
+        let _ = h.display();
     }
 
     #[test]

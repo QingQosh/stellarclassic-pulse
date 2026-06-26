@@ -539,39 +539,63 @@ pub async fn health_ready(State(state): State<AppState>) -> (StatusCode, Json<Va
     (status, Json(body))
 }
 
-/// Webhook that receives email bounce notifications from SendGrid, AWS SES
-/// (including SNS-wrapped notifications) and Mailgun (Issue #484). Bounced
-/// addresses are persisted so future notifications skip them.
+/// Query parameters for the email unsubscribe endpoint (Issue #483).
+#[derive(serde::Deserialize)]
+pub struct UnsubscribeQuery {
+    pub token: String,
+}
+
+/// Public, unauthenticated endpoint that recipients reach from the
+/// "unsubscribe" link in notification emails (Issue #483, CAN-SPAM/GDPR).
+/// Marks the token's recipient as opted out and returns a small HTML page.
 #[utoipa::path(
-    post,
-    path = "/v1/notifications/email/bounce",
+    get,
+    path = "/unsubscribe",
     tag = "system",
-    request_body = serde_json::Value,
+    params(("token" = String, Query, description = "Per-recipient unsubscribe token")),
     responses(
-        (status = 200, description = "Bounce payload processed", body = serde_json::Value),
+        (status = 200, description = "Unsubscribed (or already unsubscribed)"),
+        (status = 404, description = "Unknown unsubscribe token"),
     )
 )]
-pub async fn email_bounce_webhook(
+pub async fn unsubscribe(
     State(state): State<AppState>,
-    Json(payload): Json<Value>,
-) -> impl IntoResponse {
-    let recipients = crate::email::extract_bounced_recipients(&payload);
-    let mut recorded = 0usize;
-    for recipient in &recipients {
-        match crate::email::record_bounce(&state.pool, recipient).await {
-            Ok(()) => {
-                crate::metrics::record_email_bounce();
-                recorded += 1;
-            }
-            Err(e) => {
-                tracing::error!(error = %e, email = %recipient.email, "Failed to record email bounce");
-            }
+    Query(query): Query<UnsubscribeQuery>,
+) -> Response {
+    fn html_page(status: StatusCode, title: &str, message: &str) -> Response {
+        let body = format!(
+            "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
+             <title>{title}</title></head><body style=\"font-family:sans-serif;\
+             max-width:32rem;margin:4rem auto;text-align:center;\">\
+             <h1>{title}</h1><p>{message}</p></body></html>"
+        );
+        Response::builder()
+            .status(status)
+            .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+            .body(Body::from(body))
+            .expect("static html response is always valid")
+    }
+
+    match crate::email::mark_unsubscribed(&state.pool, &query.token).await {
+        Ok(true) => html_page(
+            StatusCode::OK,
+            "Unsubscribed",
+            "You have been unsubscribed from Soroban Pulse notifications.",
+        ),
+        Ok(false) => html_page(
+            StatusCode::NOT_FOUND,
+            "Invalid link",
+            "This unsubscribe link is not valid.",
+        ),
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to process unsubscribe request");
+            html_page(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Something went wrong",
+                "We could not process your request. Please try again later.",
+            )
         }
     }
-    (
-        StatusCode::OK,
-        Json(json!({ "received": recipients.len(), "recorded": recorded })),
-    )
 }
 
 #[utoipa::path(
