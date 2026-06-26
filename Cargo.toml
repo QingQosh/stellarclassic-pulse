@@ -76,6 +76,9 @@ handlebars = "5"
 # Issue #482: HTML email notification templates (Handlebars)
 handlebars = "5"
 
+# Issue #479: cron expression parsing for custom notification schedules
+cron = "0.12"
+
 # JSON Schema validation
 jsonschema = "0.18"
 
