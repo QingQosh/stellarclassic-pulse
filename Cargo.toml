@@ -73,6 +73,9 @@ hickory-resolver = "0.24"
 # Issue #480: Multi-language email notification templates (Handlebars)
 handlebars = "5"
 
+# Issue #482: HTML email notification templates (Handlebars)
+handlebars = "5"
+
 # JSON Schema validation
 jsonschema = "0.18"
 
