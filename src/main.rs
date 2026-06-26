@@ -500,6 +500,30 @@ async fn main() -> anyhow::Result<()> {
         shutdown_rx.clone(),
     );
 
+    // #496: Spawn audit log purge job
+    {
+        let audit_pool = pool.clone();
+        let retention_days = config.notification_audit_log_retention_days;
+        tokio::spawn(notification_admin::purge_old_audit_log_entries(audit_pool, retention_days));
+    }
+
+    // #498: Spawn channel health checker
+    {
+        let health_pool = pool.clone();
+        let health_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("Failed to build health check HTTP client");
+        let interval_secs = config.notification_health_check_interval_secs;
+        let health_check_email = config.notification_health_check_email.clone();
+        notification_admin::spawn_channel_health_checker(
+            health_pool,
+            health_client,
+            interval_secs,
+            health_check_email,
+        );
+    }
+
     async fn shutdown_signal(
         event_tx: broadcast::Sender<models::SorobanEvent>,
         sse_drain_timeout_secs: u64,
