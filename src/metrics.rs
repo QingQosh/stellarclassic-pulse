@@ -187,30 +187,9 @@ pub fn record_email_failure() {
     m::counter!("soroban_pulse_email_failures_total").increment(1);
 }
 
-/// Record a notification channel failover event (#499)
-pub fn record_notification_failover(channel_type: &str) {
-    m::counter!(
-        "soroban_pulse_notification_failover_total",
-        "channel_type" => channel_type.to_string()
-    )
-    .increment(1);
-}
-
-/// Record notification cost in USD cents (#501)
-pub fn record_notification_cost_cents(cents: u64) {
-    // Convert cents to USD for the metric value
-    m::counter!("soroban_pulse_notification_cost_usd_total")
-        .increment(cents as f64 / 100.0);
-}
-
-/// Record a test notification attempt (#502)
-pub fn record_notification_test(channel_type: &str, success: bool) {
-    m::counter!(
-        "soroban_pulse_notification_test_total",
-        "channel_type" => channel_type.to_string(),
-        "result" => if success { "success" } else { "failure" }
-    )
-    .increment(1);
+/// Record an email bounce reported via the bounce webhook (Issue #484)
+pub fn record_email_bounce() {
+    m::counter!("soroban_pulse_email_bounces_total").increment(1);
 }
 
 /// Record a full-text search query duration
@@ -365,6 +344,24 @@ pub fn spawn_memory_collector() {
             update_process_memory_bytes();
         }
     });
+}
+
+/// #513: Record notification delivery latency per channel
+pub fn record_notification_delivery_latency(channel: &str, latency_seconds: f64) {
+    m::histogram!(
+        "soroban_pulse_notification_delivery_latency_seconds",
+        "channel" => channel.to_string()
+    )
+    .record(latency_seconds);
+}
+
+/// #514: Update notification rate per minute gauge per channel
+pub fn update_notification_rate_per_minute(channel: &str, rate: f64) {
+    m::gauge!(
+        "soroban_pulse_notification_rate_per_minute",
+        "channel" => channel.to_string()
+    )
+    .set(rate);
 }
 
 #[cfg(test)]
