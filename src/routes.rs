@@ -68,6 +68,8 @@ pub struct AppState {
     pub shutdown_rx: tokio::sync::watch::Receiver<bool>,
     /// Per-IP SSE connection counts (Issue #453)
     pub sse_connections_per_ip: Arc<DashMap<String, usize>>,
+    /// SHA-256 hex of SUPER_ADMIN_API_KEY, grants unrestricted channel access (#508).
+    pub super_admin_key_hash: Option<String>,
 }
 
 /// OpenAPI spec — all paths are documented via #[utoipa::path] on handlers.
@@ -293,6 +295,11 @@ pub fn create_router_with_tx_and_tenant_map(
         .max_capacity(1)
         .time_to_live(std::time::Duration::from_secs(config.stats_cache_ttl_secs))
         .build();
+    let super_admin_key_hash = std::env::var("SUPER_ADMIN_API_KEY")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|k| crate::middleware::hash_api_key(&k));
+
     let app_state = AppState {
         pool,
         read_pool,
@@ -313,6 +320,7 @@ pub fn create_router_with_tx_and_tenant_map(
         stats_cache,
         shutdown_rx,
         sse_connections_per_ip: Arc::new(DashMap::new()),
+        super_admin_key_hash,
     };
 
     // Spawn cache invalidation task: subscribe to the broadcast channel and
