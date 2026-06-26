@@ -1,0 +1,20 @@
+# Cargo configuration for Soroban Pulse
+
+[build]
+# Enable incremental compilation for faster builds during mutation testing
+incremental = true
+
+[profile.test]
+# Optimize tests for speed during mutation testing
+opt-level = 1
+debug = true
+
+[profile.bench]
+# Optimize benchmarks
+opt-level = 3
+lto = true
+
+# Mutation testing specific settings (for cargo-mutants)
+[env.MUTANTS_TIMEOUT]
+# Default timeout for mutation tests (in seconds)
+value = "30"

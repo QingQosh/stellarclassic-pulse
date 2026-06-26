@@ -1,0 +1,158 @@
+name: Mutation Testing
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run mutation tests nightly to catch quality regressions
+    - cron: '0 2 * * *'
+
+jobs:
+  mutation-tests:
+    name: Run Mutation Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: soroban_pulse_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo index
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-git-
+
+      - name: Cache Cargo build
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-target-
+
+      - name: Set up test database
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/soroban_pulse_test
+        run: |
+          # Wait for PostgreSQL to be ready
+          until pg_isready -h localhost -p 5432; do
+            echo 'Waiting for PostgreSQL...'
+            sleep 1
+          done
+          # Run migrations
+          sqlx database create --database-url "$DATABASE_URL"
+
+      - name: Run baseline tests
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/soroban_pulse_test
+        run: cargo test --all --no-fail-fast
+
+      - name: Run mutation tests
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/soroban_pulse_test
+          MUTANTS_TIMEOUT: 60
+        run: cargo mutants --tests --jobs $(nproc) --timeout 60
+
+      - name: Generate mutation report
+        if: always()
+        run: |
+          cargo mutants --tests --output mutations.json
+          cargo mutants --tests --output mutations.html
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: mutation-reports
+          path: |
+            mutations.json
+            mutations.html
+
+      - name: Comment on PR with mutation results
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            try {
+              const report = JSON.parse(fs.readFileSync('mutations.json', 'utf8'));
+              const survived = report.filter(m => m.status === 'Survived').length;
+              const caught = report.filter(m => m.status === 'Caught').length;
+              const total = report.length;
+
+              const comment = `## 🧬 Mutation Testing Results
+
+              | Metric | Count |
+              |--------|-------|
+              | Total Mutants | ${total} |
+              | Caught | ${caught} |
+              | Survived | ${survived} |
+              | Coverage | ${((caught / total) * 100).toFixed(1)}% |
+
+              📊 [View full report](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})`;
+
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            } catch (error) {
+              console.log('Could not generate mutation comment:', error);
+            }
+
+      - name: Fail if mutation coverage is low
+        if: always()
+        run: |
+          # Extract mutation statistics
+          SURVIVED=$(cargo mutants --tests --output - 2>/dev/null | grep -c '"status":"Survived"' || echo 0)
+          TOTAL=$(cargo mutants --tests --output - 2>/dev/null | grep -c '"status"' || echo 1)
+
+          if [ "$TOTAL" -gt 0 ]; then
+            COVERAGE=$((100 * (TOTAL - SURVIVED) / TOTAL))
+            echo "Mutation Coverage: ${COVERAGE}%"
+
+            # Fail if coverage drops below 80%
+            if [ "$COVERAGE" -lt 80 ]; then
+              echo "❌ Mutation coverage below 80%"
+              exit 1
+            else
+              echo "✅ Mutation coverage acceptable: ${COVERAGE}%"
+            fi
+          fi

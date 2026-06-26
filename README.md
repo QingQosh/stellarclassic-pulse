@@ -117,6 +117,21 @@ make fmt    # format source code
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full developer workflow.
 
+### Testing & Quality Assurance
+
+The project employs multiple testing strategies:
+
+- **Unit & Integration Tests**: Standard test suite (`make test`)
+- **Property-Based Tests**: Discover edge cases with `proptest` — see [docs/property-testing.md](docs/property-testing.md)
+- **Mutation Testing**: Evaluate test coverage quality with `cargo-mutants` — see [docs/mutation-testing.md](docs/mutation-testing.md)
+- **API Contract Tests**: Verify client-server compatibility with Pact — see [docs/contract-testing.md](docs/contract-testing.md)
+
+Run mutation tests locally:
+```bash
+cargo install cargo-mutants
+make -f Makefile.mutations mutants
+```
+
 ## API
 
 All canonical routes are versioned under `/v1/`. The unversioned paths (`/events`, etc.) remain as deprecated aliases and return a `Deprecation: true` response header.
