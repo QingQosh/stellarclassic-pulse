@@ -74,8 +74,6 @@ lettre = { version = "0.11", default-features = false, features = ["tokio1-rustl
 hickory-resolver = "0.24"
 
 # Issue #480: Multi-language email notification templates (Handlebars)
-handlebars = "5"
-
 # Issue #482: HTML email notification templates (Handlebars)
 handlebars = "5"
 
@@ -103,8 +101,6 @@ sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls", "chron
 async-trait = "0.1"
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1"
-pact = "1"
-pact_consumer = "1"
 
 [dependencies.flate2]
 version = "1"
