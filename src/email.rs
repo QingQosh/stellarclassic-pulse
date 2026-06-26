@@ -1,4 +1,4 @@
-use lettre::message::{header, MultiPart, SinglePart};
+use lettre::message::header::{self, Header, HeaderName, HeaderValue};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 use secrecy::{ExposeSecret, SecretString};
@@ -11,13 +11,120 @@ use uuid::Uuid;
 
 use crate::{metrics, models::SorobanEvent, retry_policy::RetryPolicy};
 
-/// A/B test configuration for email templates (Issue #489).
-#[derive(Debug, Clone)]
-pub struct AbTestConfig {
-    pub template_a: String,
-    pub template_b: String,
-    /// Percentage of recipients assigned template A (0.0–100.0).
-    pub split_percentage: f64,
+/// The `List-Unsubscribe` header (RFC 2369). Lets conforming mail clients
+/// surface a native unsubscribe action pointing at our unsubscribe URL.
+#[derive(Clone)]
+struct ListUnsubscribe(String);
+
+impl Header for ListUnsubscribe {
+    fn name() -> HeaderName {
+        HeaderName::new_from_ascii_str("List-Unsubscribe")
+    }
+
+    fn parse(s: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Self(s.to_string()))
+    }
+
+    fn display(&self) -> HeaderValue {
+        HeaderValue::new(Self::name(), self.0.clone())
+    }
+}
+
+/// Generate an opaque, URL-safe unsubscribe token.
+fn generate_unsubscribe_token() -> String {
+    // Two UUIDs (256 bits of randomness) hashed to a hex string yields a
+    // collision-resistant, opaque token that is safe to embed in a URL.
+    let raw = format!("{}{}", Uuid::new_v4(), Uuid::new_v4());
+    let digest = Sha256::digest(raw.as_bytes());
+    digest.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Return the existing unsubscribe token for `email`, creating one if absent.
+/// Returns `None` only if the database is unreachable.
+pub async fn get_or_create_unsubscribe_token(
+    pool: &sqlx::PgPool,
+    email: &str,
+) -> Option<String> {
+    // Fast path: token already exists.
+    if let Ok(Some(token)) = sqlx::query_scalar::<_, String>(
+        "SELECT token FROM email_unsubscribes WHERE email = $1",
+    )
+    .bind(email)
+    .fetch_optional(pool)
+    .await
+    {
+        return Some(token);
+    }
+
+    // Insert a new token. ON CONFLICT handles a race where another sender
+    // inserted the same email concurrently — we then read back the winner.
+    let token = generate_unsubscribe_token();
+    let inserted = sqlx::query_scalar::<_, String>(
+        "INSERT INTO email_unsubscribes (email, token) VALUES ($1, $2) \
+         ON CONFLICT (email) DO NOTHING RETURNING token",
+    )
+    .bind(email)
+    .bind(&token)
+    .fetch_optional(pool)
+    .await;
+
+    match inserted {
+        Ok(Some(t)) => Some(t),
+        Ok(None) => sqlx::query_scalar::<_, String>(
+            "SELECT token FROM email_unsubscribes WHERE email = $1",
+        )
+        .bind(email)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten(),
+        Err(e) => {
+            error!(error = %e, "Failed to create unsubscribe token");
+            None
+        }
+    }
+}
+
+/// True when `email` has opted out of notifications.
+pub async fn is_unsubscribed(pool: &sqlx::PgPool, email: &str) -> bool {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM email_unsubscribes \
+         WHERE email = $1 AND unsubscribed_at IS NOT NULL",
+    )
+    .bind(email)
+    .fetch_one(pool)
+    .await
+    .map(|c| c > 0)
+    .unwrap_or(false)
+}
+
+/// Mark the recipient identified by `token` as unsubscribed.
+/// Returns `Ok(true)` if a matching, not-yet-unsubscribed recipient was found.
+/// Idempotent: re-using an already-unsubscribed token returns `Ok(true)`.
+pub async fn mark_unsubscribed(pool: &sqlx::PgPool, token: &str) -> Result<bool, sqlx::Error> {
+    // Set unsubscribed_at only if not already set; report whether the token exists.
+    let updated = sqlx::query(
+        "UPDATE email_unsubscribes \
+         SET unsubscribed_at = NOW() \
+         WHERE token = $1 AND unsubscribed_at IS NULL",
+    )
+    .bind(token)
+    .execute(pool)
+    .await?;
+
+    if updated.rows_affected() > 0 {
+        return Ok(true);
+    }
+
+    // No row updated: either the token is unknown or already unsubscribed.
+    let exists = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM email_unsubscribes WHERE token = $1",
+    )
+    .bind(token)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(exists > 0)
 }
 
 /// Batched email notification sender.
@@ -32,13 +139,12 @@ pub struct EmailNotifier {
     contract_filter: Vec<String>,
     retry_policy: RetryPolicy,
     pool: sqlx::PgPool,
-    /// Base URL used for tracking pixel and click-redirect links (Issue #487, #488).
+    /// Base URL used to build unsubscribe links (Issue #483).
     base_url: String,
-    /// Optional A/B test configuration (Issue #489).
-    ab_test: Option<AbTestConfig>,
 }
 
 impl EmailNotifier {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         smtp_host: String,
         smtp_port: u16,
@@ -49,6 +155,7 @@ impl EmailNotifier {
         contract_filter: Vec<String>,
         retry_policy: RetryPolicy,
         pool: sqlx::PgPool,
+        base_url: String,
     ) -> Self {
         Self {
             smtp_host,
@@ -60,8 +167,7 @@ impl EmailNotifier {
             contract_filter,
             retry_policy,
             pool,
-            base_url: String::new(),
-            ab_test: None,
+            base_url,
         }
     }
 
@@ -267,226 +373,88 @@ impl EmailNotifier {
             html.push_str("</ul>");
         }
 
-        // Tracking pixel (Issue #487)
-        if !open_token.is_empty() && !self.base_url.is_empty() {
-            html.push_str(&format!(
-                "<img src=\"{}/v1/notifications/email/track/{}\" width=\"1\" height=\"1\" alt=\"\" style=\"display:none;\" />",
-                self.base_url, open_token
-            ));
-        }
-
-        html.push_str("</body></html>");
-        html
-    }
-
-    /// Send a summary email for a batch of events with per-recipient tracking,
-    /// suppression checks, and A/B test template assignment.
-    async fn send_batch_email(&self, events: &[SorobanEvent]) {
-        if events.is_empty() {
-            return;
-        }
-
-        let event_ids: Vec<String> = events
-            .iter()
-            .map(|e| format!("{}{}{}", e.tx_hash, e.contract_id, e.ledger))
-            .collect();
-        let batch_key = {
-            let digest = Sha256::digest(event_ids.join(",").as_bytes());
-            digest
-                .iter()
-                .map(|b| format!("{:02x}", b))
-                .collect::<String>()[..16]
-                .to_string()
-        };
-
-        let subject = format!(
-            "Soroban Pulse: {} new event{} indexed",
-            events.len(),
-            if events.len() == 1 { "" } else { "s" }
-        );
-
-        // Pre-generate click tokens for all unique tx hashes
-        let unique_tx_hashes: Vec<String> = {
-            let mut seen = std::collections::HashSet::new();
-            events
-                .iter()
-                .filter(|e| seen.insert(e.tx_hash.clone()))
-                .map(|e| e.tx_hash.clone())
-                .collect()
-        };
-
-        let recipients = self.to.clone();
-        for recipient in &recipients {
-            // Suppression check (Issue #490)
-            if self.is_suppressed(recipient, "email").await {
-                metrics::record_notification_suppressed();
-                info!(recipient = %recipient, "Email suppressed, skipping");
+        // Send a separate message to each recipient so every email carries its
+        // own unsubscribe link (Issue #483). Recipients who have opted out are
+        // skipped entirely.
+        let mut sent = 0usize;
+        for recipient in &self.to {
+            if is_unsubscribed(&self.pool, recipient).await {
+                info!(recipient = %recipient, "Recipient has unsubscribed, skipping");
                 continue;
             }
 
-            // Per-recipient idempotency key
-            let recipient_hash = {
-                let digest = Sha256::digest(recipient.as_bytes());
-                digest
-                    .iter()
-                    .map(|b| format!("{:02x}", b))
-                    .collect::<String>()[..8]
-                    .to_string()
-            };
-            let idempotency_key = format!("batch_{}_{}", batch_key, recipient_hash);
-
-            if let Ok(existing) = sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM email_notifications WHERE idempotency_key = $1",
-            )
-            .bind(&idempotency_key)
-            .fetch_one(&self.pool)
-            .await
-            {
-                if existing > 0 {
-                    info!(idempotency_key = %idempotency_key, "Email already sent to recipient, skipping");
-                    continue;
-                }
-            }
-
-            // A/B template selection (Issue #489)
-            let ab_template = self.ab_test.as_ref().map(|_| {
-                self.assign_ab_template(recipient, &batch_key)
-            });
-
-            let text_body = if let (Some(ab), Some(tmpl)) = (&self.ab_test, ab_template) {
-                if tmpl == 'A' {
-                    ab.template_a.clone()
-                } else {
-                    ab.template_b.clone()
-                }
-            } else {
-                self.build_text_body(events)
-            };
-
-            // Insert email_notifications record
-            let notification_id = Uuid::new_v4();
-            if let Err(e) = sqlx::query(
-                "INSERT INTO email_notifications (id, idempotency_key, recipient, subject, body) \
-                 VALUES ($1, $2, $3, $4, $5)",
-            )
-            .bind(notification_id)
-            .bind(&idempotency_key)
-            .bind(recipient)
-            .bind(&subject)
-            .bind(&text_body)
-            .execute(&self.pool)
-            .await
-            {
-                error!(error = %e, "Failed to insert email_notifications record");
-                continue;
-            }
-
-            // Track A/B delivery (Issue #489)
-            if let Some(tmpl) = ab_template {
-                let _ = sqlx::query(
-                    "INSERT INTO email_deliveries (email_notification_id, recipient, ab_template) \
-                     VALUES ($1, $2, $3)",
-                )
-                .bind(notification_id)
-                .bind(recipient)
-                .bind(tmpl.to_string())
-                .execute(&self.pool)
-                .await;
-            }
-
-            // Open tracking token (Issue #487)
-            let open_token = Uuid::new_v4().to_string();
-            if !self.base_url.is_empty() {
-                let _ = sqlx::query(
-                    "INSERT INTO email_opens (token, email_notification_id, recipient) \
-                     VALUES ($1, $2, $3)",
-                )
-                .bind(&open_token)
-                .bind(notification_id)
-                .bind(recipient)
-                .execute(&self.pool)
-                .await;
-            }
-
-            // Click tracking tokens per unique tx hash (Issue #488)
-            let mut click_tokens: HashMap<String, String> = HashMap::new();
-            if !self.base_url.is_empty() {
-                for tx_hash in &unique_tx_hashes {
-                    let token = Uuid::new_v4().to_string();
-                    let dest_url =
-                        format!("{}/v1/events/tx/{}", self.base_url, tx_hash);
-                    let _ = sqlx::query(
-                        "INSERT INTO email_clicks \
-                         (token, email_notification_id, recipient, destination_url) \
-                         VALUES ($1, $2, $3, $4)",
+            let unsubscribe_url = get_or_create_unsubscribe_token(&self.pool, recipient)
+                .await
+                .map(|token| {
+                    format!(
+                        "{}/unsubscribe?token={}",
+                        self.base_url.trim_end_matches('/'),
+                        token
                     )
-                    .bind(&token)
-                    .bind(notification_id)
-                    .bind(recipient)
-                    .bind(&dest_url)
-                    .execute(&self.pool)
-                    .await;
-                    click_tokens.insert(tx_hash.clone(), token);
-                }
+                });
+
+            let mut personalized = body.clone();
+            if let Some(ref url) = unsubscribe_url {
+                personalized.push_str(&format!(
+                    "\n--\nYou are receiving this because you subscribed to Soroban Pulse \
+                     notifications.\nTo unsubscribe, visit: {url}\n"
+                ));
             }
 
-            // Build HTML email
-            let html_body = self.build_html_body(events, &open_token, &click_tokens);
-
-            // Send
-            match self
-                .send_email_to_recipient(recipient, &subject, &text_body, &html_body)
+            if let Err(e) = self
+                .send_email(recipient, &subject, &personalized, unsubscribe_url.as_deref())
                 .await
             {
-                Ok(_) => {
-                    let _ = sqlx::query(
-                        "UPDATE email_notifications SET sent_at = NOW() WHERE id = $1",
-                    )
-                    .bind(notification_id)
-                    .execute(&self.pool)
-                    .await;
-                    info!(
-                        recipient = %recipient,
-                        event_count = events.len(),
-                        "Email notification sent"
-                    );
-                }
-                Err(e) => {
-                    error!(error = %e, recipient = %recipient, "Failed to send email");
-                    metrics::record_email_failure();
-                }
+                error!(error = %e, recipient = %recipient, "Failed to send email notification");
+                metrics::record_email_failure();
+            } else {
+                sent += 1;
             }
         }
-    }
 
-    /// Send an HTML + plain-text multipart email to a single recipient.
-    async fn send_email_to_recipient(
+        if sent > 0 {
+            info!(
+                recipients = sent,
+                event_count = events.len(),
+                "Email notification sent successfully"
+            );
+        }
+
+    /// Send an email to a single recipient using SMTP. When `unsubscribe_url`
+    /// is set, a `List-Unsubscribe` header is added so mail clients can offer a
+    /// one-click unsubscribe (RFC 2369 / CAN-SPAM compliance, Issue #483).
+    async fn send_email(
         &self,
         recipient: &str,
         subject: &str,
-        text_body: &str,
-        html_body: &str,
+        body: &str,
+        unsubscribe_url: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let message = Message::builder()
+        let mut message_builder = Message::builder()
             .from(self.from.parse()?)
             .to(recipient.parse()?)
-            .subject(subject)
-            .multipart(
-                MultiPart::alternative()
-                    .singlepart(
-                        SinglePart::builder()
-                            .header(header::ContentType::TEXT_PLAIN)
-                            .body(text_body.to_string()),
-                    )
-                    .singlepart(
-                        SinglePart::builder()
-                            .header(header::ContentType::TEXT_HTML)
-                            .body(html_body.to_string()),
-                    ),
-            )?;
+            .subject(subject);
 
-        let mut transport_builder =
-            SmtpTransport::relay(&self.smtp_host)?.port(self.smtp_port);
+        if let Some(url) = unsubscribe_url {
+            message_builder = message_builder.header(ListUnsubscribe(format!("<{url}>")));
+        }
+
+        let mut message = message_builder
+            .header(header::ContentType::TEXT_PLAIN)
+            .body(body.to_string())?;
+
+        // DKIM-sign the message when a signing key is configured (Issue #485).
+        // A bad key never blocks delivery — it is logged and the email is sent
+        // unsigned (the key is validated at startup, so this is defensive).
+        if let (Some(selector), Some(key)) = (&self.dkim_selector, &self.dkim_private_key) {
+            match build_dkim_config(selector, &self.from, key.expose_secret()) {
+                Ok(config) => message.sign(&config),
+                Err(e) => warn!(error = %e, "DKIM signing skipped"),
+            }
+        }
+
+        // Build SMTP transport
+        let mut transport_builder = SmtpTransport::relay(&self.smtp_host)?.port(self.smtp_port);
 
         if let (Some(user), Some(password)) = (&self.smtp_user, &self.smtp_password) {
             transport_builder = transport_builder.credentials(Credentials::new(
@@ -525,11 +493,23 @@ mod tests {
         }
     }
 
-    fn make_notifier() -> EmailNotifier {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgres://localhost/test")
-            .unwrap();
-        EmailNotifier::new(
+    #[test]
+    fn test_sender_domain_extraction() {
+        assert_eq!(
+            sender_domain("pulse@example.com").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            sender_domain("Soroban Pulse <pulse@mail.example.com>").as_deref(),
+            Some("mail.example.com")
+        );
+        assert_eq!(sender_domain("trailing@").as_deref(), None);
+    }
+
+    #[test]
+    fn test_email_notifier_creation() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/unused").unwrap();
+        let notifier = EmailNotifier::new(
             "smtp.example.com".to_string(),
             587,
             Some("user".to_string()),
@@ -537,18 +517,39 @@ mod tests {
             "from@example.com".to_string(),
             vec!["to@example.com".to_string()],
             vec![],
-            crate::retry_policy::RetryPolicy::email_default(),
+            RetryPolicy::default(),
             pool,
-        )
-    }
+            "https://pulse.example.com".to_string(),
+        );
 
     #[test]
     fn test_email_notifier_creation() {
         let notifier = make_notifier();
         assert_eq!(notifier.smtp_host, "smtp.example.com");
+        assert_eq!(notifier.base_url, "https://pulse.example.com");
         assert_eq!(notifier.smtp_port, 587);
         assert_eq!(notifier.from, "from@example.com");
         assert_eq!(notifier.to.len(), 1);
+    }
+
+    #[test]
+    fn test_unsubscribe_token_is_opaque_and_unique() {
+        let a = generate_unsubscribe_token();
+        let b = generate_unsubscribe_token();
+        assert_ne!(a, b, "tokens must be unique");
+        assert_eq!(a.len(), 64, "sha256 hex digest is 64 chars");
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_list_unsubscribe_header_display() {
+        let h = ListUnsubscribe("<https://pulse.example.com/unsubscribe?token=abc>".to_string());
+        assert_eq!(
+            ListUnsubscribe::name(),
+            HeaderName::new_from_ascii_str("List-Unsubscribe")
+        );
+        // display() must not panic and round-trips the raw value.
+        let _ = h.display();
     }
 
     #[test]
