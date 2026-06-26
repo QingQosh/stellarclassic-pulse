@@ -1,4 +1,5 @@
 pub mod abi;
+pub mod audit_logging;
 pub mod bloom_filter;
 pub mod config;
 pub mod content_filter;

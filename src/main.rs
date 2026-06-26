@@ -5,6 +5,7 @@
     clippy::missing_panics_doc,      // panics only on misconfiguration at startup
     clippy::wildcard_imports,        // used sparingly in test modules only
 )]
+mod audit_logging;
 mod bloom_filter;
 mod config;
 mod content_filter;
