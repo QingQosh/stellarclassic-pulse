@@ -31,6 +31,7 @@ mod parquet_export;
 mod pruner;
 mod pubsub;
 mod queue_publisher;
+mod rate_limiter;
 mod reencrypt;
 mod routes;
 mod rpc_client;
