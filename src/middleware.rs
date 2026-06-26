@@ -159,24 +159,71 @@ pub async fn admin_auth_middleware(
     }
 }
 
+/// Security headers middleware implementing OWASP API security guidelines (Issue #566)
+/// Adds security headers to all responses to protect against common web vulnerabilities
 pub async fn security_headers_middleware(req: Request, next: Next) -> Response {
     let path = req.uri().path().to_owned();
     let mut response = next.run(req).await;
 
-    // Set standard security headers for all responses
+    // 1. X-Content-Type-Options: Prevent MIME type sniffing
+    // This header tells browsers to respect the Content-Type header and not try to detect
+    // the MIME type. This prevents attackers from inducing browsers to treat non-executable
+    // content as executable.
     response
         .headers_mut()
         .insert("X-Content-Type-Options", "nosniff".parse().unwrap());
 
+    // 2. X-Frame-Options: Prevent clickjacking attacks
+    // DENY: The page cannot be displayed in a frame, regardless of which site is attempting to do so
+    // This prevents clickjacking attacks where an attacker frames your page and tricks users
     response
         .headers_mut()
         .insert("X-Frame-Options", "DENY".parse().unwrap());
 
+    // 3. Referrer-Policy: Control referrer information
+    // no-referrer: The referer header will not be sent with requests
+    // This prevents information leakage through the referrer header
     response
         .headers_mut()
         .insert("Referrer-Policy", "no-referrer".parse().unwrap());
 
-    // Set CSP header with different policies for /docs vs other routes.
+    // 4. Strict-Transport-Security: Enforce HTTPS (Issue #566)
+    // Tells browsers to only use HTTPS for future requests to this domain
+    // max-age=31536000: 1 year in seconds
+    // includeSubDomains: Apply to all subdomains
+    // preload: Allow domain to be included in HSTS preload lists
+    response
+        .headers_mut()
+        .insert(
+            "Strict-Transport-Security",
+            "max-age=31536000; includeSubDomains; preload"
+                .parse()
+                .unwrap(),
+        );
+
+    // 5. X-XSS-Protection: Enable XSS protection in older browsers (Issue #566)
+    // This header is deprecated in modern browsers but still useful for legacy browser support
+    // 1; mode=block: Enable XSS filter and block the page if an XSS attack is detected
+    response
+        .headers_mut()
+        .insert("X-XSS-Protection", "1; mode=block".parse().unwrap());
+
+    // 6. Permissions-Policy: Control which browser features can be used (Issue #566)
+    // Formerly known as Feature-Policy
+    // Restricts powerful features to enhance security
+    response
+        .headers_mut()
+        .insert(
+            "Permissions-Policy",
+            "accelerometer=(), ambient-light-sensor=(), autoplay=(), camera=(), \
+             encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), \
+             magnetometer=(), microphone=(), midi=(), payment=(), usb=()"
+                .parse()
+                .unwrap(),
+        );
+
+    // 7. Content-Security-Policy: Mitigate XSS and injection attacks
+    // Different policies for /docs (allows Swagger UI) vs other API endpoints
     let csp = if path == "/docs" {
         // Swagger UI bootstraps via an inline <script> and loads the library
         // assets from unpkg.com, so the docs policy must permit both
@@ -626,5 +673,118 @@ mod tests {
         assert!(!headers.get("X-Frame-Options").unwrap().is_empty());
         assert!(!headers.get("Referrer-Policy").unwrap().is_empty());
         assert!(!headers.get("Content-Security-Policy").unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_hsts_header_present() {
+        let app = setup_security_test_app().await;
+
+        let response = app
+            .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        // Verify Strict-Transport-Security (HSTS) header is present and correct
+        let hsts = response
+            .headers()
+            .get("Strict-Transport-Security")
+            .expect("HSTS header missing");
+        assert_eq!(
+            hsts.to_str().unwrap(),
+            "max-age=31536000; includeSubDomains; preload"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_xss_protection_header_present() {
+        let app = setup_security_test_app().await;
+
+        let response = app
+            .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        // Verify X-XSS-Protection header is present for legacy browser support
+        let xss_protection = response
+            .headers()
+            .get("X-XSS-Protection")
+            .expect("X-XSS-Protection header missing");
+        assert_eq!(xss_protection.to_str().unwrap(), "1; mode=block");
+    }
+
+    #[tokio::test]
+    async fn test_permissions_policy_header_present() {
+        let app = setup_security_test_app().await;
+
+        let response = app
+            .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        // Verify Permissions-Policy header is present and restricts features
+        let perms_policy = response
+            .headers()
+            .get("Permissions-Policy")
+            .expect("Permissions-Policy header missing");
+        let policy_str = perms_policy.to_str().unwrap();
+
+        // Verify that powerful features are restricted
+        assert!(policy_str.contains("accelerometer=()"));
+        assert!(policy_str.contains("camera=()"));
+        assert!(policy_str.contains("microphone=()"));
+        assert!(policy_str.contains("geolocation=()"));
+        assert!(policy_str.contains("payment=()"));
+    }
+
+    #[tokio::test]
+    async fn test_owasp_security_headers_comprehensive() {
+        let app = setup_security_test_app().await;
+
+        let response = app
+            .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        let headers = response.headers();
+
+        // OWASP API Security Top 10 headers check
+        // 1. X-Content-Type-Options: Prevent MIME sniffing
+        assert_eq!(
+            headers.get("X-Content-Type-Options"),
+            Some(&HeaderValue::from_static("nosniff"))
+        );
+
+        // 2. X-Frame-Options: Prevent clickjacking
+        assert_eq!(
+            headers.get("X-Frame-Options"),
+            Some(&HeaderValue::from_static("DENY"))
+        );
+
+        // 3. Content-Security-Policy: Prevent XSS
+        assert!(headers
+            .get("Content-Security-Policy")
+            .is_some_and(|v| !v.is_empty()));
+
+        // 4. Strict-Transport-Security: Enforce HTTPS
+        assert!(headers
+            .get("Strict-Transport-Security")
+            .is_some_and(|v| v.to_str().unwrap().contains("max-age")));
+
+        // 5. Referrer-Policy: Prevent information leakage
+        assert_eq!(
+            headers.get("Referrer-Policy"),
+            Some(&HeaderValue::from_static("no-referrer"))
+        );
+
+        // 6. X-XSS-Protection: Legacy browser XSS protection
+        assert_eq!(
+            headers.get("X-XSS-Protection"),
+            Some(&HeaderValue::from_static("1; mode=block"))
+        );
+
+        // 7. Permissions-Policy: Control browser features
+        assert!(headers
+            .get("Permissions-Policy")
+            .is_some_and(|v| !v.is_empty()));
     }
 }
