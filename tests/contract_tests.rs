@@ -3,6 +3,7 @@
 /// ensuring requests and responses conform to agreed-upon schemas.
 
 use serde_json::{json, Value};
+use chrono::DateTime;
 
 /// Contract for GET /v1/events endpoint
 mod events_contract {
