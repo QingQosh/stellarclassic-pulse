@@ -8,6 +8,7 @@ The email notification feature allows operators to receive email alerts when spe
 - **Contract Filtering**: Optional filtering to only receive notifications for specific contracts
 - **SMTP Support**: Works with any SMTP server (Gmail, SendGrid, AWS SES, etc.)
 - **Multiple Recipients**: Send notifications to multiple email addresses
+- **Unsubscribe Links**: Every email carries a per-recipient unsubscribe link and a `List-Unsubscribe` header (CAN-SPAM / GDPR). Opted-out recipients are skipped on subsequent sends.
 - **Secure**: SMTP credentials are never logged or exposed in metrics
 
 ## Configuration
@@ -26,10 +27,17 @@ Email notifications are configured via environment variables:
 - `EMAIL_SMTP_USER`: SMTP authentication username (required by most servers)
 - `EMAIL_SMTP_PASSWORD`: SMTP authentication password (required by most servers)
 - `EMAIL_CONTRACT_FILTER`: Comma-separated list of contract IDs to filter notifications
-- `EMAIL_SCHEDULE`: Delivery schedule — `immediate` (default), `hourly_digest`, `daily_digest`, or `custom_cron`. See [Notification Scheduling](#notification-scheduling).
-- `EMAIL_DAILY_DIGEST_HOUR`: UTC hour (0–23) for `daily_digest` delivery (default: `9`)
-- `EMAIL_CRON`: Cron expression used when `EMAIL_SCHEDULE=custom_cron`
-- `EMAIL_QUIET_HOURS_START` / `EMAIL_QUIET_HOURS_END`: UTC `HH:MM` quiet-hours window during which delivery is suppressed
+- `EMAIL_PUBLIC_BASE_URL`: Public base URL used to build unsubscribe links (e.g. `https://pulse.example.com`). Defaults to `http://localhost:<PORT>` when unset.
+
+## Unsubscribing
+
+Each notification email includes an unsubscribe link of the form
+`<EMAIL_PUBLIC_BASE_URL>/unsubscribe?token=<token>` and a matching
+`List-Unsubscribe` header. The `/unsubscribe` endpoint is public (no API key
+required). Visiting it records the recipient's opt-out, and no further emails
+are sent to that address. The action is idempotent — re-visiting the link is
+safe. Set `EMAIL_PUBLIC_BASE_URL` to a publicly reachable URL so recipients can
+actually open the link.
 
 ## Example Configuration
 
@@ -151,6 +159,37 @@ EMAIL_QUIET_HOURS_END=07:00
 ```
 
 The window may wrap past midnight (as above). The start time is inclusive and the end time is exclusive. Setting both bounds equal (or omitting either) disables quiet hours.
+## HTML Emails
+
+Issue #482: By default emails are sent as plain text. For non-technical stakeholders, Soroban Pulse can also render a formatted HTML email using a [Handlebars](https://handlebarsjs.com/) template.
+
+### Configuration
+
+Set `EMAIL_FORMAT` to choose the body format:
+
+| Value | Behavior |
+|-------|----------|
+| `text` (default) | Plain-text body only |
+| `html` | HTML body only |
+| `both` | `multipart/alternative` message containing **both** plain-text and HTML parts; the recipient's client renders whichever it supports |
+
+```bash
+EMAIL_FORMAT=both
+EMAIL_API_BASE_URL=https://pulse.your-domain.com
+```
+
+### What the HTML email contains
+
+- A summary table of events grouped by contract
+- **Color-coded event-type badges** (e.g. `contract`, `system`, `diagnostic` each get a distinct color)
+- Formatted timestamps (ledger close time)
+- **Clickable links**: each contract links to its event-history endpoint and each transaction hash links to its event lookup, built from `EMAIL_API_BASE_URL`
+
+The HTML template lives at `notification_templates/email.html.hbs` and is embedded into the binary at compile time. All event values are HTML-escaped to prevent markup injection.
+
+### Compatibility
+
+The template uses table-based layout and inline styles for broad compatibility with major email clients including Gmail, Outlook, and Apple Mail. When `EMAIL_FORMAT=both`, clients that cannot render HTML fall back to the plain-text part automatically.
 
 ## Batching Behavior
 
