@@ -423,6 +423,19 @@ mod tests {
     }
 
     #[test]
+    fn test_sender_domain_extraction() {
+        assert_eq!(
+            sender_domain("pulse@example.com").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            sender_domain("Soroban Pulse <pulse@mail.example.com>").as_deref(),
+            Some("mail.example.com")
+        );
+        assert_eq!(sender_domain("trailing@").as_deref(), None);
+    }
+
+    #[test]
     fn test_email_notifier_creation() {
         let pool = sqlx::PgPool::connect_lazy("postgres://localhost/unused").unwrap();
         let notifier = EmailNotifier::new(
