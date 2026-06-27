@@ -1,226 +1,370 @@
-# System Architecture
+# SorobanPulse Architecture
 
-## Overview
+This document provides a comprehensive overview of the SorobanPulse system architecture, including component interactions, data flow, and integration patterns.
 
-Soroban Pulse is a lightweight Rust backend service that indexes Soroban smart contract events on the Stellar network and exposes them via a REST API with real-time streaming capabilities.
+## System Architecture Overview
 
-## Architecture Diagram
+SorobanPulse is a high-performance event indexing and notification system for the Stellar blockchain. It monitors smart contract events through the Stellar RPC, indexes them into a PostgreSQL database, and delivers real-time notifications to subscribers via multiple channels.
 
 ```mermaid
 graph TB
     subgraph Stellar["Stellar Network"]
-        RPC["Soroban RPC Node<br/>soroban-testnet.stellar.org"]
+        RPC["Stellar RPC<br/>(testnet/public)"]
+        SC["Smart Contracts<br/>(Soroban)"]
     end
 
-    subgraph Indexer["Indexer Service"]
-        IndexWorker["Event Polling Worker<br/>Fetches ledger events"]
-        AdvisoryLock["Multi-Replica<br/>Advisory Lock"]
-        IndexWorker -->|Acquires lock| AdvisoryLock
+    subgraph Core["SorobanPulse Core"]
+        IDX["Indexer Service<br/>(Event Processor)"]
+        API["REST API<br/>(Axum)"]
+        SSE["Server-Sent Events<br/>(Real-time Stream)"]
     end
 
-    subgraph Database["PostgreSQL Database"]
-        EventTable["Events Table<br/>event_id, contract_id, etc"]
-        SubscriptionTable["Subscriptions<br/>filters, endpoints"]
-        WebhookTable["Webhook Queue<br/>delivery status"]
-        IndexTable["Indexes<br/>contract_id, timestamp"]
-        EventTable --- SubscriptionTable
-        EventTable --- WebhookTable
-        EventTable --- IndexTable
+    subgraph Data["Data Layer"]
+        POSTGRES["PostgreSQL Database<br/>(Event Storage)"]
+        CACHE["In-Memory Cache<br/>(Moka)"]
     end
 
-    subgraph API["REST API & SSE"]
-        QueryHandler["Query Handler<br/>pagination, filters"]
-        SSEHandler["SSE Handler<br/>real-time streams"]
-        WebhookDispatcher["Webhook Dispatcher<br/>delivery retry logic"]
-        QueryHandler --> Database
-        SSEHandler --> Database
-        WebhookDispatcher --> Database
+    subgraph Notification["Notification System"]
+        NOTIF["Notification Engine<br/>(Multi-channel)"]
+        EMAIL["Email<br/>(Lettre)"]
+        WEBHOOK["Webhooks<br/>(HTTP)"]
+        SMS["SMS<br/>(Twilio)"]
+        PAGERDUTY["PagerDuty<br/>(Alerts)"]
     end
 
-    subgraph Clients["Clients & SDKs"]
-        WebClient["Web Clients"]
-        SDKClient["SDK Consumers"]
-        WebhookConsumers["Webhook Consumers"]
+    subgraph Stream["Streaming Services"]
+        KINESIS["AWS Kinesis<br/>(Optional)"]
+        PUBSUB["GCP Pub/Sub<br/>(Optional)"]
+        KAFKA["Kafka<br/>(Optional)"]
     end
 
-    RPC -->|Event Data| IndexWorker
-    IndexWorker -->|Insert/Update| EventTable
-    QueryHandler -->|HTTP REST| WebClient
-    SSEHandler -->|WebSocket SSE| WebClient
-    SSEHandler -->|WebSocket SSE| SDKClient
-    WebhookDispatcher -->|HTTP POST| WebhookConsumers
+    subgraph SDK["Client SDKs"]
+        RSSDK["Rust SDK"]
+        JSSDK["JavaScript SDK"]
+        PYSDK["Python SDK"]
+    end
 
-    style RPC fill:#4A90E2
-    style IndexWorker fill:#7ED321
-    style AdvisoryLock fill:#F5A623
-    style QueryHandler fill:#4A90E2
-    style SSEHandler fill:#4A90E2
-    style WebhookDispatcher fill:#F5A623
-    style EventTable fill:#9013FE
-    style Clients fill:#50E3C2
+    RPC -->|Block Transactions| IDX
+    SC -->|Smart Contract Events| RPC
+    IDX -->|Parse & Index| POSTGRES
+    IDX -->|Cache Contracts| CACHE
+    POSTGRES -->|Query| API
+    API -->|Subscribe| SSE
+    POSTGRES -->|Events| NOTIF
+    NOTIF -->|Send| EMAIL
+    NOTIF -->|Send| WEBHOOK
+    NOTIF -->|Send| SMS
+    NOTIF -->|Alert| PAGERDUTY
+    NOTIF -->|Stream| KINESIS
+    NOTIF -->|Stream| PUBSUB
+    NOTIF -->|Stream| KAFKA
+    API -->|REST| RSSDK
+    SSE -->|Stream| JSSDK
+    WEBHOOK -->|Payload| SDK
+
+    style Stellar fill:#1f71f0
+    style Core fill:#06d6a0
+    style Data fill:#f76707
+    style Notification fill:#e63946
+    style Stream fill:#9d4edd
+    style SDK fill:#00b4d8
 ```
 
-## Core Components
+## Component Descriptions
 
-### 1. Stellar RPC Integration
-- **Soroban RPC Node**: Primary event source from the Stellar network
-- Configured via `STELLAR_RPC_URL` environment variable
-- Defaults to testnet: `https://soroban-testnet.stellar.org`
+### Stellar Integration Layer
 
-### 2. Indexer Worker
-- **Location**: `src/indexer.rs`
-- **Functionality**:
-  - Continuously polls Soroban RPC for new contract events
-  - Processes events in batches for efficiency
-  - Implements exponential backoff for network failures
-  - Tracks last processed ledger to resume gracefully
+**Stellar RPC**
+- Connects to Stellar's RPC endpoints (testnet or public network)
+- Fetches ledgers and transactions containing smart contract events
+- Provides XDR-encoded contract invocation data
 
-### 3. Multi-Replica Advisory Lock Mechanism
-- **Purpose**: Prevents multiple instances from indexing simultaneously
-- **Implementation**: PostgreSQL advisory locks
-- **Configuration**:
-  - `INDEXER_LOCK_RETRY_SECS`: Retry interval for standby replicas (default: 30 seconds)
-- **Flow**:
-  1. Primary replica acquires advisory lock on startup
-  2. Standby replicas wait for lock release
-  3. On primary failure, standby acquires lock and takes over
-  4. Lock is held for the duration of the indexing process
+### Indexer Service
 
-### 4. PostgreSQL Database
-- **Schema**: See [docs/schema.md](schema.md)
-- **Key Tables**:
-  - `events`: Indexed contract events
-  - `subscriptions`: User-created filter subscriptions
-  - `webhook_queue`: Pending webhook deliveries
-  - `notification_queue`: Processed notifications
-- **Indexes**: Optimized for high-cardinality lookups (contract_id, timestamp)
+The Indexer is the heart of SorobanPulse, responsible for:
 
-### 5. REST API & SSE
-- **Location**: `src/routes.rs`, `src/handlers.rs`
-- **Query Handler**:
-  - Supports pagination with cursor-based or offset navigation
-  - Filter validation with regex and bloom filters
-  - Timestamp range filtering
-  - Response caching headers
+1. **Event Polling**: Continuously polls Stellar RPC for new blocks
+2. **XDR Parsing**: Parses XDR-encoded contract invocation data
+3. **Event Extraction**: Extracts contract events and their parameters
+4. **Deduplication**: Uses Bloom filters to prevent processing duplicate events
+5. **Content Filtering**: Applies user-defined filters to events
+6. **Transformation**: Applies Lua transformations for custom processing
+7. **Storage**: Persists events to PostgreSQL
 
-- **SSE Handler** (Server-Sent Events):
-  - Real-time event streaming for connected clients
-  - Keep-alive pings every `SSE_KEEPALIVE_SECS` (default: 15 seconds)
-  - Subscription filtering applied per-connection
-  - Automatic reconnection support
+### API Layer
 
-- **Webhook Dispatcher**:
-  - Delivers events to registered webhook endpoints
-  - Retry logic with exponential backoff
-  - HMAC-SHA256 signature verification for authenticity
-  - Configurable timeout and concurrency limits
+The REST API provides:
+- Event querying with pagination and filtering
+- Subscription management
+- Webhook configuration
+- Real-time SSE streaming
+- Administrative endpoints
 
-### 6. Authentication & Rate Limiting
-- **API Key Authentication**: Optional via `API_KEY` environment variable
-- **Admin Authentication**: Separate `ADMIN_API_KEY` for protected endpoints
-- **Rate Limiting**: Per-IP per-minute limits (configurable via `RATE_LIMIT_PER_MINUTE`)
+**Key Technologies**:
+- **Framework**: Axum web framework
+- **Database**: SQLx for type-safe queries
+- **Validation**: OpenAPI/Swagger documentation
+
+### Data Layer
+
+**PostgreSQL Database**
+- Stores indexed events
+- Maintains subscription and webhook metadata
+- Stores notification delivery logs
+- Supports full-text search and complex queries
+
+**In-Memory Cache (Moka)**
+- Caches smart contract metadata
+- Reduces database load for frequently accessed contracts
+- Configurable TTL for cache invalidation
+
+### Notification System
+
+Multi-channel notification delivery with:
+
+1. **Email Notifications** (Lettre)
+   - SMTP integration with DKIM signing
+   - SPF/DKIM/DMARC validation
+   - HTML and plain-text templates
+   - Multi-language support (Handlebars)
+
+2. **Webhooks**
+   - HTTP POST delivery with retry logic
+   - HMAC signature verification
+   - Custom headers and payload transformation
+   - Rate limiting per webhook
+
+3. **SMS Notifications** (Twilio)
+   - Short-form messages for critical alerts
+   - Character limit optimization
+
+4. **PagerDuty Integration**
+   - Incident creation for critical events
+   - On-call escalation support
+
+5. **Streaming Services**
+   - AWS Kinesis for high-throughput streaming
+   - GCP Pub/Sub for multi-region delivery
+   - Kafka for self-hosted deployments
 
 ## Event Flow
 
+```mermaid
+sequenceDiagram
+    participant RPC as Stellar RPC
+    participant IDX as Indexer Service
+    participant DB as PostgreSQL
+    participant API as REST API
+    participant NOTIF as Notification Engine
+    participant DEST as Notification Destination
+
+    RPC->>IDX: New Block with Contract Events
+    IDX->>IDX: Parse XDR
+    IDX->>IDX: Extract Contract Events
+    IDX->>IDX: Apply Content Filters
+    IDX->>IDX: Deduplicate (Bloom Filter)
+    IDX->>DB: Store Events
+    DB->>API: Event Available
+    API->>API: Notify Subscribers (SSE)
+    DB->>NOTIF: Event Matches Subscription
+    NOTIF->>NOTIF: Format Message
+    NOTIF->>NOTIF: Apply Rate Limiting
+    NOTIF->>DEST: Send Notification
+    DEST-->>NOTIF: Delivery Status
+    NOTIF->>DB: Log Delivery
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    EVENT LIFECYCLE                          │
-├─────────────────────────────────────────────────────────────┤
-│                                                              │
-│  1. [Stellar RPC] Emits contract event                      │
-│     ↓                                                        │
-│  2. [Indexer] Polls and detects new event                  │
-│     ↓                                                        │
-│  3. [Advisory Lock] Ensures single writer (multi-replica)  │
-│     ↓                                                        │
-│  4. [Database] Stores event (if not duplicate)             │
-│     ↓                                                        │
-│  5. [Content Filter] Applies subscription filters          │
-│     ↓                                                        │
-│  6a. [SSE] Pushes to real-time subscribers                 │
-│  6b. [Webhook] Queues for async delivery                   │
-│  6c. [REST] Available for query via API                    │
-│                                                              │
-└─────────────────────────────────────────────────────────────┘
+
+## Multi-Replica Advisory Lock Mechanism
+
+For systems with multiple SorobanPulse instances, advisory locks prevent duplicate event processing:
+
+```mermaid
+graph LR
+    IDX1["Indexer Instance 1"]
+    IDX2["Indexer Instance 2"]
+    IDX3["Indexer Instance 3"]
+    DB["PostgreSQL<br/>(Advisory Lock)"]
+
+    IDX1 -->|Acquire Lock| DB
+    IDX2 -->|Request Lock| DB
+    IDX3 -->|Request Lock| DB
+    DB -->|Granted| IDX1
+    DB -->|Waiting| IDX2
+    DB -->|Waiting| IDX3
+    IDX1 -->|Process Block 12345| DB
+    IDX1 -->|Release Lock| DB
+    DB -->|Granted| IDX2
+    IDX2 -->|Process Block 12346| DB
+    IDX2 -->|Release Lock| DB
+    DB -->|Granted| IDX3
+    IDX3 -->|Process Block 12347| DB
+
+    style IDX1 fill:#06d6a0
+    style IDX2 fill:#ffd60a
+    style IDX3 fill:#fd7792
 ```
+
+**How It Works**:
+1. Each indexer attempts to acquire an exclusive lock on a block sequence number
+2. Only one instance can hold the lock at a time
+3. The lock holder processes that block and its events
+4. After processing, the lock is released
+5. The next waiting instance acquires the lock and processes the next block
+6. This ensures exactly-once event processing across replicas
+
+## Subscription and Webhook Delivery
+
+```mermaid
+graph TB
+    USER["User"]
+    API["REST API"]
+    DB["PostgreSQL"]
+    WH["Webhook Manager"]
+    RETRY["Retry Queue"]
+    DEST["Webhook Endpoint"]
+
+    USER -->|Create Subscription| API
+    USER -->|Add Webhook| API
+    API -->|Store Config| DB
+    DB -->|Event Matches Filter| WH
+    WH -->|Create Delivery Task| RETRY
+    RETRY -->|Attempt 1| DEST
+    DEST -->|Timeout/5xx| RETRY
+    RETRY -->|Wait + Backoff| RETRY
+    RETRY -->|Attempt 2| DEST
+    DEST -->|Success| DB
+    DB -->|Log Delivery| DB
+
+    style USER fill:#e0aaff
+    style API fill:#06d6a0
+    style WH fill:#e63946
+    style DEST fill:#00b4d8
+```
+
+**Delivery Guarantees**:
+- **At-least-once delivery**: Retries with exponential backoff
+- **Idempotency**: Webhook payloads include unique event IDs
+- **Ordering**: Events are delivered in ledger sequence order per subscription
+- **Rate limiting**: Per-webhook throughput limits prevent overwhelming endpoints
 
 ## Deployment Architecture
 
-### Local Development
+```mermaid
+graph TB
+    subgraph K8s["Kubernetes Cluster"]
+        INGRESS["Ingress Controller<br/>(TLS/HTTP)"]
+        POD1["SorobanPulse Pod 1"]
+        POD2["SorobanPulse Pod 2"]
+        POD3["SorobanPulse Pod 3"]
+    end
+
+    subgraph External["External Services"]
+        PGDB["PostgreSQL<br/>(CloudSQL/RDS)"]
+        CACHE["Redis<br/>(Optional)"]
+    end
+
+    subgraph RPC["Stellar RPC"]
+        TESTNET["Testnet RPC"]
+        PUBLIC["Public Network RPC"]
+    end
+
+    INGRESS -->|/api/*| POD1
+    INGRESS -->|/api/*| POD2
+    INGRESS -->|/api/*| POD3
+    POD1 -->|Query| PGDB
+    POD2 -->|Query| PGDB
+    POD3 -->|Query| PGDB
+    POD1 -->|Cache| CACHE
+    POD2 -->|Cache| CACHE
+    POD3 -->|Cache| CACHE
+    POD1 -->|Poll| TESTNET
+    POD2 -->|Poll| PUBLIC
+    POD3 -->|Poll| PUBLIC
+
+    style K8s fill:#e8f4f8
+    style External fill:#fff3e0
+    style RPC fill:#1f71f0
 ```
-Developer Machine
-├── PostgreSQL (Docker)
-├── Soroban Pulse Binary
-├── .env configuration
-└── REST API on :3000
+
+## Technology Stack
+
+| Component | Technology | Purpose |
+|-----------|-----------|---------|
+| Language | Rust | Performance & type safety |
+| Web Framework | Axum | HTTP server & routing |
+| Database | PostgreSQL | Event storage & subscriptions |
+| ORM | SQLx | Type-safe SQL queries |
+| Cache | Moka | In-memory contract metadata cache |
+| Logging | Tracing | Structured logging |
+| Metrics | Prometheus | System observability |
+| OpenTelemetry | OpenTelemetry | Distributed tracing |
+| Email | Lettre | SMTP notifications |
+| Streaming | Kinesis/Pub/Sub | High-throughput event streaming |
+| Scripting | Lua/MLua | Event transformation |
+| Bloom Filter | bloomfilter | Deduplication |
+| Validation | jsonschema | Event schema validation |
+
+## Scaling Considerations
+
+### Horizontal Scaling
+
+1. **Stateless API Pods**: Deploy multiple API instances behind a load balancer
+2. **Distributed Indexing**: Use advisory locks to safely scale indexer instances
+3. **Database Pooling**: Connection pooling with PgBouncer for high concurrency
+
+### Performance Optimization
+
+1. **Event Batching**: Process events in configurable batch sizes
+2. **Index Optimization**: Database indexes on frequently filtered columns
+3. **Cache Strategy**: Smart caching of contract metadata with TTL
+4. **Compression**: GZIP compression for large response payloads
+
+### Resilience
+
+1. **Retry Logic**: Exponential backoff for transient failures
+2. **Circuit Breakers**: Fail-fast on persistent external service failures
+3. **Health Checks**: Liveness and readiness probes for orchestration
+4. **Graceful Shutdown**: Complete in-flight requests before terminating
+
+## Security Architecture
+
+```mermaid
+graph LR
+    CLIENT["Client"]
+    TLS["TLS/HTTPS"]
+    API["API Server"]
+    AUTH["Auth Layer"]
+    DB["Database"]
+    VAULT["Secrets Vault"]
+
+    CLIENT -->|Encrypted| TLS
+    TLS -->|Decrypt| API
+    API -->|Verify Token| AUTH
+    AUTH -->|Get Secret| VAULT
+    VAULT -->|Return Secret| AUTH
+    AUTH -->|Proceed| API
+    API -->|Encrypted Connection| DB
 ```
 
-### Production (Kubernetes)
-- **High Availability**: 2-3 replicas with load balancer
-- **Database**: Managed PostgreSQL with automated backups
-- **Indexer**: Single active replica (advisory lock based)
-- **API**: Stateless, horizontally scalable
-- **Metrics**: Prometheus scraping on `/metrics`
-- **Health Checks**: `/health` and `/healthz/*` endpoints
+**Security Features**:
+- TLS 1.3 for all external connections
+- JWT token validation for API endpoints
+- HMAC signature verification for webhooks
+- Secrets encryption at rest
+- Rate limiting to prevent abuse
+- Input validation for all user inputs
 
-## Performance Considerations
+## Future Architecture Enhancements
 
-### Pagination
-- **Cursor-based**: Efficient for large result sets
-- **Offset-based**: Simple but slower for large offsets
-- Default page size: 100 events (configurable)
-- **Property-based testing**: See Issue #554
+1. **GraphQL API**: Alternative to REST for flexible querying
+2. **Event Sourcing**: Event-driven architecture for audit trails
+3. **Sharding**: Horizontal partition of events for extreme scale
+4. **Machine Learning**: Anomaly detection for event patterns
+5. **Multi-chain**: Support for additional blockchain networks
 
-### Indexing Strategy
-- Events indexed on `contract_id`, `timestamp`, `event_id`
-- Bloom filters for deduplication (Issue #266)
-- Regular index usage monitoring (`INDEX_CHECK_INTERVAL_HOURS`)
+## References
 
-### Rate Limiting
-- Token-bucket algorithm per IP
-- Per-channel notification throttling (Issue #476)
-- Governor library for efficient rate limit enforcement
-
-### Slow Query Logging
-- Queries exceeding `SLOW_QUERY_THRESHOLD_MS` logged at WARN level
-- Tracked in metrics for performance monitoring
-
-## Testing & Quality Assurance
-
-### Test Suites
-1. **Unit Tests**: Individual module functionality
-2. **Integration Tests**: Database and API interactions
-3. **Property-Based Tests**: Edge case discovery via `proptest` (Issue #554)
-4. **Mutation Testing**: Test quality verification via `cargo-mutants` (Issue #555)
-5. **Contract Tests**: API contract verification with Pact (Issue #556)
-
-See [Testing & Quality Assurance](#testing--quality-assurance) in the respective issues for detailed implementation.
-
-## Configuration
-
-All configuration is environment-driven. See the main [README.md](../README.md) for the complete list of environment variables and their descriptions.
-
-Key architectural settings:
-- `DATABASE_URL`: PostgreSQL connection string
-- `STELLAR_RPC_URL`: Soroban RPC endpoint
-- `INDEXER_LOCK_RETRY_SECS`: Multi-replica lock retry interval
-- `SSE_KEEPALIVE_SECS`: Server-sent events keep-alive interval
-- `SLOW_QUERY_THRESHOLD_MS`: Slow query logging threshold
-
-## Security
-
-- **XDR Validation**: Stellar XDR envelope validation (Issue #267)
-- **HMAC Verification**: Webhook signature validation using HMAC-SHA256
-- **Encryption**: AES-GCM for sensitive data at rest (optional feature)
-- **Input Validation**: Schema validation for all API inputs
-- **SQL Injection Prevention**: Parameterized queries via SQLx
-
-## Related Issues & Features
-
-- **Issue #266**: Bloom filter deduplication
-- **Issue #267**: XDR validation
-- **Issue #476**: Token-bucket rate limiting for per-channel notification throttling
-- **Issue #553**: Architecture diagram (this document)
-- **Issue #554**: Property-based testing with proptest
-- **Issue #555**: Mutation testing for quality assurance
-- **Issue #556**: API contract tests with Pact
+- [Stellar Developer Documentation](https://developers.stellar.org/)
+- [Soroban Smart Contracts](https://soroban.stellar.org/)
+- [Kubernetes Best Practices](https://kubernetes.io/docs/concepts/configuration/overview/)
+- [PostgreSQL Performance Tuning](https://www.postgresql.org/docs/current/performance-tips.html)

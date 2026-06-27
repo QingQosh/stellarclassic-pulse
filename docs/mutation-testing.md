@@ -1,38 +1,69 @@
-# Mutation Testing Guide
+# Mutation Testing Guide (Issue #555)
 
 ## Overview
 
-**Mutation testing** is a quality assurance technique that evaluates the effectiveness of your test suite. It works by:
+Mutation testing is a software testing technique that measures the quality of test suites by introducing intentional bugs (mutations) into the code and checking if the tests catch them. A good test suite will "kill" (detect) most mutations.
 
-1. Making small changes (mutations) to your source code
-2. Running your tests against the mutated code
-3. Checking if tests catch (kill) the mutations
+## What is Mutation Testing?
 
-If a test suite fails to catch a mutation, it indicates **weak test coverage** for that code path.
+Mutation testing answers the question: **"How many bugs can our tests detect?"**
 
-### Why Mutation Testing?
+### How It Works
 
-Traditional code coverage (line coverage, branch coverage) only measures if code is **executed**, not whether it's **correctly validated** by tests:
+1. **Generate Mutations**: Tool modifies source code (change `>` to `<`, `+` to `-`, etc.)
+2. **Run Tests**: Execute test suite against mutated code
+3. **Analyze Results**: 
+   - **Killed mutation**: Tests caught the bug ✅
+   - **Survived mutation**: Tests missed the bug ❌
+   - **Skipped mutation**: Code not covered by tests
 
+### Simple Example
+
+**Original code**:
 ```rust
-fn abs(x: i32) -> i32 {
-    if x < 0 { -x } else { x }
+fn validate_page(page: i64) -> bool {
+    page > 0  // Must be positive
+}
+```
+
+**Mutation 1** - Operator change:
+```rust
+fn validate_page(page: i64) -> bool {
+    page >= 0  // This is wrong but might still pass tests
+}
+```
+
+**Mutation 2** - Boundary value:
+```rust
+fn validate_page(page: i64) -> bool {
+    page > 1  // Wrong boundary
+}
+```
+
+**Good tests catch these mutations**:
+```rust
+#[test]
+fn page_zero_is_invalid() {
+    assert!(!validate_page(0));  // Catches both mutations
 }
 
 #[test]
-fn test_abs() {
-    assert_eq!(abs(5), 5);  // Tests positive path
+fn page_one_is_valid() {
+    assert!(validate_page(1));  // Catches mutation 2
 }
-// This has 100% line coverage but doesn't test x < 0 logic!
 ```
 
-Mutation testing catches this by mutating the condition:
-```rust
-// Mutation 1: if x > 0  // SURVIVES (not killed) → test is weak
-// Mutation 2: if x <= 0  // SURVIVES → test is weak
-```
+## Tool: cargo-mutants
 
-## Quick Start
+We use [cargo-mutants](https://mutants.live), a Rust mutation testing tool that:
+
+- **Integrates with Cargo**: No special setup needed
+- **Fast execution**: Parallel testing of multiple mutations
+- **Smart skipping**: Doesn't test unreachable code
+- **HTML reports**: Visual mutation coverage analysis
+- **CI-friendly**: Exit codes and reports for automation
+
+## Installation
 
 ### Install cargo-mutants
 
@@ -40,343 +71,415 @@ Mutation testing catches this by mutating the condition:
 cargo install cargo-mutants
 ```
 
-### Run basic mutation tests
+Requires Rust 1.70+.
+
+### Verify Installation
 
 ```bash
-# Run mutation tests on the entire codebase
-cargo mutants --tests
-
-# Run with verbose output (shows each mutation)
-cargo mutants --tests -v
-
-# Run in parallel with multiple jobs
-cargo mutants --tests --jobs 4
+cargo mutants --version
 ```
 
-### View results
+## Running Mutation Tests
+
+### Basic Usage
 
 ```bash
-# JSON report
-cargo mutants --tests --output mutations.json
-
-# HTML report
-cargo mutants --tests --output mutations.html
-```
-
-## Understanding Mutation Results
-
-### Mutation Status
-
-- **Caught** ✅: Test suite detected the mutation (good)
-- **Survived** ❌: Mutation was not detected by tests (bad - weak coverage)
-- **Unviable** ⚠️: Mutation made code uncompilable
-- **Timeout** ⏱️: Mutation tests took too long
-- **Missed** ⚠️: cargo-mutants couldn't test this mutation
-
-### Example Output
-
-```
-src/models.rs:253: ... (line 253 in models.rs)
-  mutation 1:
-    Caught: changed limit() > clamp(1, 100) to >
-  mutation 2:
-    Survived: changed `page.unwrap_or(1)` to `page.unwrap_or(2)`
-    ^ Weak test: doesn't verify default value
-```
-
-## Using Makefile.mutations
-
-The project includes `Makefile.mutations` for convenient mutation testing:
-
-```bash
-# Install cargo-mutants
-make -f Makefile.mutations mutants-install
-
-# Run mutation tests
-make -f Makefile.mutations mutants
+# Run mutation tests on entire codebase
+cargo mutants
 
 # Run with verbose output
-make -f Makefile.mutations mutants-verbose
+cargo mutants --verbose
 
+# Run with specific output directory
+cargo mutants --output target/mutants-report
+```
+
+### Focused Testing
+
+```bash
+# Test only a specific file
+cargo mutants --file src/handlers.rs
+
+# Test only specific module
+cargo mutants --name handlers
+
+# Test with specific test command
+cargo mutants --test-command "cargo test --lib"
+```
+
+### Performance Options
+
+```bash
+# Limit number of mutations (for quick checks)
+cargo mutants --maximum 50
+
+# Set timeout for tests (seconds)
+cargo mutants --timeout 300
+
+# Use multiple jobs (parallel testing)
+cargo mutants --jobs 4
+
+# Check progress without running tests
+cargo mutants --check-only
+```
+
+### Advanced Options
+
+```bash
+# Generate both HTML and JSON reports
+cargo mutants --generate-json --html
+
+# Keep working directory after test
+cargo mutants --keep-working-directory
+
+# Detailed output for CI
+cargo mutants --verbose --output-json mutants.json
+
+# Stop after first failure
+cargo mutants --fail-fast
+```
+
+## Understanding Results
+
+### Output Format
+
+```
+RESULT: 157 killed, 12 survived, 4 unviable, 2 in progress
+Mutation testing finished
+```
+
+### Result Types
+
+| Type | Meaning | Action |
+|------|---------|--------|
+| **Killed** | Test detected mutation | ✅ Good coverage |
+| **Survived** | Test missed mutation | ❌ Need better tests |
+| **Unviable** | Mutation doesn't compile | ℹ️ Code is untestable |
+| **Error** | Test execution error | ⚠️ Investigate |
+
+### Mutation Score
+
+```
+Mutation Score = Killed / (Killed + Survived) × 100%
+
+Score >= 80%: Excellent test coverage
+Score >= 70%: Good test coverage
+Score >= 50%: Acceptable coverage
+Score < 50%: Needs improvement
+```
+
+## HTML Reports
+
+### Viewing Results
+
+```bash
 # Generate HTML report
-make -f Makefile.mutations mutants-report
+cargo mutants --generate-json --html
 
-# Run only on library code
-make -f Makefile.mutations mutants-lib
-
-# CI-optimized run (uses all cores)
-make -f Makefile.mutations mutants-ci
+# Open report in browser
+open target/mutants/index.html
 ```
 
-## Interpreting Mutation Reports
+### Report Contents
 
-### JSON Report Structure
+- **Summary**: Overall mutation score and statistics
+- **Module breakdown**: Mutation score by module
+- **File view**: Line-by-line mutation coverage
+- **Failed mutations**: Details on survivors
+- **Timing**: How long each mutation took
 
-```json
-{
-  "file": "src/models.rs",
-  "line": 253,
-  "function": "limit",
-  "mutation_type": "BinaryOp",
-  "original": ">",
-  "mutated": ">=",
-  "status": "Caught",
-  "test_output": "assertion failed in test_limit_bounds"
-}
+### Color Coding in Reports
+
+- 🟢 **Green**: All mutations in this section killed
+- 🟡 **Yellow**: Some mutations survived
+- 🔴 **Red**: No mutations killed (untested)
+- 🔵 **Blue**: Unviable mutations (not testable)
+
+## Configuration
+
+### mutants.toml
+
+The project includes a `mutants.toml` configuration file:
+
+```toml
+[mutation]
+paths = ["src/"]
+exclude = ["src/bin/*", "src/main.rs"]
+
+[test]
+test_timeout = 300
+jobs = 4
+
+[output]
+report_dir = "target/mutants"
+html_report = true
+json_report = true
 ```
 
-### HTML Report
+### Environment Variables
 
-Open `mutations.html` in a browser for interactive visualization:
-- Color-coded mutations (green=caught, red=survived)
-- Per-file statistics
-- Survival statistics by mutation type
+```bash
+# Override config settings
+CARGO_MUTANTS_TIMEOUT=600 cargo mutants
+CARGO_MUTANTS_JOBS=8 cargo mutants
+CARGO_MUTANTS_VERBOSE=1 cargo mutants
+```
 
-## Common Mutation Types
+## Test Coverage Strategy
 
-### Arithmetic Operators
-- `+` → `-` | `*` | `/` | `%`
-- `-` → `+` | `*` | `/` | `%`
-- `*` → `/` | `%` | `+` | `-`
+### What Gets Mutated
 
-### Logical Operators
-- `&&` → `||`
-- `||` → `&&`
-- `!` → removed
+Common mutation types:
 
-### Comparison Operators
-- `==` → `!=` | `<` | `<=` | `>` | `>=`
-- `<` → `<=` | `>`
-- `<=` → `<` | `>`
+1. **Arithmetic Operators**: `+` → `-`, `*` → `/`
+2. **Comparison Operators**: `>` → `>=`, `==` → `!=`
+3. **Logical Operators**: `&&` → `||`, `!x` → `x`
+4. **Constants**: `true` → `false`, numeric changes
+5. **Return values**: Last expression changes
+6. **Conditionals**: Condition inverts
 
-### Constant Mutations
-- `0` → `1` | `-1`
-- `1` → `0` | `2`
-- `true` → `false`
-- `false` → `true`
+### What Should Be Tested
 
-## Strengthening Tests Based on Mutation Results
+**High priority** (catch more mutations):
+- Business logic boundaries
+- Error handling paths
+- State transitions
+- Permission checks
+- Data validation
 
-### Example: Weak Pagination Tests
+**Medium priority**:
+- Data transformation
+- Type conversions
+- Configuration loading
+- Logging (hard to test mutations)
 
-**Original test:**
+**Low priority** (mutations hard to catch):
+- Metrics/telemetry
+- Logging details
+- Panic messages
+- Comments
+
+## Example: Improving Coverage
+
+### Scenario: Low Mutation Score
+
+**Module**: `src/handlers.rs`  
+**Score**: 45% (too low)  
+**Survivors**: Boundary conditions in pagination
+
+### Analysis of Survivors
+
 ```rust
-#[test]
-fn test_limit() {
-    let params = PaginationParams { page: None, limit: Some(50) };
-    assert_eq!(params.limit(), 50);
-}
-```
-
-**Problem:** This survives mutations like `clamp(1, 100)` → `clamp(1, 99)`
-
-**Strengthened test:**
-```rust
-#[test]
-fn test_limit_bounds() {
-    // Test exact boundary values
-    assert_eq!(PaginationParams { page: None, limit: Some(1) }.limit(), 1);
-    assert_eq!(PaginationParams { page: None, limit: Some(100) }.limit(), 100);
-    
-    // Test clamping behavior
-    assert_eq!(PaginationParams { page: None, limit: Some(0) }.limit(), 1);
-    assert_eq!(PaginationParams { page: None, limit: Some(101) }.limit(), 100);
-    assert_eq!(PaginationParams { page: None, limit: Some(-1) }.limit(), 1);
-    
-    // Test edge cases
-    assert_eq!(PaginationParams { page: None, limit: None }.limit(), 20);
-}
-```
-
-Or use **property-based tests** for comprehensive coverage:
-```rust
-proptest! {
-    #[test]
-    fn prop_limit_always_in_range(limit in limit_strategy()) {
-        let params = PaginationParams { page: None, limit };
-        let resolved = params.limit();
-        assert!(resolved >= 1 && resolved <= 100);
+// Original code
+pub fn validate_limit(limit: i64) -> Result<i64> {
+    if limit > 10_000 {
+        Err("limit too high")
     }
+    Ok(limit)
 }
+```
+
+**Mutation 1** - Boundary change:
+```rust
+if limit > 9_999  // Survives - no test for exactly 10_000
+```
+
+**Mutation 2** - Operator change:
+```rust
+if limit >= 10_000  // Survives - no test for exactly 10_000
+```
+
+### Solution: Better Tests
+
+```rust
+#[test]
+fn boundary_exactly_ten_thousand() {
+    assert_eq!(validate_limit(10_000), Ok(10_000));
+}
+
+#[test]
+fn boundary_exceeds_limit() {
+    assert!(validate_limit(10_001).is_err());
+}
+
+#[test]
+fn boundary_just_below_limit() {
+    assert_eq!(validate_limit(9_999), Ok(9_999));
+}
+```
+
+Now both mutations are killed ✅
+
+## Continuous Integration
+
+### GitHub Actions
+
+```yaml
+name: Mutation Testing
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - uses: dtolnay/rust-toolchain@stable
+      
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants
+      
+      - name: Run mutation tests
+        run: cargo mutants --output-json mutants.json
+      
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: mutation-report
+          path: target/mutants
+      
+      - name: Check mutation score
+        run: |
+          score=$(jq '.mutation_score_percent' mutants.json)
+          if (( $(echo "$score < 80" | bc -l) )); then
+            echo "Mutation score too low: $score%"
+            exit 1
+          fi
+```
+
+### GitLab CI
+
+```yaml
+mutation_tests:
+  stage: test
+  script:
+    - cargo install cargo-mutants
+    - cargo mutants --output-json mutants.json
+  artifacts:
+    paths:
+      - target/mutants/
+    reports:
+      mutation: mutants.json
+  allow_failure: true
 ```
 
 ## Best Practices
 
-### 1. Run Mutations Regularly
-- **Local:** Before pushing (quick version)
-- **CI:** Full suite on main/develop branches
-- **Scheduled:** Nightly runs to catch regressions
+### ✅ Do's
 
-### 2. Target High-Risk Code
-```bash
-# Run mutations only on core logic
-cargo mutants --tests -p soroban-pulse -- src/models.rs
-cargo mutants --tests -p soroban-pulse -- src/handlers.rs
-```
+- **Run regularly**: Include in CI/CD pipeline
+- **Set target score**: Aim for 80%+ mutation score
+- **Review survivors**: Understand why tests missed mutations
+- **Improve incrementally**: Fix highest-impact survivors first
+- **Track trends**: Monitor mutation score over time
+- **Focus on business logic**: Test critical paths thoroughly
+- **Combine with coverage**: Use with code coverage tools
 
-### 3. Set Reasonable Timeouts
-```bash
-# Default timeout per test is 30 seconds
-cargo mutants --tests --timeout 30
+### ❌ Don'ts
 
-# For slow tests, increase timeout
-cargo mutants --tests --timeout 60
-```
+- **Don't ignore survivors**: They reveal test weaknesses
+- **Don't mark expected survivors**: Only for truly untestable code
+- **Don't rely on mutation alone**: Combine with other testing
+- **Don't test trivial code**: Skip getters, simple wrappers
+- **Don't chase 100%**: Some mutations are inherently untestable
+- **Don't skip specific tests**: Test all modules consistently
 
-### 4. Understand Survivorship
+## Interpreting Survivors
 
-Not all surviving mutations indicate weak tests:
+### When Survivors Are Expected
 
-**Expected survivors** (safe to ignore):
+Some mutations are hard or impossible to catch:
+
 ```rust
-// Redundant code (dead)
-if x > 0 { }
-else if x >= 0 { }  // This branch never executes
+// Logging mutations are hard to test
+tracing::debug!("Processing event {:?}", event);
+// Mutation: tracing::info!(...) - similar effect
 
-// Impossible mutations (unviable)
-let arr = [1, 2, 3];
-arr[1]  // Mutation: arr[0] → Same index, compiler rejects
+// Error messages are untestable
+Err("Invalid input")?;
+// Mutation: Err("Bad input")? - same behavior
 ```
 
-**Unexpected survivors** (investigate):
+### When Survivors Are Problems
+
+These must be fixed:
+
 ```rust
-// Weak test: doesn't validate the returned value
-fn get_name(&self) -> String {
-    self.name.clone()
-}
-
-#[test]
-fn test_get_name() {
-    let obj = Object::new();
-    let _ = obj.get_name();  // MUTATION SURVIVES!
-}
-
-// Fix: Actually assert the value
-#[test]
-fn test_get_name() {
-    let obj = Object::new();
-    assert_eq!(obj.get_name(), "expected");
+// Uncaught boundary mutation
+if amount > 100 {  // Should fail on >= 100 too
+    return Err("Too large");
 }
 ```
 
-### 5. Use Mutation-Driven Testing (MDT)
+## Performance Considerations
 
-MDT is a development practice inspired by Test-Driven Development (TDD):
-
-1. **Write production code**
-2. **Run mutations** → Identify weak spots
-3. **Write tests** to kill mutations
-4. **Refactor** code and tests
+### Speed Optimization
 
 ```bash
-# Flow
-cargo mutants --tests --output mutations.json
-# Review survived mutations
-cargo test  # Write new tests
-cargo mutants --tests  # Verify improvements
+# Quick check - stop after first N mutations killed
+cargo mutants --jobs 8 --maximum 100
+
+# Parallel testing with more jobs
+CARGO_MUTANTS_JOBS=16 cargo mutants
+
+# Use incremental builds
+cargo mutants --keep-working-directory
 ```
 
-## CI Integration
+### Typical Timing
 
-The project uses `.github/workflows/mutation-testing.yml` for automated mutation testing:
-
-```yaml
-# Runs on:
-# - Every push to main/develop
-# - Every PR to main/develop
-# - Nightly at 2 AM UTC
-
-# Generates:
-# - Mutation report (JSON + HTML)
-# - PR comment with summary statistics
-# - Fails CI if coverage drops below 80%
-```
-
-### Viewing CI Results
-
-1. **GitHub Actions:** View raw output in workflow logs
-2. **Artifacts:** Download `mutations.json` and `mutations.html`
-3. **PR Comments:** See summary stats in pull request
-
-## Performance Tuning
-
-### Parallelize Tests
-```bash
-# Use all cores
-cargo mutants --tests --jobs $(nproc)
-
-# Use specific number of cores
-cargo mutants --tests --jobs 4
-```
-
-### Skip Slow Tests
-```bash
-# Skip tests matching a pattern
-cargo mutants --tests --skip-regex 'slow|integration'
-
-# Run only fast tests
-cargo mutants --tests -p soroban-pulse
-```
-
-### Cache Build Artifacts
-```bash
-# Use incremental compilation
-cargo mutants --tests --incremental
-
-# Leverage cargo cache
-CARGO_INCREMENTAL=1 cargo mutants --tests
-```
+- **Small project** (< 100 LOC): 2-5 minutes
+- **Medium project** (1K LOC): 10-30 minutes
+- **Large project** (10K+ LOC): 1-4 hours
 
 ## Troubleshooting
 
-### "Mutation testing takes too long"
+### Issue: Tests Pass on Mutations They Should Fail
 
-**Cause:** Running all mutations on large codebases
+**Cause**: Test doesn't actually verify the mutation  
+**Solution**: Review test assertion, add more specific checks
 
-**Solutions:**
-```bash
-# Run on specific module
-cargo mutants --tests -- src/models.rs
+### Issue: Too Many Unviable Mutations
 
-# Use timeout
-cargo mutants --tests --timeout 20
+**Cause**: Code paths don't compile with certain mutations  
+**Solution**: Normal for generic code - adjust expectations
 
-# Parallelize
-cargo mutants --tests --jobs 8
-```
+### Issue: High Memory Usage
 
-### "Many mutations marked as unviable"
+**Cause**: Running too many parallel jobs  
+**Solution**: Reduce `--jobs` parameter
 
-**Cause:** Code is tightly coupled or impossible to mutate
+### Issue: Timeout Errors
 
-**Solutions:**
-- Review the mutation types being tested
-- Check if code is actually executable
-- Use `--skip-regex` to skip impossible mutations
-
-### "Tests timeout under mutation"
-
-**Cause:** Mutations slow down code (e.g., changing `<` to `<=`)
-
-**Solutions:**
-```bash
-# Increase timeout
-cargo mutants --tests --timeout 60
-
-# Run selectively
-cargo mutants --tests -p soroban-pulse -- src/critical.rs
-```
+**Cause**: Tests taking too long on mutated code  
+**Solution**: Increase `--timeout` or optimize tests
 
 ## Resources
 
-- [cargo-mutants GitHub](https://github.com/sourcefrog/cargo-mutants)
-- [Mutation Testing (Wikipedia)](https://en.wikipedia.org/wiki/Mutation_testing)
-- [Testing Effectiveness (StackOverflow)](https://stackoverflow.com/questions/11656957/mutation-testing)
+- **Official Tool**: https://mutants.live
+- **Documentation**: https://github.com/sourcefrog/cargo-mutants
+- **Research**: https://en.wikipedia.org/wiki/Mutation_testing
+- **Best Practices**: https://mutation-testing.pitest.org/
 
-## Examples in This Project
+## Project Status
 
-See these files for examples of mutation-resistant tests:
+### Current Mutation Testing
 
-- `tests/property_tests.rs` - Property-based tests that catch mutations
-- `src/models.rs` - Boundaries tests in `#[cfg(test)]` modules
-- `tests/search_and_timestamp_tests.rs` - Edge case tests that survive mutations
+- **Status**: Implemented (Issue #555)
+- **Configuration**: `mutants.toml`
+- **Baseline score**: To be determined on first run
+- **Target score**: 80%+
+- **CI Integration**: Configured in GitHub Actions
+
+### Continuous Improvement
+
+- Monitor trends in mutation score
+- Review survivors quarterly
+- Update tests for new features
+- Maintain baseline for regressions

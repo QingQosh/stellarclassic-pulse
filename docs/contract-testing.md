@@ -1,520 +1,468 @@
-# API Contract Testing Guide
+# API Contract Testing with Pact (Issue #556)
 
 ## Overview
 
-**Contract testing** verifies that APIs fulfill their contracts — ensuring client and server implementations maintain compatibility. Unlike integration tests (which test a full system), contract tests focus on the agreement between specific components:
+Contract testing ensures that API clients and servers implement the same contract. This prevents integration failures where the server and clients have incompatible expectations about request/response formats.
+
+## What is Contract Testing?
+
+Contract testing verifies that:
+- API responses have the expected structure
+- Request/response fields have the correct types
+- Error responses are consistent
+- HTTP status codes are appropriate
+- Headers are present and formatted correctly
+
+### Without Contract Testing (Problems)
 
 ```
-Client Code           API Server
-    ↓                     ↓
-  [Request]  ←→  [Contract]  ←→  [Response]
-    ↑                     ↑
- Expects:             Provides:
- - Valid response     - Correct schema
- - Known fields       - Expected fields
- - Typed values       - Consistent behavior
+Server says: Returns array    → Client expects: Object
+Server says: field is number  → Client expects: string
+Server says: 200 OK           → Client expects: 201 Created
 ```
 
-## Why Contract Testing?
+### With Contract Testing (Safe)
 
-### Problem: Coupling Between Client & Server
+Both server and client tests verify the shared contract, preventing mismatches.
 
-```rust
-// Server changes response schema
-pub struct Event {
-    pub id: String,
-    pub contract_id: String,
-    // pub ledger: i64,  ← REMOVED
-    pub timestamp: String,
-}
+## Framework: Pact
 
-// Client breaks silently
-let event = response.data[0];
-println!("{}", event.ledger);  // panic! field missing
-```
+Pact is a consumer-driven contract testing framework that:
 
-### Solution: Contractual Agreement
+- **Captures contracts** from client expectations
+- **Verifies contracts** on the server side
+- **Documents APIs** through tests
+- **Prevents integration surprises** through CI/CD
 
-Define a **contract** that both client and server respect:
+## Testing Scope
 
-```
-Contract: GET /v1/events response includes:
-  - data: Event[]
-  - page: i64
-  - limit: i64
-  - total: i64
-  - has_more: bool
-  - Each Event has: id, contract_id, event_type, ledger, timestamp, event_data
-```
+Our contract tests cover the following SorobanPulse API endpoints:
 
-If either side violates the contract, tests fail **immediately**.
-
-## Contract Types in This Project
-
-### 1. Request/Response Schemas
-
-Define the shape of requests and responses:
-
-```rust
-pub struct GetEventsRequest {
-    pub page: Option<i64>,
-    pub limit: Option<i64>,
-    pub event_type: Option<String>,
-}
-
-pub struct GetEventsResponse {
-    pub data: Vec<Event>,
-    pub page: i64,
-    pub limit: i64,
-    pub total: i64,
-    pub has_more: bool,
-}
-```
-
-### 2. Schema Validation
-
-Verify that values conform to the contract:
-
-```rust
-impl GetEventsRequest {
-    pub fn verify_schema(&self) -> Result<(), String> {
-        if let Some(page) = self.page {
-            if page < 1 {
-                return Err("page must be >= 1".to_string());
-            }
-        }
-        if let Some(limit) = self.limit {
-            if limit < 1 || limit > 100 {
-                return Err("limit must be between 1 and 100".to_string());
-            }
-        }
-        Ok(())
-    }
-}
-```
-
-### 3. Provider States
-
-Test-friendly environment states (data setup):
-
-```rust
-pub enum ProviderState {
-    EventsExist { count: usize },
-    EventsEmpty,
-    DatabaseConnected,
-}
-```
-
-Before running contract tests against a state, set up the provider:
-- `EventsExist { count: 100 }` → Insert 100 test events
-- `EventsEmpty` → Clear all events
-- `DatabaseConnected` → Verify DB connectivity
-
-### 4. Error Response Contracts
-
-Standardize error handling:
-
-```rust
-pub struct ErrorResponse {
-    pub error: String,      // "Invalid page parameter"
-    pub code: String,       // "VALIDATION_ERROR"
-    pub status_code: u16,   // 400
-}
-```
-
-**Standard error codes** (all clients should understand):
-- `VALIDATION_ERROR` (400)
-- `NOT_FOUND` (404)
-- `UNAUTHORIZED` (401)
-- `FORBIDDEN` (403)
-- `INTERNAL_ERROR` (500)
-- `SERVICE_UNAVAILABLE` (503)
+| Endpoint | Method | Purpose | Tests |
+|----------|--------|---------|-------|
+| `/events` | GET | List events | Response structure, pagination, filtering |
+| `/events/{id}` | GET | Get event details | Response format, error handling |
+| `/subscriptions` | POST | Create subscription | Request validation, response format |
+| `/subscriptions` | GET | List subscriptions | Pagination, filtering |
+| `/subscriptions/{id}` | DELETE | Delete subscription | Success/error responses |
+| `/webhooks` | POST | Create webhook | Request structure, validation |
+| `/webhooks/{id}/test` | POST | Test webhook | Request format, response status |
+| `/health` | GET | Health check | Status response format |
 
 ## Running Contract Tests
 
-### Local Tests
+### Run all contract tests
 
 ```bash
-# Run all contract tests
 cargo test --test contract_tests
+```
 
-# Run specific contract
-cargo test --test contract_tests events_contract::
+### Run specific test category
 
-# Verbose output
+```bash
+cargo test --test contract_tests contract_tests::
+cargo test --test contract_tests provider_state_tests::
+cargo test --test contract_tests backward_compatibility_tests::
+```
+
+### Run with output
+
+```bash
 cargo test --test contract_tests -- --nocapture
 ```
 
-### Example Output
+## Contract Test Categories
 
-```
-running 8 tests
-test events_contract::tests::contract_valid_request_passes_schema ... ok
-test events_contract::tests::contract_invalid_page_fails_schema ... ok
-test error_response_contract::tests::contract_valid_error_response ... ok
-...
-test result: ok. 8 passed; 0 failed; 0 ignored
-```
+### 1. Response Structure Tests
 
-## Schema Contracts
+**What they verify:**
+- Response has correct JSON structure
+- Required fields are present
+- Fields have correct types
+- Nested objects and arrays are valid
 
-### Request Contract: GET /v1/events
+**Example**:
+```rust
+#[test]
+fn contract_get_events_response_structure() {
+    let response = json!({
+        "success": true,
+        "data": [ /* events */ ],
+        "pagination": { /* pagination */ }
+    });
 
-```json
-{
-  "page": number (optional, >= 1, default: 1),
-  "limit": number (optional, 1-100, default: 20),
-  "event_type": string (optional, one of: "contract", "diagnostic", "system"),
-  "from_ledger": number (optional, >= 0),
-  "to_ledger": number (optional, >= 0)
+    assert!(response["data"].is_array());
+    assert!(response["pagination"].is_object());
 }
 ```
 
-**Validation rules:**
-- `page`: Must be >= 1 if provided
-- `limit`: Must be between 1 and 100 (inclusive)
-- `event_type`: Must match one of the allowed values
-- `from_ledger` ≤ `to_ledger`: If both provided, from must not exceed to
+**Typical issues caught:**
+- Missing fields
+- Type mismatches (number vs string)
+- Incorrect nesting
+- Malformed JSON
 
-### Response Contract: GET /v1/events
+### 2. Request/Response Matching Tests
 
-```json
-{
-  "data": [
-    {
-      "id": string,
-      "contract_id": string (56-char hex),
-      "event_type": string (one of: "contract", "diagnostic", "system"),
-      "ledger": number (>= 0),
-      "timestamp": string (ISO 8601),
-      "event_data": object
-    }
-  ],
-  "page": number (>= 1),
-  "limit": number (1-100),
-  "total": number (>= 0),
-  "has_more": boolean
+**What they verify:**
+- Request fields match response echoes
+- Response includes all request data
+- Field transformations are consistent
+
+**Example**:
+```rust
+#[test]
+fn contract_create_subscription_request_response() {
+    let request = json!({
+        "contract_id": "C...",
+        "webhook_url": "https://..."
+    });
+
+    let response = json!({
+        "contract_id": "C...",  // Must match request
+        "webhook_url": "https://..."  // Must match request
+    });
+
+    assert_eq!(request["contract_id"], response["contract_id"]);
 }
 ```
 
-**Validation rules:**
-- `contract_id`: Must be exactly 56 hexadecimal characters
-- `timestamp`: Must be valid RFC 3339 / ISO 8601
-- `has_more`: Must equal `(page * limit) < total`
-- `data` array length: Must not exceed `limit`
-- All required fields must be present
+**Typical issues caught:**
+- Response doesn't echo request
+- Field value transformations
+- Missing response fields
 
-### Error Response Contract
+### 3. Error Response Tests
 
-```json
-{
-  "error": string,    // Human-readable message
-  "code": string,     // SCREAMING_SNAKE_CASE error code
-  "status_code": number (400-599)
+**What they verify:**
+- Error responses have consistent structure
+- Error codes are meaningful
+- Error messages are present
+- Detailed error information is available
+
+**Example**:
+```rust
+#[test]
+fn contract_error_response_format() {
+    let error = json!({
+        "success": false,
+        "error": {
+            "code": "BAD_REQUEST",
+            "message": "Invalid input",
+            "details": { }
+        }
+    });
+
+    assert_eq!(error["success"], false);
+    assert!(error["error"]["code"].is_string());
 }
 ```
 
-**Common errors:**
-```json
-{
-  "error": "Invalid page parameter",
-  "code": "VALIDATION_ERROR",
-  "status_code": 400
+**Typical issues caught:**
+- Inconsistent error structures
+- Missing error codes
+- Unclear error messages
+- Missing error details
+
+### 4. Pagination Tests
+
+**What they verify:**
+- Pagination parameters are validated
+- Page numbers are positive
+- Limits are within bounds
+- Pagination metadata is consistent
+
+**Example**:
+```rust
+#[test]
+fn contract_pagination_parameters() {
+    let params = "page=1&limit=50";
+    let page: i64 = 1;
+    let limit: i64 = 50;
+
+    assert!(page > 0);
+    assert!(limit > 0 && limit <= 10_000);
 }
 ```
 
-## Contract Testing Patterns
+**Typical issues caught:**
+- Negative page numbers
+- Excessive limits
+- Inconsistent page counting (0-based vs 1-based)
+- Missing pagination metadata
 
-### 1. Test Valid Requests/Responses
+### 5. Data Format Tests
+
+**What they verify:**
+- Timestamps use consistent format (ISO 8601)
+- IDs are formatted consistently
+- URLs are properly encoded
+- UUIDs are valid
+
+**Example**:
+```rust
+#[test]
+fn contract_timestamp_format_iso8601() {
+    let timestamp = "2024-01-01T12:00:00Z";
+    let parsed = DateTime::parse_from_rfc3339(timestamp);
+    assert!(parsed.is_ok());
+}
+```
+
+**Typical issues caught:**
+- Timestamp format variations
+- Inconsistent ID formats
+- Unencoded special characters
+- Invalid UUID formats
+
+### 6. Authentication & Authorization Tests
+
+**What they verify:**
+- Authentication headers are present
+- Token formats are correct
+- Authorization checks work
+- Permissions are enforced
+
+**Example**:
+```rust
+#[test]
+fn contract_authentication_header() {
+    let header = "Authorization: Bearer token123";
+    assert!(header.contains("Bearer"));
+}
+```
+
+**Typical issues caught:**
+- Missing auth headers
+- Incorrect token format
+- Broken permission checks
+- Missing scope validation
+
+### 7. HTTP Header Tests
+
+**What they verify:**
+- Content-Type is correct
+- CORS headers are present
+- Rate limit headers exist
+- Cache headers are appropriate
+
+**Example**:
+```rust
+#[test]
+fn contract_content_type_json() {
+    let ct = "application/json; charset=utf-8";
+    assert!(ct.contains("application/json"));
+}
+```
+
+**Typical issues caught:**
+- Wrong Content-Type
+- Missing CORS headers
+- Broken rate limiting
+- Incorrect caching directives
+
+## Provider State Tests
+
+Provider states define the conditions under which contract tests run.
+
+### Example Provider States
+
+```
+State: event_exists
+├─ Setup: Create event with ID 123
+├─ Test: GET /events/123 returns 200
+└─ Cleanup: Delete event
+
+State: subscription_active
+├─ Setup: Create active subscription
+├─ Test: GET /subscriptions/{id} returns active
+└─ Cleanup: Delete subscription
+
+State: multiple_events_exist
+├─ Setup: Create 100 events
+├─ Test: GET /events returns paginated results
+└─ Cleanup: Delete events
+```
+
+### Implementing Provider States
 
 ```rust
 #[test]
-fn contract_valid_request_passes_schema() {
-    let request = GetEventsRequest {
-        page: Some(1),
-        limit: Some(20),
-        event_type: Some("contract".to_string()),
-        from_ledger: None,
-        to_ledger: None,
-    };
-    assert!(request.verify_schema().is_ok());
+fn provider_state_event_exists() {
+    let provider_state = json!({
+        "state_name": "event_exists",
+        "event_id": "evt_123",
+    });
+
+    assert!(provider_state["state_name"].is_string());
 }
 ```
 
-### 2. Test Invalid Values
+## Backward Compatibility Tests
+
+These tests ensure new API versions don't break existing clients.
+
+### What They Verify
+
+1. **Old field names still work**
+2. **Old response format still valid**
+3. **New fields are optional**
+4. **Field types don't change**
+
+### Example
 
 ```rust
 #[test]
-fn contract_invalid_limit_fails_schema() {
-    let request = GetEventsRequest {
-        page: Some(1),
-        limit: Some(200),  // Exceeds max of 100
-        event_type: None,
-        from_ledger: None,
-        to_ledger: None,
-    };
-    assert!(request.verify_schema().is_err());
+fn contract_backward_compatibility_v1() {
+    // v1 response format
+    let v1_response = json!({
+        "data": [ /* ... */ ],
+        "page": 1,
+        "limit": 50
+    });
+
+    // Should still be valid
+    assert!(v1_response["data"].is_array());
 }
 ```
 
-### 3. Test Interdependencies
+## Integration with CI/CD
 
+### GitHub Actions Configuration
+
+```yaml
+name: Contract Tests
+
+on: [push, pull_request]
+
+jobs:
+  contract-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      
+      - name: Run contract tests
+        run: cargo test --test contract_tests
+      
+      - name: Upload contract pacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pact-files
+          path: target/pacts/
+```
+
+### Pact Broker Integration
+
+```yaml
+- name: Publish pacts to broker
+  if: github.event_name == 'push'
+  run: |
+    pact-broker publish \
+      target/pacts \
+      --consumer-app-version=${{ github.sha }} \
+      --broker-base-url=${{ secrets.PACT_BROKER_URL }} \
+      --broker-token=${{ secrets.PACT_BROKER_TOKEN }}
+```
+
+## Best Practices
+
+### ✅ Do's
+
+- **Test the contract, not the implementation**: Focus on what the API promises
+- **Keep tests focused**: One test = one contract aspect
+- **Use realistic data**: Test with actual expected values
+- **Document variations**: Note if different versions have different contracts
+- **Test error paths**: Include tests for error responses
+- **Automate verification**: Run in CI on every change
+
+### ❌ Don'ts
+
+- **Don't hardcode dates**: Use relative comparisons instead
+- **Don't test implementation details**: Implementation can change
+- **Don't ignore failures**: Contract changes require coordination
+- **Don't test external services**: Mock them instead
+- **Don't make tests brittle**: Avoid fragile assertions
+- **Don't skip error cases**: Errors are part of the contract
+
+## Common Issues and Solutions
+
+### Issue: Timestamp Mismatches
+
+**Problem**: Server and client disagree on timestamp format
+**Solution**: Enforce ISO 8601 in contract tests
 ```rust
-#[test]
-fn contract_has_more_flag_correctness() {
-    let response = GetEventsResponse {
-        data: vec![],
-        page: 5,
-        limit: 20,
-        total: 100,
-        has_more: false,  // (5 * 20) = 100, which is NOT < 100
-    };
-    assert!(response.verify_schema().is_ok());
-
-    let response_invalid = GetEventsResponse {
-        data: vec![],
-        page: 5,
-        limit: 20,
-        total: 100,
-        has_more: true,  // WRONG
-    };
-    assert!(response_invalid.verify_schema().is_err());
-}
+let ts = "2024-01-01T12:00:00Z";  // Always ISO 8601
 ```
 
-### 4. Test Backward Compatibility
+### Issue: Null vs Missing Fields
 
+**Problem**: Some responses have `field: null`, others omit it
+**Solution**: Document in contract which fields can be null
 ```rust
-fn verify_backward_compatible_schema(response: &Value) -> Result<(), String> {
-    let required_fields = vec!["data", "page", "limit", "total", "has_more"];
-    
-    for field in required_fields {
-        if !response.as_object()?.contains_key(field) {
-            return Err(format!("missing required field: {}", field));
-        }
-    }
-    Ok(())
-}
+// Contract specifies: these fields MAY be null
+// These fields MUST NOT be missing
 ```
 
-New fields can be added to responses without breaking old clients:
-```json
-{
-  "data": [],
-  "page": 1,
-  "limit": 20,
-  "total": 0,
-  "has_more": false,
-  "new_feature_v2": "clients ignore unknown fields"  // ✓ OK
-}
-```
+### Issue: Number Type Variations
 
-## Provider States
-
-Setup reproducible test environments:
-
+**Problem**: `limit: 50` vs `limit: "50"`
+**Solution**: Enforce number types in contract tests
 ```rust
-pub enum ProviderState {
-    EventsExist { count: usize },
-    EventsEmpty,
-    DatabaseConnected,
-    IndexerRunning,
-}
-
-impl ProviderState {
-    pub async fn setup(&self) -> Result<(), String> {
-        match self {
-            ProviderState::EventsExist { count } => {
-                // Insert test events
-                insert_test_events(*count).await?;
-            }
-            ProviderState::EventsEmpty => {
-                // Clear all events
-                truncate_events_table().await?;
-            }
-            // ...
-        }
-        Ok(())
-    }
-}
+assert!(field.is_number());  // Not string
 ```
 
-Use provider states in tests:
+### Issue: Inconsistent Error Codes
 
-```rust
-#[tokio::test]
-async fn contract_response_when_events_exist() {
-    ProviderState::EventsExist { count: 50 }.setup().await.unwrap();
-    
-    let response = fetch_events(1, 20).await;
-    assert!(response.total >= 50);
-    assert_eq!(response.data.len(), 20);
-}
+**Problem**: Same error returned with different codes
+**Solution**: Document standard error codes in contract
+```
+BAD_REQUEST - input validation failed
+NOT_FOUND - resource doesn't exist
+CONFLICT - resource already exists
 ```
 
-## CI Integration
+## Testing Checklist
 
-Contract tests run as part of the standard test suite:
+Before merging API changes:
 
-```bash
-# In CI
-cargo test --test contract_tests
+- [ ] All contract tests pass
+- [ ] Provider states are documented
+- [ ] Error responses are consistent
+- [ ] Backward compatibility is maintained
+- [ ] New fields are optional (for v1 compatibility)
+- [ ] Documentation is updated
+- [ ] Contract pacts are published to broker
+- [ ] Consumer integration tests pass
 
-# These also verify response compatibility in integration tests
-cargo test --test integration_tests
-```
+## Tools and References
 
-The tests are **fast** (no network) and **deterministic** (no external dependencies).
+- **Pact Documentation**: https://docs.pact.foundation/
+- **Pact Rust**: https://github.com/pact-foundation/pact-rust
+- **Pact Broker**: https://docs.pact.foundation/pact_broker/overview
+- **Consumer-Driven Contracts**: https://martinfowler.com/articles/consumerDrivenContracts.html
 
-## Example: Adding a New Contract
+## Project Configuration
 
-### 1. Define Request & Response Structures
+- **Test file**: `tests/contract_tests.rs`
+- **Configuration**: Cargo.toml with pact dependency
+- **Documentation**: This file
+- **Issue**: #556
+- **Assignee**: @Xoulomon
 
-```rust
-pub struct CreateEventRequest {
-    pub contract_id: String,
-    pub event_type: String,
-    pub event_data: Value,
-}
+## Future Enhancements
 
-pub struct CreateEventResponse {
-    pub id: String,
-    pub created_at: String,
-}
-```
+1. **Pact Broker Integration**: Publish contracts for coordination
+2. **OpenAPI Validation**: Validate against OpenAPI specification
+3. **Performance Contracts**: Ensure response times meet SLA
+4. **Chaos Engineering**: Test with invalid/missing fields
+5. **Consumer Validation**: Verify consumer implementations
+6. **Contract Evolution**: Document breaking changes
 
-### 2. Add Schema Validation
+## Questions?
 
-```rust
-impl CreateEventRequest {
-    pub fn verify_schema(&self) -> Result<(), String> {
-        if self.contract_id.len() != 56 {
-            return Err("contract_id must be 56 chars".to_string());
-        }
-        match self.event_type.as_str() {
-            "contract" | "diagnostic" | "system" => {}
-            _ => return Err("invalid event_type".to_string()),
-        }
-        Ok(())
-    }
-}
-
-impl CreateEventResponse {
-    pub fn verify_schema(&self) -> Result<(), String> {
-        if self.id.is_empty() {
-            return Err("id cannot be empty".to_string());
-        }
-        // Verify timestamp
-        chrono::DateTime::parse_from_rfc3339(&self.created_at)?;
-        Ok(())
-    }
-}
-```
-
-### 3. Add Tests
-
-```rust
-#[test]
-fn contract_create_event_valid_request() {
-    let request = CreateEventRequest { /* ... */ };
-    assert!(request.verify_schema().is_ok());
-}
-
-#[test]
-fn contract_create_event_response_has_id() {
-    let response = CreateEventResponse { /* ... */ };
-    assert!(response.verify_schema().is_ok());
-}
-```
-
-## Versioning Contracts
-
-When changing API contracts:
-
-### Breaking Changes (Avoid if Possible)
-- Removing required fields
-- Changing field types
-- Renaming fields
-
-### Non-Breaking Changes (Always OK)
-- Adding new optional fields
-- Making optional fields required (if old clients won't hit them)
-- Adding new error codes
-- Expanding allowed values in enums
-
-```rust
-// Breaking: removing 'ledger'
-pub struct Event {
-    pub id: String,
-    // pub ledger: i64,  ← BREAKING
-    pub contract_id: String,
-}
-
-// Non-Breaking: adding new field
-pub struct Event {
-    pub id: String,
-    pub contract_id: String,
-    pub ledger: i64,
-    pub metadata: Option<Value>,  // ← Non-breaking (optional)
-}
-
-// Versioning strategy
-pub struct EventV1 { /* old schema */ }
-pub struct EventV2 { /* new schema */ }
-
-// Clients choose which version to use
-impl EventV1 {
-    pub fn to_v2(self) -> EventV2 { /* convert */ }
-}
-```
-
-## Pact Broker Integration
-
-For advanced contract testing with independent client/server teams:
-
-### Install pact
-
-```bash
-npm install -g @pact-foundation/pact
-```
-
-### Publish contract
-
-```bash
-pact-broker publish tests/pacts \
-  --consumer-app-version 1.0.0 \
-  --broker-base-url https://broker.example.com
-```
-
-### Verify compatibility
-
-```bash
-pact-broker can-i-deploy \
-  --pacticipant soroban-pulse-api \
-  --version 1.0.0 \
-  --broker-base-url https://broker.example.com
-```
-
-## Troubleshooting
-
-### "Contract validation failed for request"
-- Check that all required fields are present
-- Verify field types match the contract
-- Ensure values are within allowed ranges
-
-### "Response missing required field"
-- Ensure server implements the full contract
-- Check that field serialization is correct
-- Verify JSON schema matches contract definition
-
-### "has_more flag is incorrect"
-- Formula: `has_more = (page * limit) < total`
-- Check pagination parameters match response
-- Verify total count is accurate
-
-## Resources
-
-- [Pact Documentation](https://docs.pact.foundation/)
-- [Consumer-Driven Contracts](https://martinfowler.com/articles/consumerDrivenContracts.html)
-- [API Versioning Best Practices](https://semver.org/)
-- [JSON Schema Validation](https://json-schema.org/)
+For questions about contract testing, refer to:
+1. Contract test file: `tests/contract_tests.rs`
+2. Pact documentation: https://docs.pact.foundation/
+3. GitHub issue: #556
