@@ -1,6 +1,7 @@
 pub mod abi;
 pub mod audit_logging;
 pub mod bloom_filter;
+pub mod capacity_planning;
 pub mod config;
 pub mod content_filter;
 pub mod db;
