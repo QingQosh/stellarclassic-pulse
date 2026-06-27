@@ -1,0 +1,184 @@
+name: Mutation Testing
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    # Run mutation tests weekly on Monday at 2 AM UTC
+    - cron: '0 2 * * 1'
+
+env:
+  CARGO_TERM_COLOR: always
+  DATABASE_URL: postgres://postgres:postgres@localhost/soroban_pulse_test
+  CARGO_MUTANTS_TIMEOUT: 300
+  CARGO_MUTANTS_JOBS: 4
+
+jobs:
+  mutation-testing:
+    name: Mutation Testing Quality Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: soroban_pulse_test
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants --locked
+
+      - name: Setup test database
+        run: |
+          sqlx database create
+          sqlx migrate run
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+
+      - name: Run mutation tests
+        run: |
+          cargo mutants \
+            --output-json target/mutants.json \
+            --timeout 300 \
+            --jobs 4 \
+            --verbose
+
+      - name: Generate HTML report
+        if: always()
+        run: |
+          cargo mutants --output target/mutants-report --html
+
+      - name: Extract mutation score
+        if: always()
+        id: score
+        run: |
+          if [ -f "target/mutants.json" ]; then
+            score=$(jq '.summary.mutation_score_percent // 0' target/mutants.json)
+            killed=$(jq '.summary.killed // 0' target/mutants.json)
+            survived=$(jq '.summary.survived // 0' target/mutants.json)
+            echo "score=$score" >> $GITHUB_OUTPUT
+            echo "killed=$killed" >> $GITHUB_OUTPUT
+            echo "survived=$survived" >> $GITHUB_OUTPUT
+            echo "Mutation Score: $score%"
+            echo "Killed: $killed, Survived: $survived"
+          else
+            echo "score=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-testing-report
+          path: |
+            target/mutants-report/
+            target/mutants.json
+          retention-days: 30
+
+      - name: Comment on PR with mutation score
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const score = ${{ steps.score.outputs.score }};
+            const killed = ${{ steps.score.outputs.killed }};
+            const survived = ${{ steps.score.outputs.survived }};
+
+            let scoreEmoji = '🔴';
+            if (score >= 80) {
+              scoreEmoji = '🟢';
+            } else if (score >= 70) {
+              scoreEmoji = '🟡';
+            }
+
+            const body = `## Mutation Testing Results ${scoreEmoji}
+
+| Metric | Value |
+|--------|-------|
+| **Mutation Score** | ${score.toFixed(1)}% |
+| **Killed Mutations** | ${killed} |
+| **Survived Mutations** | ${survived} |
+
+**Target:** 80% or higher mutation score
+
+${score >= 80 ? '✅ Excellent test coverage!' : score >= 70 ? '⚠️ Good coverage, room for improvement' : '❌ Mutation score below target. Please improve test coverage.'}
+
+View the [full mutation report](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) in the artifacts.`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Fail if mutation score too low
+        if: always() && github.event_name == 'pull_request'
+        run: |
+          score=${{ steps.score.outputs.score }}
+          if (( $(echo "$score < 70" | bc -l) )); then
+            echo "::error::Mutation score too low ($score%). Target is 70% minimum."
+            exit 1
+          fi
+
+  mutation-trend:
+    name: Track Mutation Score Trend
+    runs-on: ubuntu-latest
+    needs: mutation-testing
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download previous score
+        continue-on-error: true
+        run: |
+          mkdir -p .mutation-history
+          git show HEAD:mutation_score_history.json > .mutation-history/current.json 2>/dev/null || echo '[]' > .mutation-history/current.json
+
+      - name: Update mutation score history
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const score = ${{ steps.score.outputs.score }};
+            const date = new Date().toISOString().split('T')[0];
+
+            let history = [];
+            if (fs.existsSync('.mutation-history/current.json')) {
+              history = JSON.parse(fs.readFileSync('.mutation-history/current.json', 'utf8'));
+            }
+
+            history.push({ date, score });
+            fs.writeFileSync('mutation_score_history.json', JSON.stringify(history, null, 2));
+
+      - name: Commit history update
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add mutation_score_history.json
+          git commit -m "chore: update mutation score history" --allow-empty
+          git push
+        continue-on-error: true

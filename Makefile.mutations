@@ -1,0 +1,66 @@
+# Mutation Testing Makefile
+# Run mutation tests with cargo-mutants to identify weak test coverage
+
+.PHONY: mutants mutants-run mutants-baseline mutants-report mutants-verbose mutants-help
+
+mutants-install:
+	## Install cargo-mutants tool
+	cargo install cargo-mutants
+
+mutants-baseline:
+	## Run full test suite to establish baseline
+	cargo test --all
+
+mutants:
+	## Run mutation tests on all crates with test filtering
+	cargo mutants --tests
+
+mutants-lib:
+	## Run mutation tests only on library code (src/lib.rs)
+	cargo mutants --tests -p soroban-pulse
+
+mutants-verbose:
+	## Run mutation tests with verbose output showing each mutation
+	cargo mutants --tests -v --jobs 1
+
+mutants-timeout:
+	## Run mutation tests with custom timeout per test (in seconds)
+	cargo mutants --tests --timeout 30
+
+mutants-exclude:
+	## Run mutation tests excluding known untestable patterns
+	cargo mutants --tests --skip-regex 'unimplemented|todo|panic'
+
+mutants-report:
+	## Generate mutation testing HTML report
+	cargo mutants --tests --output mutations.html
+	@echo "Report generated: mutations.html"
+
+mutants-json:
+	## Generate mutation testing JSON report
+	cargo mutants --tests --output mutations.json
+	@echo "Report generated: mutations.json"
+
+mutants-clean:
+	## Clean up mutation testing artifacts
+	rm -rf target/mutations* mutations.html mutations.json
+
+mutants-summary:
+	## Show summary statistics for mutation testing
+	@echo "Mutation Testing Summary:"
+	@echo "========================"
+	@echo "To view detailed statistics, run: cargo mutants --tests -v"
+
+mutants-help:
+	## Show mutation testing help and options
+	cargo mutants --help
+
+mutants-diff:
+	## Run mutation tests only on changed files (requires git)
+	@git diff --name-only HEAD~1 | grep '\.rs$$' | xargs cargo mutants --tests
+
+mutants-ci:
+	## Run mutation tests optimized for CI environment
+	cargo mutants --tests --jobs $$(nproc) --timeout 60
+
+help: mutants-help

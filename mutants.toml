@@ -1,0 +1,74 @@
+# Mutation Testing Configuration (Issue #555)
+# This file configures cargo-mutants for quality assurance testing
+
+[mutation]
+# List of source files or directories to mutate
+# By default, all .rs files in src/ are mutated
+paths = ["src/"]
+
+# Exclude certain files or patterns from mutation
+exclude = [
+    "src/bin/*",
+    "src/main.rs",  # Skip main entry point
+    "**/tests/*",
+]
+
+# Maximum number of mutations to generate
+# This helps control test runtime for large projects
+max_mutations = 500
+
+# Only test certain mutation types
+# Uncomment to enable specific mutation types:
+# mutation_types = [
+#     "arith",      # Arithmetic operators
+#     "logical",    # Logical operators
+#     "const",      # Constant changes
+#     "relational", # Comparison operators
+# ]
+
+[test]
+# Timeout for running tests (in seconds)
+test_timeout = 300
+
+# Number of parallel test jobs
+jobs = 4
+
+# Command to run tests
+command = "cargo test"
+
+# Additional test arguments
+args = [
+    "--lib",
+    "--test", "property_based_tests",
+    "--test", "integration_tests",
+]
+
+# Verbose output for failed mutations
+verbose = true
+
+[output]
+# Directory for mutation testing reports
+report_dir = "target/mutants"
+
+# Generate JSON report for CI integration
+json_report = true
+
+# Generate HTML report
+html_report = true
+
+[skip]
+# Skip mutation testing for certain modules
+# These are patterns matched against module paths:
+skip = [
+    # Infrastructure code that doesn't need mutation testing
+    "metrics",
+    "logging",
+    "config",
+]
+
+[expected_to_fail]
+# These mutations are expected to survive because tests can't detect them
+# For documentation purposes - helps identify test coverage gaps
+expected = [
+    # Example: "src/module.rs:123:logtype()"
+]

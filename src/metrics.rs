@@ -187,14 +187,9 @@ pub fn record_email_failure() {
     m::counter!("soroban_pulse_email_failures_total").increment(1);
 }
 
-/// Record a successful notification delivery (delivery receipts, issue #475).
-pub fn record_notification_delivery_success() {
-    m::counter!("soroban_pulse_notification_delivery_success_total").increment(1);
-}
-
-/// Record a failed notification delivery (delivery receipts, issue #475).
-pub fn record_notification_delivery_failure() {
-    m::counter!("soroban_pulse_notification_delivery_failure_total").increment(1);
+/// Record an email bounce reported via the bounce webhook (Issue #484)
+pub fn record_email_bounce() {
+    m::counter!("soroban_pulse_email_bounces_total").increment(1);
 }
 
 /// Record a full-text search query duration
@@ -300,6 +295,21 @@ pub fn increment_sse_lagged_events(connection_id: &str, count: u64) {
     .increment(count);
 }
 
+/// Increment the maintenance window suppression counter (#495).
+pub fn record_notification_maintenance_suppressed() {
+    m::counter!("soroban_pulse_notifications_maintenance_suppressed_total").increment(1);
+}
+
+/// Set the channel health gauge (#498): 1.0 = healthy, 0.0 = unhealthy.
+pub fn set_channel_health(channel_name: &str, channel_type: &str, healthy: bool) {
+    m::gauge!(
+        "soroban_pulse_notification_channel_healthy",
+        "channel" => channel_name.to_string(),
+        "type" => channel_type.to_string()
+    )
+    .set(if healthy { 1.0 } else { 0.0 });
+}
+
 /// Record a slow query (issue #421).
 pub fn record_slow_query(query_type: &str) {
     m::counter!("soroban_pulse_slow_queries_total", "query_type" => query_type.to_string())
@@ -349,6 +359,24 @@ pub fn spawn_memory_collector() {
             update_process_memory_bytes();
         }
     });
+}
+
+/// #513: Record notification delivery latency per channel
+pub fn record_notification_delivery_latency(channel: &str, latency_seconds: f64) {
+    m::histogram!(
+        "soroban_pulse_notification_delivery_latency_seconds",
+        "channel" => channel.to_string()
+    )
+    .record(latency_seconds);
+}
+
+/// #514: Update notification rate per minute gauge per channel
+pub fn update_notification_rate_per_minute(channel: &str, rate: f64) {
+    m::gauge!(
+        "soroban_pulse_notification_rate_per_minute",
+        "channel" => channel.to_string()
+    )
+    .set(rate);
 }
 
 #[cfg(test)]
