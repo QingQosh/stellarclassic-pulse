@@ -9,51 +9,19 @@ A lightweight Rust backend service that indexes Soroban smart contract events on
 - **PostgreSQL** + **SQLx** (database + migrations)
 - **Stellar Soroban RPC** (event source)
 
-## System Architecture
+## Architecture
 
-For a comprehensive overview of the system design, components, data flows, and deployment strategies, see [docs/architecture.md](docs/architecture.md).
+For a comprehensive understanding of the system architecture, including component interactions, event flow, and deployment patterns, see [docs/architecture.md](docs/architecture.md).
 
-### Quick Overview
-
-The system consists of four main components:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                  Stellar RPC (Event Source)                 │
-└────────────────────────┬────────────────────────────────────┘
-                         │ (Poll Events)
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│                                                             │
-│  ┌──────────────────┐         ┌──────────────────────────┐ │
-│  │ Event Indexer    │────────▶│  PostgreSQL Database     │ │
-│  │ (Background)     │         │  (Events, Subscriptions) │ │
-│  └──────────────────┘         └──────────────────────────┘ │
-│         │                             ▲                    │
-│         │                             │                    │
-│  ┌──────▼────────────────────────────┴───────────────────┐ │
-│  │  REST API + Server-Sent Events (Axum)               │ │
-│  │  (Query Events, Subscribe, Webhooks)                │ │
-│  └─────────────────────────────────────────────────────┘ │
-│                                                             │
-│              SorobanPulse Service                           │
-└─────────────────────────────────────────────────────────────┘
-                         │
-        ┌────────────────┼────────────────┐
-        ▼                ▼                ▼
-    Web Clients    Mobile Apps        SDKs
-```
+The system follows this high-level flow:
+- **Stellar RPC** → **Indexer** → **PostgreSQL** → **REST API/SSE** → **Clients**
 
 Key features:
-- **Multi-replica support** with PostgreSQL advisory locks for leader election
-- **Event deduplication** using Bloom filters
-- **Real-time subscriptions** via Server-Sent Events
-- **Webhook delivery** with retry logic and HMAC verification
-- **Notification system** supporting email, AWS Kinesis, and GCP Pub/Sub
-- **Rate limiting** per IP address
-- **OpenAPI 3.0** documentation
-
-See [docs/architecture.md](docs/architecture.md) for detailed component descriptions, data flows, deployment topologies, and more.
+- Multi-replica advisory lock mechanism for safe concurrent indexing
+- Real-time event streaming via Server-Sent Events (SSE)
+- Webhook delivery with retry logic and HMAC signature verification
+- Property-based and mutation testing for quality assurance
+- API contract testing for client-server compatibility
 
 ## Project Structure
 
@@ -148,6 +116,31 @@ make fmt    # format source code
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full developer workflow.
+
+### Testing & Quality Assurance
+
+The project employs a comprehensive testing strategy across multiple dimensions:
+
+- **Unit & Integration Tests**: Standard test suite (`make test`)
+- **Property-Based Tests**: Discover edge cases with `proptest` — see [docs/property-testing.md](docs/property-testing.md)
+- **Mutation Testing**: Evaluate test coverage quality with `cargo-mutants` — see [docs/mutation-testing.md](docs/mutation-testing.md)
+- **API Contract Tests**: Verify client-server API compatibility — see [docs/contract-testing.md](docs/contract-testing.md)
+
+Run tests locally:
+```bash
+# Standard tests
+make test
+
+# Property-based tests (discover edge cases)
+PROPTEST_CASES=10000 cargo test --test property_tests
+
+# Mutation tests (evaluate test quality)
+cargo install cargo-mutants
+make -f Makefile.mutations mutants
+
+# Contract tests (verify API compatibility)
+cargo test --test contract_tests
+```
 
 ## API
 

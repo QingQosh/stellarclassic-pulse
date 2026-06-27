@@ -73,8 +73,7 @@ lettre = { version = "0.11", default-features = false, features = ["tokio1-rustl
 # DNS resolver for SPF record checks (Issue #486)
 hickory-resolver = "0.24"
 
-# Issue #480: Multi-language email notification templates (Handlebars)
-# Issue #482: HTML email notification templates (Handlebars)
+# Issue #480 & #482: Multi-language and HTML email notification templates (Handlebars)
 handlebars = "5"
 
 # Issue #479: cron expression parsing for custom notification schedules
@@ -100,6 +99,7 @@ lua = ["dep:mlua"]
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls", "chrono", "uuid", "json", "migrate"] }
 async-trait = "0.1"
 criterion = { version = "0.5", features = ["html_reports"] }
+# Issue #554: Property-based testing
 proptest = "1"
 
 [dependencies.flate2]

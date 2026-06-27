@@ -1,91 +1,74 @@
-# Mutation testing configuration for SorobanPulse
-#
-# This file configures cargo-mutants, which automatically introduces small mutations
-# (bugs) into the code and verifies that the test suite catches each one.
-#
-# For more information: https://docs.rs/cargo-mutants/
+# Mutation Testing Configuration (Issue #555)
+# This file configures cargo-mutants for quality assurance testing
 
-# Relative to the workspace root
-output-dir = "target/mutants"
+[mutation]
+# List of source files or directories to mutate
+# By default, all .rs files in src/ are mutated
+paths = ["src/"]
 
-# Patterns for code to exclude from mutation
+# Exclude certain files or patterns from mutation
 exclude = [
-    # Skip entire crates
-    # "path:src/bin/**",
-
-    # Skip documentation
-    "regex:^\\s*//.*$",
-
-    # Skip debug-only code
-    "regex:debug_assert",
-
-    # Skip panic messages (mutations to messages don't add much value)
-    "regex:panic!.*\",",
-
-    # Skip format strings in logging
-    "regex:log::.*!\\(.*format!",
-    "regex:tracing::.*!\\(.*format!",
-
-    # Skip trivial Copy types
-    "regex:Copy.*trait",
+    "src/bin/*",
+    "src/main.rs",  # Skip main entry point
+    "**/tests/*",
 ]
 
-# Per-module configuration for core business logic
-[module.src.indexer]
-description = "Event indexer background worker"
-skip = false
+# Maximum number of mutations to generate
+# This helps control test runtime for large projects
+max_mutations = 500
 
-[module.src.handlers]
-description = "API request handlers"
-skip = false
+# Only test certain mutation types
+# Uncomment to enable specific mutation types:
+# mutation_types = [
+#     "arith",      # Arithmetic operators
+#     "logical",    # Logical operators
+#     "const",      # Constant changes
+#     "relational", # Comparison operators
+# ]
 
-[module.src.models]
-description = "Data models and domain types"
-skip = false
-
-[module.src.config]
-description = "Configuration and environment handling"
-skip = false
-
-[module.src.subscriptions]
-description = "Subscription management"
-skip = false
-
-[module.src.webhook]
-description = "Webhook delivery logic"
-skip = false
-
-[module.src.notification_dedup]
-description = "Notification deduplication"
-skip = false
-
-[module.src.bloom_filter]
-description = "Bloom filter deduplication"
-skip = false
-
-[module.src.notification_rate_limit]
-description = "Rate limiting for notifications"
-skip = false
-
-[module.src.content_filter]
-description = "Content filtering for notifications"
-skip = false
-
-[module.src.xdr_validation]
-description = "XDR validation for Stellar events"
-skip = false
-
-# Test configuration
 [test]
-# Only run doc tests and unit tests for mutation testing
-# Exclude slow integration tests
-# This helps keep mutation testing fast while still catching bugs
-timeout = 300
-verbose = false
+# Timeout for running tests (in seconds)
+test_timeout = 300
 
-# Reporting configuration
-[report]
-# Generate detailed HTML report
-format = "html"
-# Also generate summary in text format
-summary = true
+# Number of parallel test jobs
+jobs = 4
+
+# Command to run tests
+command = "cargo test"
+
+# Additional test arguments
+args = [
+    "--lib",
+    "--test", "property_based_tests",
+    "--test", "integration_tests",
+]
+
+# Verbose output for failed mutations
+verbose = true
+
+[output]
+# Directory for mutation testing reports
+report_dir = "target/mutants"
+
+# Generate JSON report for CI integration
+json_report = true
+
+# Generate HTML report
+html_report = true
+
+[skip]
+# Skip mutation testing for certain modules
+# These are patterns matched against module paths:
+skip = [
+    # Infrastructure code that doesn't need mutation testing
+    "metrics",
+    "logging",
+    "config",
+]
+
+[expected_to_fail]
+# These mutations are expected to survive because tests can't detect them
+# For documentation purposes - helps identify test coverage gaps
+expected = [
+    # Example: "src/module.rs:123:logtype()"
+]

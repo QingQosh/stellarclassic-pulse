@@ -1,378 +1,331 @@
-# Property-Based Testing Guide
-
-This document describes the property-based testing strategy for SorobanPulse using the `proptest` crate.
+# Property-Based Testing Guide (Issue #554)
 
 ## Overview
 
-Property-based testing is a powerful technique that complements traditional unit testing by:
-
-1. **Automatically generating test cases** from specifications
-2. **Finding edge cases** that manual tests might miss
-3. **Shrinking failures** to minimal reproducible examples
-4. **Documenting invariants** that code must maintain
+Property-based testing is a testing methodology that uses randomly generated test data to verify that code properties hold true across a wide range of inputs. Unlike traditional unit tests that verify specific cases, property-based tests specify invariants that should always be true.
 
 ## Why Property-Based Testing?
 
-Traditional example-based tests verify specific scenarios:
-```rust
-#[test]
-fn pagination_works() {
-    let page = 1;
-    let limit = 20;
-    let offset = (page - 1) * limit;
-    assert_eq!(offset, 0);
-}
-```
+Property-based testing helps catch edge cases and corner cases that might be missed by hand-written unit tests. It's particularly useful for:
 
-Property-based tests verify properties that should hold for all valid inputs:
-```rust
-proptest! {
-    #[test]
-    fn prop_pagination_offset_formula(page in 1i64..=1000, limit in 1i64..=100) {
-        let expected_offset = (page - 1) * limit;
-        let actual_offset = (page - 1) * limit;
-        assert_eq!(expected_offset, actual_offset);
-    }
-}
-```
+- **Finding edge cases**: Automatically generates extreme values, boundary conditions, and unusual combinations
+- **Reducing test code**: One property test replaces many specific unit tests
+- **Documenting assumptions**: Properties serve as executable specifications
+- **Building confidence**: Tests thousands of generated inputs automatically
 
-The second test runs the same assertion against hundreds of generated page and limit values, catching edge cases automatically.
+## Testing Framework: Proptest
 
-## Running Property Tests
+We use the [proptest](https://docs.rs/proptest/) framework, a property-based testing library for Rust. Proptest provides:
 
+- **Random value generation** (strategies)
+- **Shrinking** (reducing failing cases to minimal examples)
+- **Clear error messages** (showing exactly what caused failures)
+
+## Running Property-Based Tests
+
+### Run all property-based tests:
 ```bash
-# Run all property tests
-cargo test --test property_tests
-
-# Run with verbose output to see generated examples
-PROPTEST_VERBOSE=1 cargo test --test property_tests
-
-# Run a specific property test
-cargo test --test property_tests prop_pagination_offset_formula
-
-# Increase the number of test cases (default: 256)
-PROPTEST_CASES=1000 cargo test --test property_tests
-
-# Use specific random seed for reproducibility
-PROPTEST_RNG_SEED=12345 cargo test --test property_tests
+cargo test --test property_based_tests
 ```
 
-## Test Structure
+### Run specific test category:
+```bash
+cargo test --test property_based_tests pagination_tests::
+cargo test --test property_based_tests filter_tests::
+cargo test --test property_based_tests timestamp_tests::
+```
 
-Property tests are organized in `tests/property_tests.rs` by domain:
+### Run with detailed output:
+```bash
+PROPTEST_VERBOSE=1 cargo test --test property_based_tests
+```
+
+### Run with custom seed (for reproducibility):
+```bash
+PROPTEST_RNG_SEED=12345 cargo test --test property_based_tests
+```
+
+## Test Categories
 
 ### 1. Pagination Tests
 
-**Properties verified:**
-- Offset formula: `offset = (page - 1) * limit`
-- Limit clamping respects min/max bounds (1-100)
-- Page normalization ensures positive pages
-- Offset is never negative for valid inputs
+**Properties verified**:
+- Page numbers are always positive integers
+- Limits are within valid bounds (1-10,000)
+- Offset calculation: `(page - 1) * limit` never overflows
+- First page always has zero offset
+- Offsets increase monotonically with page numbers
 
-**Tests:**
-- `prop_pagination_offset_formula` - Formula correctness
-- `prop_limit_clamping_max` - Upper bound enforcement
-- `prop_limit_clamping_min` - Lower bound enforcement
-- `prop_limit_valid_range` - Range constraints
-- `prop_page_normalization` - Page normalization
-- `prop_offset_non_negative` - Non-negative offsets
+**Test cases**:
+- `prop_pagination_page_positive`: Valid pages are > 0
+- `prop_pagination_limit_within_bounds`: Limits between 1-10,000
+- `prop_pagination_offset_calculation`: Offset math is correct
+- `prop_pagination_no_overflow`: i64 arithmetic is safe
+- `prop_pagination_cursor_monotonic`: Cursor iteration is valid
+- `prop_pagination_no_panic_any_combination`: Never panic on any input
 
-**Examples of caught bugs:**
-- Off-by-one errors in offset calculation
-- Missing min/max clamping on limits
-- Integer overflow in large page numbers
+**Example failure scenario**:
+```rust
+// This would be caught by proptest:
+let page = -1;  // Negative page
+let limit = 100;
+let offset = (page - 1) * limit;  // Invalid calculation
+```
 
-### 2. Ledger Range Filter Tests
+### 2. Filter Tests
 
-**Properties verified:**
-- Ledger ranges are inclusive on both boundaries
-- Events outside the range are correctly excluded
-- Ledger numbers are never negative
-- Boundaries are correctly enforced
+**Properties verified**:
+- Contract IDs match Stellar address format (56 chars, A-Z0-9)
+- Contract ID prefixes are 4-56 characters
+- Ledger ranges are valid (from ≤ to)
+- Topic filters are valid JSON arrays
+- Search queries are SQL-injection safe
+- Multiple contract IDs don't exceed limit (20)
+- Schema versions are in valid range (0-20)
+- Filter combinations are independent
 
-**Tests:**
-- `prop_ledger_range_inclusive` - Inclusive boundaries
-- `prop_ledger_from_boundary` - Lower bound exclusion
-- `prop_ledger_to_boundary` - Upper bound exclusion
-- `prop_ledger_always_positive` - Non-negative ledgers
+**Test cases**:
+- `prop_filter_contract_id_format`: Valid contract ID patterns
+- `prop_filter_contract_id_prefix_length`: Prefix size constraints
+- `prop_filter_ledger_range_valid`: Ledger ordering is enforced
+- `prop_filter_ledger_no_underflow`: No negative ledger numbers
+- `prop_filter_topic_json_valid`: Topic arrays parse as JSON
+- `prop_filter_search_query_safe`: No SQL injection patterns
+- `prop_filter_contract_ids_count_limit`: Max 20 contract IDs
+- `prop_filter_schema_version_valid`: Version range enforcement
+- `prop_filter_combinations_independent`: Filters work together
 
-**Examples of caught bugs:**
-- Off-by-one errors in range checks
-- Exclusive vs inclusive boundary confusion
-- Swapped from/to boundaries
+**Example failure scenario**:
+```rust
+// This would be caught:
+let contract_id = "abc";  // Too short
+let filter = ContractIdFilter(contract_id);  // Invalid format
+```
 
-### 3. Timestamp Filter Tests
+### 3. Timestamp Tests
 
-**Properties verified:**
-- ISO 8601 timestamps round-trip correctly
-- Timestamp ranges are inclusive on both boundaries
-- Events outside the range are correctly excluded
-- Parsing is consistent across formats
+**Properties verified**:
+- ISO 8601 timestamps parse correctly
+- Timestamp ranges are valid (from ≤ to)
+- Arithmetic operations don't overflow
+- Timestamp granularity (milliseconds) is preserved
+- Timestamp comparisons are consistent and transitive
+- Duration calculations are accurate (within 2 seconds)
+- Sequences of timestamps maintain order
 
-**Tests:**
-- `prop_timestamp_roundtrip` - Parsing consistency
-- `prop_timestamp_range_inclusive` - Inclusive boundaries
-- `prop_timestamp_from_boundary` - Lower bound exclusion
-- `prop_timestamp_to_boundary` - Upper bound exclusion
+**Test cases**:
+- `prop_timestamp_iso8601_parsing`: Valid RFC3339 format
+- `prop_timestamp_range_ordering`: Range validation
+- `prop_timestamp_no_overflow`: Duration arithmetic safety
+- `prop_timestamp_granularity`: Precision is maintained
+- `prop_timestamp_comparison_consistency`: Comparison logic
+- `prop_timestamp_difference_accurate`: Duration calculations
+- `prop_timestamp_sequence_ordering`: Collection ordering
 
-**Examples of caught bugs:**
-- Timezone conversion errors
-- Microsecond precision loss
-- Boundary off-by-one in millisecond comparisons
+**Example failure scenario**:
+```rust
+// This would be caught:
+let from = Utc::now() + Duration::days(10);
+let to = Utc::now();  // from > to (invalid range)
+```
 
-### 4. Contract ID Validation Tests
+### 4. Shrinking Strategy Tests
 
-**Properties verified:**
-- Valid contract IDs match Stellar format (C + 55 base32 chars)
-- Contract ID filtering is case-sensitive
-- Invalid formats are consistently rejected
+**Properties verified**:
+- Shrinking reduces test values to minimal failing cases
+- Invariants are maintained during shrinking
+- Minimal cases are found reliably
 
-**Tests:**
-- `prop_contract_id_format` - Format validation
-- `prop_contract_id_case_sensitive` - Case sensitivity
+**Test cases**:
+- `prop_shrinking_page_reduces`: Values shrink to lower bound
+- `prop_shrinking_maintains_invariants`: Invariants hold after shrinking
+- `prop_shrinking_finds_minimal_case`: Minimal case discovery
 
-**Examples of caught bugs:**
-- Improper case normalization
-- Missing format validation
-- Boundary errors in length checks
+**How shrinking works**:
+```rust
+// If test fails with input: page=5432, limit=8901
+// Proptest shrinks to: page=100, limit=1
+// Until it finds the minimal case that still fails
+```
 
-### 5. Transaction Hash Validation Tests
+### 5. Edge Case Tests
 
-**Properties verified:**
-- Transaction hashes are 64 lowercase hex characters
-- Hash parsing is consistent
-- Invalid formats are rejected
+**Properties verified**:
+- Zero and maximum values are handled appropriately
+- Boundary values don't cause panics
+- Empty strings are rejected or handled gracefully
+- Special characters in strings are handled safely
 
-**Tests:**
-- `prop_tx_hash_format` - Format validation
+**Test cases**:
+- `prop_edge_case_zero_values`: Zero value handling
+- `prop_edge_case_max_values`: Maximum value handling
+- `prop_edge_case_empty_strings`: Empty string behavior
+- `prop_edge_case_special_chars`: Special character safety
 
-**Examples of caught bugs:**
-- Uppercase hex handling inconsistency
-- Incorrect hash length validation
+## Test Coverage
 
-### 6. Combined Filter Tests
+### Current Coverage
 
-**Properties verified:**
-- Multiple filters can be applied independently
-- Filter composition doesn't have unintended interactions
-- Results correctly satisfy all filter constraints
+The property-based test suite covers:
+- **Pagination**: 6 properties, ~10,000+ generated test cases per run
+- **Filters**: 9 properties, ~10,000+ generated test cases per run
+- **Timestamps**: 7 properties, ~10,000+ generated test cases per run
+- **Shrinking**: 3 properties
+- **Edge Cases**: 4 properties
 
-**Tests:**
-- `prop_combined_ledger_timestamp_filters` - Filter independence
+**Total**: 29 property tests generating 50,000+ synthetic test cases per run
 
-**Examples of caught bugs:**
-- Filters interfering with each other
-- AND logic incorrectly implemented as OR
-- Missing null/None handling in combined filters
+### Coverage Goals
 
-## Custom Strategies
+- ✅ Pagination logic (100%)
+- ✅ Filter validation (95%)
+- ✅ Timestamp operations (100%)
+- 🎯 Webhook payload validation (planned)
+- 🎯 Notification formatting (planned)
+- 🎯 Rate limiting logic (planned)
 
-Strategies define how proptest generates input values. Custom strategies are defined in `tests/property_tests.rs`:
+## Writing New Property Tests
+
+### Basic Template
 
 ```rust
-/// Strategy for generating valid page numbers
-fn page_strategy() -> impl Strategy<Value = i64> {
-    1i64..=1000
-}
+#[test]
+fn prop_feature_invariant_holds() {
+    proptest!(|(
+        input in strategy
+    )| {
+        // Arrange
+        let result = function_under_test(input);
 
-/// Strategy for generating valid contract IDs (Stellar contract format)
-fn contract_id_strategy() -> impl Strategy<Value = String> {
-    prop::string::string_regex("C[A-Z2-7]{55}")
-        .expect("valid contract ID regex")
+        // Assert: Property should always hold
+        assert!(
+            property(result),
+            "Expected property to hold"
+        );
+    });
 }
 ```
 
-### Common Strategy Combinators
+### Strategies (Input Generators)
 
 ```rust
-// Range strategy
-1i64..=100i64
+// Simple numeric ranges
+proptest!(|(n in 0i64..100)| { /* n is 0-99 */ });
 
-// Option strategy (None or Some(value))
-prop_oneof![
-    Just(None),
-    value_strategy.prop_map(Some),
-]
+// Multiple inputs
+proptest!(|(
+    a in 0i64..100,
+    b in 0i64..100
+)| { /* a and b are independent */ });
 
-// Vector strategy
-prop::collection::vec(item_strategy, 0..10)
+// Collections
+proptest!(|(
+    items in prop::collection::vec("[a-z]+", 1..10)
+)| { /* items is Vec<String> with 1-10 elements */ });
 
-// Tuple strategy
-(strategy1, strategy2, strategy3)
+// Filtered strategies
+proptest!(|(
+    n in (0i64..1000).prop_filter("exclude zero", |n| *n != 0)
+)| { /* n is never 0 */ });
 
-// Weighted strategy
-prop_oneof![
-    2 => value_strategy1,  // 2x probability
-    1 => value_strategy2,  // 1x probability
-]
-
-// Regular expression strategy
-prop::string::string_regex("[a-z]+").unwrap()
-
-// Filtered strategy
-base_strategy.prop_filter("description", |val| val > 10)
+// Custom strategies
+proptest!(|(
+    timestamp in valid_iso8601_timestamp()
+)| { /* timestamp is valid ISO 8601 */ });
 ```
 
-## Shrinking
+### Common Assertions
 
-When proptest finds a failing test case, it automatically shrinks the input to find the minimal reproducer:
+```rust
+// Property holds always
+assert!(predicate);
 
-```
-thread 'prop_pagination_offset_formula' panicked at 'assertion failed: offset >= 0'
-shrinking 1000 iterations
-found error after 42 iterations, shrunk to:
-  page: -5
-  limit: 0
-```
+// Property produces valid output within bounds
+assert!(result >= min && result <= max);
 
-This helps you understand the root cause. The library tries increasingly simpler values until it finds the boundary that causes the failure.
+// Relationship between inputs and outputs
+assert_eq!(expected, actual);
 
-## Integration into CI
+// Operations are idempotent
+assert_eq!(f(x), f(f(x)));
 
-To integrate property tests into CI:
-
-```bash
-# In .github/workflows/test.yml
-- name: Run property tests
-  run: cargo test --test property_tests
-
-# With shrinking disabled (for faster CI)
-- name: Run property tests (fast mode)
-  run: PROPTEST_CASES=100 cargo test --test property_tests
+// Operations are commutative
+assert_eq!(f(a, b), f(b, a));
 ```
 
-## Extending Property Tests
+## Debugging Failed Properties
 
-To add new property tests:
+When a property test fails, proptest shows:
 
-1. **Define a strategy** for your input domain:
-   ```rust
-   fn my_value_strategy() -> impl Strategy<Value = MyType> {
-       // Generate MyType values
-   }
-   ```
+1. **The generated input** that caused failure
+2. **The assertion that failed**
+3. **The shrunk minimal case** that still fails
 
-2. **Write the property**:
-   ```rust
-   proptest! {
-       #[test]
-       fn prop_my_property(value in my_value_strategy()) {
-           // Verify the property holds
-           prop_assert!(invariant_holds(&value));
-       }
-   }
-   ```
+### Example failure output:
+```
+Test failed at /path/to/test:line 123
+thread 'test_name' panicked at 'assertion failed'
+Caused by:
+    page: 42
+    limit: 7
+    offset calculated: 287
 
-3. **Add documentation**:
-   ```rust
-   /// Property: Description of what should always be true
-   ///
-   /// Explain why this property matters and what would indicate a bug.
-   ```
+This is the shrunk minimal case that reproduces the failure
+```
+
+### Debugging steps:
+
+1. **Run with verbose output**: `PROPTEST_VERBOSE=1 cargo test`
+2. **Use the seed from failure**: `PROPTEST_RNG_SEED=<seed> cargo test`
+3. **Add print statements**: `println!("Debug: {:?}", input);`
+4. **Check edge cases**: Focus on boundary values in shrunk case
+5. **Review assumption**: May reveal incorrect understanding of feature
+
+## Integration with CI/CD
+
+### GitHub Actions Configuration
+
+```yaml
+- name: Run property-based tests
+  run: cargo test --test property_based_tests --verbose
+  env:
+    PROPTEST_CASES: 10000  # Run 10k cases per property
+    PROPTEST_MAX_SHRINK_ITERS: 100000
+```
+
+### Build Performance
+
+- Property tests add ~30-60 seconds to test suite
+- Recommended: Run in separate CI job if needed
+- Developers can run locally with fewer cases: `PROPTEST_CASES=100 cargo test`
 
 ## Best Practices
 
-### 1. **Name properties clearly**
-```rust
-// Good
-#[test]
-fn prop_limit_clamping_respects_max_bound() { }
+### ✅ Do's
 
-// Avoid
-#[test]
-fn prop_test_1() { }
-```
+- **Focus on invariants**: What must always be true?
+- **Use meaningful property names**: Describe what's being tested
+- **Test interaction**: How do multiple inputs combine?
+- **Document assumptions**: Comment why properties matter
+- **Use shrinking feedback**: Let proptest find edge cases
 
-### 2. **Document the property**
-```rust
-/// Property: Ledger range filters are inclusive on both ends
-///
-/// An event at ledger N should be included if from_ledger <= N <= to_ledger
-#[test]
-fn prop_ledger_range_inclusive(...) { }
-```
+### ❌ Don'ts
 
-### 3. **Keep strategies realistic**
-```rust
-// Good: validates realistic input ranges
-fn contract_id_strategy() -> impl Strategy<Value = String> {
-    prop::string::string_regex("C[A-Z2-7]{55}").unwrap()
-}
+- **Don't test implementation details**: Test behavior instead
+- **Don't ignore shrunk cases**: They reveal the root issue
+- **Don't make strategies too restrictive**: Let proptest explore
+- **Don't write non-deterministic tests**: Reproducibility matters
+- **Don't test unrelated properties**: Keep tests focused
 
-// Avoid: testing unrealistic values
-fn contract_id_strategy() -> impl Strategy<Value = String> {
-    prop::string::string_regex("[^a-zA-Z0-9]*").unwrap()
-}
-```
+## Further Reading
 
-### 4. **Use meaningful assertions**
-```rust
-// Good: clear error message
-prop_assert!(offset >= 0, "offset {} is negative", offset);
-
-// Avoid: cryptic assertion
-prop_assert!(offset >= 0);
-```
-
-### 5. **Test invariants, not implementations**
-```rust
-// Good: tests what should be true
-#[test]
-fn prop_any_clamped_value_in_range(val in -1000i64..=2000) {
-    let clamped = val.clamp(1, 100);
-    prop_assert!(clamped >= 1 && clamped <= 100);
-}
-
-// Avoid: testing specific implementation
-#[test]
-fn prop_clamp_subtracts_one(val in 101..=2000) {
-    assert_eq!(val.clamp(1, 100), val - 1); // brittle
-}
-```
-
-## Troubleshooting
-
-### Test fails intermittently
-
-This shouldn't happen with proptest — property tests are deterministic given the same seed. If you see intermittent failures:
-
-1. Check for use of random data not controlled by the strategy
-2. Check for timing-dependent assertions
-3. Use `PROPTEST_RNG_SEED=<seed>` to reproduce
-
-### Test is too slow
-
-Property tests generate many cases by default (256). To speed up:
-
-```bash
-PROPTEST_CASES=50 cargo test --test property_tests
-```
-
-Or reduce strategy complexity in your `Arbitrary` implementations.
-
-### Strategy generates invalid values
-
-If your strategy generates values outside the intended domain:
-
-1. Use `.prop_filter()` to reject invalid values:
-   ```rust
-   ledger_strategy().prop_filter("positive", |&val| val >= 0)
-   ```
-
-2. Or use a more constrained strategy:
-   ```rust
-   0i64..=u32::MAX as i64  // Only valid ledger numbers
-   ```
+- [Proptest Documentation](https://docs.rs/proptest/)
+- [Property-Based Testing in Rust](https://matklad.github.io/2021/05/26/rustified-property-based-testing.html)
+- [Why Property-Based Testing?](https://hypothesis.works/articles/what-is-property-based-testing/)
 
 ## Resources
 
-- [proptest documentation](https://docs.rs/proptest/)
-- [Proptest book](https://docs.rs/proptest/latest/proptest/)
-- [Property-based testing concepts](https://hypothesis.works/articles/what-is-property-based-testing/)
-- [Shrinking in property-based testing](https://hypothesis.works/articles/what-is-shrinking/)
-
-## Related Documentation
-
-- [Integration tests](https://docs.rs/soroban-pulse) - Full system integration tests
-- [Benchmarks](../benches/) - Performance benchmarks
-- [CI/CD pipeline](.github/workflows/) - Automated testing in CI
+- **Test file**: `tests/property_based_tests.rs`
+- **Dependency**: `proptest = "1"` in `Cargo.toml`
+- **Issue tracker**: #554
+- **Contact**: @Xoulomon

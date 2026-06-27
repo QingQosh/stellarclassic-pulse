@@ -1,370 +1,388 @@
-/// Property-based tests using proptest for SorobanPulse
-///
-/// This module contains property-based tests that verify the correctness of core
-/// business logic by testing properties that should hold for all valid inputs.
-/// These tests complement traditional unit tests by:
-///
-/// 1. **Catching edge cases** that manual tests might miss
-/// 2. **Shrinking failures** to minimal counter-examples
-/// 3. **Documenting invariants** that the code must maintain
-/// 4. **Providing regression detection** for complex business logic
-///
-/// # Examples of properties tested
-///
-/// - Pagination always returns results in the requested range
-/// - Ledger range filters are inclusive on both boundaries
-/// - Timestamp parsing follows ISO 8601 consistently
-/// - Limit clamping respects min/max bounds
-/// - Filter validation rejects invalid patterns consistently
-use chrono::{DateTime, Utc};
+/// Property-based tests using proptest for edge case discovery.
+/// These tests verify invariants and properties of core functions under random inputs.
+
 use proptest::prelude::*;
-use std::str::FromStr;
+use chrono::{DateTime, Utc, Duration};
+
+// Import types from the main crate
+// Note: These would be imported from the main library once integrated
+// For now, we define them locally for testing purposes
+
+/// Pagination parameters with validation logic
+#[derive(Debug, Clone)]
+struct PaginationParams {
+    pub page: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+impl PaginationParams {
+    pub fn offset(&self) -> i64 {
+        let page = self.page.unwrap_or(1).max(1);
+        (page - 1) * self.limit()
+    }
+
+    pub fn limit(&self) -> i64 {
+        self.limit.unwrap_or(20).clamp(1, 100)
+    }
+
+    pub fn page(&self) -> i64 {
+        self.page.unwrap_or(1).max(1)
+    }
+}
+
+/// Timestamp validation function
+fn validate_timestamp(ts: &str) -> Result<DateTime<Utc>, String> {
+    DateTime::parse_from_rfc3339(ts)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|_| format!("invalid timestamp format: {}", ts))
+}
+
+// ============================================================================
+// PROPERTY STRATEGIES
+// ============================================================================
 
 /// Strategy for generating valid page numbers
-fn page_strategy() -> impl Strategy<Value = i64> {
-    1i64..=1000
+fn page_strategy() -> impl Strategy<Value = Option<i64>> {
+    prop_oneof![
+        Just(None),
+        Just(Some(0)),  // Edge case: 0
+        Just(Some(1)),  // Boundary: 1
+        (1i64..=1000).prop_map(Some),
+        (1001i64..=i64::MAX).prop_map(Some),
+    ]
 }
 
-/// Strategy for generating valid limit values (unclamped)
-fn unclamped_limit_strategy() -> impl Strategy<Value = i64> {
-    -1000i64..=2000i64
+/// Strategy for generating valid limit numbers
+fn limit_strategy() -> impl Strategy<Value = Option<i64>> {
+    prop_oneof![
+        Just(None),
+        Just(Some(-1)),  // Negative edge case
+        Just(Some(0)),   // Zero edge case
+        Just(Some(1)),   // Boundary: min valid
+        Just(Some(100)), // Boundary: max valid
+        Just(Some(101)), // Edge case: exceeds max
+        (1i64..=100).prop_map(Some),
+        (101i64..=i64::MAX).prop_map(Some),
+    ]
 }
 
-/// Strategy for generating valid ledger numbers
-fn ledger_strategy() -> impl Strategy<Value = i64> {
-    0i64..=u32::MAX as i64
+/// Strategy for generating valid RFC3339 timestamps
+fn timestamp_strategy() -> impl Strategy<Value = DateTime<Utc>> {
+    // Generate timestamps between 2020 and 2030
+    (1577836800i64..=1893456000i64)
+        .prop_map(|secs| DateTime::<Utc>::from_timestamp(secs, 0).unwrap())
 }
 
-/// Strategy for generating valid contract IDs (Stellar contract format)
+/// Strategy for ISO 8601 timestamp strings
+fn iso8601_timestamp_strategy() -> impl Strategy<Value = String> {
+    timestamp_strategy().prop_map(|dt| dt.to_rfc3339())
+}
+
+/// Strategy for invalid timestamp strings
+fn invalid_timestamp_strategy() -> impl Strategy<Value = String> {
+    prop_oneof![
+        Just("2024-13-45T25:61:61Z".to_string()),  // Invalid month/day/hour
+        Just("not-a-timestamp".to_string()),
+        Just("2024/01/01 12:00:00".to_string()),   // Wrong format
+        Just("2024-01-01".to_string()),             // Missing time
+        (0u32..1000).prop_map(|n| format!("garbage_{}", n)),
+    ]
+}
+
+/// Strategy for contract IDs (hex strings)
 fn contract_id_strategy() -> impl Strategy<Value = String> {
-    prop::string::string_regex("C[A-Z2-7]{55}").expect("valid contract ID regex")
-}
-
-/// Strategy for generating valid transaction hashes
-fn tx_hash_strategy() -> impl Strategy<Value = String> {
-    prop::string::string_regex("[a-f0-9]{64}").expect("valid tx hash regex")
-}
-
-/// Strategy for generating valid ISO 8601 timestamps
-fn iso8601_timestamp_strategy() -> impl Strategy<Value = DateTime<Utc>> {
-    (1970i32..2100i32)
-        .prop_flat_map(|year| (Just(year), 1i32..=12i32))
-        .prop_flat_map(|(year, month)| {
-            let days_in_month = match month {
-                2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
-                2 => 28,
-                4 | 6 | 9 | 11 => 30,
-                _ => 31,
-            };
-            (Just(year), Just(month), 1i32..=days_in_month)
-        })
-        .prop_flat_map(|(year, month, day)| {
-            (
-                Just(year),
-                Just(month),
-                Just(day),
-                0i32..=23i32,
-                0i32..=59i32,
-                0i32..=59i32,
-            )
-        })
-        .prop_map(|(year, month, day, hour, minute, second)| {
-            DateTime::<Utc>::from_str(&format!(
-                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-                year, month, day, hour, minute, second
-            ))
-            .unwrap()
-        })
+    "[0-9a-f]{56}".prop_map(|s| s)
 }
 
 // ============================================================================
-// PAGINATION TESTS
+// PAGINATION PROPERTY TESTS
 // ============================================================================
 
 proptest! {
-    /// Property: Pagination offset is always (page - 1) * limit
-    ///
-    /// For any valid page and limit, the offset calculation should be
-    /// deterministic and follow the standard formula.
     #[test]
-    fn prop_pagination_offset_formula(
+    fn prop_pagination_offset_is_nonnegative(
         page in page_strategy(),
-        limit in 1i64..=100i64
+        limit in limit_strategy()
     ) {
+        let params = PaginationParams { page, limit };
+        // Offset should never be negative
+        assert!(params.offset() >= 0,
+            "offset should be non-negative, got {} for page={:?}, limit={:?}",
+            params.offset(), page, limit
+        );
+    }
+
+    #[test]
+    fn prop_pagination_limit_within_bounds(
+        limit in limit_strategy()
+    ) {
+        let params = PaginationParams { page: None, limit };
+        let resolved_limit = params.limit();
+        // Limit should always be between 1 and 100
+        assert!(resolved_limit >= 1 && resolved_limit <= 100,
+            "limit should be between 1 and 100, got {} for {:?}",
+            resolved_limit, limit
+        );
+    }
+
+    #[test]
+    fn prop_pagination_page_minimum_is_one(
+        page in page_strategy()
+    ) {
+        let params = PaginationParams { page, limit: None };
+        // Page should never be less than 1 after resolution
+        assert!(params.page() >= 1,
+            "page should be at least 1, got {} for {:?}",
+            params.page(), page
+        );
+    }
+
+    #[test]
+    fn prop_pagination_none_defaults_are_consistent(
+        other_page in page_strategy(),
+        other_limit in limit_strategy()
+    ) {
+        let none_params = PaginationParams { page: None, limit: None };
+        let defaults_page = none_params.page();
+        let defaults_limit = none_params.limit();
+        let defaults_offset = none_params.offset();
+
+        // Default page is 1
+        prop_assert_eq!(defaults_page, 1);
+        // Default limit is 20
+        prop_assert_eq!(defaults_limit, 20);
+        // Offset with page=1, limit=20 should be 0
+        prop_assert_eq!(defaults_offset, 0);
+    }
+
+    #[test]
+    fn prop_pagination_offset_calculation_is_correct(
+        page in 1i64..=1000,
+        limit in 1i64..=100
+    ) {
+        let params = PaginationParams {
+            page: Some(page),
+            limit: Some(limit)
+        };
+
         let expected_offset = (page - 1) * limit;
-        let actual_offset = (page - 1) * limit;
-        prop_assert_eq!(expected_offset, actual_offset);
+        let actual_offset = params.offset();
+
+        prop_assert_eq!(actual_offset, expected_offset,
+            "offset calculation incorrect for page={}, limit={}",
+            page, limit
+        );
     }
 
-    /// Property: Limit clamping respects maximum boundary
-    ///
-    /// Any limit value should be clamped to the range [1, 100].
-    /// Values above 100 should be reduced to 100.
     #[test]
-    fn prop_limit_clamping_max(limit in unclamped_limit_strategy()) {
-        let clamped = limit.clamp(1, 100);
-        prop_assert!(clamped <= 100, "limit {} exceeds max of 100", clamped);
+    fn prop_pagination_zero_page_treated_as_one(
+        limit in limit_strategy()
+    ) {
+        let params_zero = PaginationParams { page: Some(0), limit };
+        let params_one = PaginationParams { page: Some(1), limit };
+
+        // Page 0 and Page 1 should behave identically
+        prop_assert_eq!(params_zero.page(), params_one.page());
+        prop_assert_eq!(params_zero.offset(), params_one.offset());
     }
 
-    /// Property: Limit clamping respects minimum boundary
-    ///
-    /// Any limit value should be clamped to the range [1, 100].
-    /// Values below 1 should be raised to 1.
     #[test]
-    fn prop_limit_clamping_min(limit in unclamped_limit_strategy()) {
-        let clamped = limit.clamp(1, 100);
-        prop_assert!(clamped >= 1, "limit {} is below min of 1", clamped);
+    fn prop_pagination_negative_page_becomes_one(
+        negative_page in -1000i64..=-1,
+        limit in limit_strategy()
+    ) {
+        let params = PaginationParams { page: Some(negative_page), limit };
+        // Negative pages should be clamped to 1
+        prop_assert_eq!(params.page(), 1);
     }
 
-    /// Property: Clamped limit is always within valid range
-    ///
-    /// After clamping, the limit should always satisfy 1 <= limit <= 100.
     #[test]
-    fn prop_limit_valid_range(limit in unclamped_limit_strategy()) {
-        let clamped = limit.clamp(1, 100);
-        prop_assert!(clamped >= 1 && clamped <= 100,
-                     "clamped limit {} out of range", clamped);
+    fn prop_pagination_negative_limit_clamped_to_one(
+        negative_limit in -1000i64..=-1
+    ) {
+        let params = PaginationParams { page: None, limit: Some(negative_limit) };
+        // Negative limits should be clamped to minimum of 1
+        prop_assert_eq!(params.limit(), 1);
+    }
+}
+
+// ============================================================================
+// TIMESTAMP PROPERTY TESTS
+// ============================================================================
+
+proptest! {
+    #[test]
+    fn prop_valid_timestamp_strings_parse(ts in iso8601_timestamp_strategy()) {
+        let result = validate_timestamp(&ts);
+        // Valid ISO 8601 strings should always parse
+        prop_assert!(result.is_ok(),
+            "valid timestamp should parse: {} -> {:?}",
+            ts, result
+        );
     }
 
-    /// Property: Page normalization ensures positive pages
-    ///
-    /// Pages should be normalized to at least 1 to prevent negative offsets.
     #[test]
-    fn prop_page_normalization(page in -1000i64..=1000i64) {
-        let normalized = page.max(1);
-        prop_assert!(normalized >= 1, "normalized page {} is negative", normalized);
+    fn prop_invalid_timestamp_strings_reject(ts in invalid_timestamp_strategy()) {
+        let result = validate_timestamp(&ts);
+        // Invalid strings should all fail
+        prop_assert!(result.is_err(),
+            "invalid timestamp should not parse: {}",
+            ts
+        );
     }
 
-    /// Property: Offset calculation never produces negative values
-    ///
-    /// For valid normalized pages and limits, offset should always be non-negative.
     #[test]
-    fn prop_offset_non_negative(
+    fn prop_timestamp_roundtrip_preserves_value(ts_str in iso8601_timestamp_strategy()) {
+        let parsed = validate_timestamp(&ts_str).unwrap();
+        let serialized = parsed.to_rfc3339();
+        let reparsed = validate_timestamp(&serialized).unwrap();
+
+        // Roundtrip should preserve the timestamp (within nanosecond precision)
+        prop_assert_eq!(parsed, reparsed,
+            "timestamp roundtrip should preserve value: {} -> {} -> {}",
+            ts_str, serialized, reparsed
+        );
+    }
+
+    #[test]
+    fn prop_timestamp_ordering_preserved(
+        ts1 in timestamp_strategy(),
+        ts2 in timestamp_strategy()
+    ) {
+        let str1 = ts1.to_rfc3339();
+        let str2 = ts2.to_rfc3339();
+        let parsed1 = validate_timestamp(&str1).unwrap();
+        let parsed2 = validate_timestamp(&str2).unwrap();
+
+        // If ts1 < ts2, then parsed1 < parsed2
+        if ts1 < ts2 {
+            prop_assert!(parsed1 < parsed2);
+        } else if ts1 > ts2 {
+            prop_assert!(parsed1 > parsed2);
+        } else {
+            prop_assert_eq!(parsed1, parsed2);
+        }
+    }
+
+    #[test]
+    fn prop_timestamp_duration_arithmetic_consistent(
+        ts in timestamp_strategy(),
+        days in 0i64..=365
+    ) {
+        let later = ts + Duration::days(days);
+
+        // Duration arithmetic should be consistent
+        let diff = later.signed_duration_since(ts);
+        prop_assert_eq!(diff.num_days(), days,
+            "duration arithmetic should be consistent for {} days",
+            days
+        );
+    }
+}
+
+// ============================================================================
+// FILTER VALIDATION PROPERTY TESTS
+// ============================================================================
+
+proptest! {
+    #[test]
+    fn prop_contract_id_format_validation(
+        contract_id in ".*",  // Any string
+    ) {
+        let is_valid = is_valid_contract_id(&contract_id);
+
+        if contract_id.len() == 56 && contract_id.chars().all(|c| c.is_ascii_hexdigit()) {
+            prop_assert!(is_valid,
+                "56-char hex string should be valid: {}",
+                contract_id
+            );
+        } else {
+            prop_assert!(!is_valid,
+                "non-56-char-hex should be invalid: {}",
+                contract_id
+            );
+        }
+    }
+
+    #[test]
+    fn prop_ledger_range_validation(
+        from_ledger in 0i64..=1_000_000,
+        to_ledger in 0i64..=1_000_000
+    ) {
+        // If from > to, it should be invalid
+        if from_ledger > to_ledger {
+            prop_assert!(!is_valid_ledger_range(from_ledger, to_ledger),
+                "from_ledger > to_ledger should be invalid: {} > {}",
+                from_ledger, to_ledger
+            );
+        } else {
+            prop_assert!(is_valid_ledger_range(from_ledger, to_ledger),
+                "from_ledger <= to_ledger should be valid: {} <= {}",
+                from_ledger, to_ledger
+            );
+        }
+    }
+
+    #[test]
+    fn prop_timestamp_range_validation(
+        ts1 in timestamp_strategy(),
+        ts2 in timestamp_strategy()
+    ) {
+        let (from, to) = if ts1 < ts2 { (ts1, ts2) } else { (ts2, ts1) };
+
+        // Valid range: from <= to
+        prop_assert!(is_valid_timestamp_range(from, to),
+            "from_ts <= to_ts should be valid"
+        );
+
+        // Invalid range: from > to
+        prop_assert!(!is_valid_timestamp_range(to, from),
+            "from_ts > to_ts should be invalid"
+        );
+    }
+}
+
+// ============================================================================
+// HELPER FUNCTIONS FOR VALIDATION TESTS
+// ============================================================================
+
+fn is_valid_contract_id(id: &str) -> bool {
+    id.len() == 56 && id.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn is_valid_ledger_range(from: i64, to: i64) -> bool {
+    from <= to
+}
+
+fn is_valid_timestamp_range(from: DateTime<Utc>, to: DateTime<Utc>) -> bool {
+    from <= to
+}
+
+// ============================================================================
+// SHRINKING STRATEGY TESTS
+// ============================================================================
+
+proptest! {
+    #[test]
+    fn prop_pagination_shrink_to_minimal_valid_state(
         page in page_strategy(),
-        limit in 1i64..=100i64
+        limit in limit_strategy()
     ) {
-        let normalized_page = page.max(1);
-        let offset = (normalized_page - 1) * limit;
-        prop_assert!(offset >= 0, "offset {} is negative", offset);
-    }
-}
+        let params = PaginationParams { page, limit };
 
-// ============================================================================
-// LEDGER RANGE FILTER TESTS
-// ============================================================================
+        // After resolution, parameters should reach a stable minimal valid state
+        let page_resolved = params.page();
+        let limit_resolved = params.limit();
+        let offset_resolved = params.offset();
 
-proptest! {
-    /// Property: Ledger range filters are inclusive on both ends
-    ///
-    /// An event at ledger N should be included if from_ledger <= N <= to_ledger
-    #[test]
-    fn prop_ledger_range_inclusive(
-        from_ledger in ledger_strategy(),
-        to_ledger in ledger_strategy(),
-        event_ledger in ledger_strategy(),
-    ) {
-        // Ensure from_ledger <= to_ledger for a valid range
-        let (from, to) = if from_ledger <= to_ledger {
-            (from_ledger, to_ledger)
-        } else {
-            (to_ledger, from_ledger)
+        // Repeatedly resolving should be idempotent
+        let params2 = PaginationParams {
+            page: Some(page_resolved),
+            limit: Some(limit_resolved)
         };
 
-        let in_range = event_ledger >= from && event_ledger <= to;
-        let should_include = (event_ledger >= from) && (event_ledger <= to);
-
-        prop_assert_eq!(in_range, should_include);
-    }
-
-    /// Property: Lower bound filter excludes events before from_ledger
-    ///
-    /// Events with ledger < from_ledger should never match the filter
-    #[test]
-    fn prop_ledger_from_boundary(
-        from_ledger in ledger_strategy(),
-        event_ledger in 0i64..from_ledger
-    ) {
-        let matches = event_ledger >= from_ledger;
-        prop_assert!(!matches,
-                     "event ledger {} should not match from_ledger {}",
-                     event_ledger, from_ledger);
-    }
-
-    /// Property: Upper bound filter excludes events after to_ledger
-    ///
-    /// Events with ledger > to_ledger should never match the filter
-    #[test]
-    fn prop_ledger_to_boundary(
-        to_ledger in ledger_strategy(),
-        event_ledger in (to_ledger + 1)..=(i64::MAX / 2)
-    ) {
-        let matches = event_ledger <= to_ledger;
-        prop_assert!(!matches,
-                     "event ledger {} should not match to_ledger {}",
-                     event_ledger, to_ledger);
-    }
-
-    /// Property: Ledger values are always non-negative
-    ///
-    /// Ledger numbers from the Stellar network are never negative.
-    #[test]
-    fn prop_ledger_always_positive(ledger in ledger_strategy()) {
-        prop_assert!(ledger >= 0, "ledger {} is negative", ledger);
-    }
-}
-
-// ============================================================================
-// TIMESTAMP FILTER TESTS
-// ============================================================================
-
-proptest! {
-    /// Property: ISO 8601 timestamp parsing is consistent
-    ///
-    /// A timestamp parsed and serialized should round-trip correctly
-    #[test]
-    fn prop_timestamp_roundtrip(timestamp in iso8601_timestamp_strategy()) {
-        let serialized = timestamp.to_rfc3339();
-        let parsed = DateTime::<Utc>::from_str(&serialized)
-            .expect("failed to parse serialized timestamp");
-        prop_assert_eq!(timestamp, parsed);
-    }
-
-    /// Property: Timestamp range filters are inclusive on both ends
-    ///
-    /// An event at time T should be included if from_time <= T <= to_time
-    #[test]
-    fn prop_timestamp_range_inclusive(
-        from_time in iso8601_timestamp_strategy(),
-        to_time in iso8601_timestamp_strategy(),
-        event_time in iso8601_timestamp_strategy(),
-    ) {
-        // Ensure from_time <= to_time for a valid range
-        let (from, to) = if from_time <= to_time {
-            (from_time, to_time)
-        } else {
-            (to_time, from_time)
-        };
-
-        let in_range = event_time >= from && event_time <= to;
-        let should_include = event_time >= from && event_time <= to;
-
-        prop_assert_eq!(in_range, should_include);
-    }
-
-    /// Property: Lower bound filter excludes timestamps before from_timestamp
-    ///
-    /// Events before from_timestamp should not match
-    #[test]
-    fn prop_timestamp_from_boundary(
-        from_time in iso8601_timestamp_strategy(),
-        event_time in iso8601_timestamp_strategy(),
-    ) {
-        if event_time < from_time {
-            let matches = event_time >= from_time;
-            prop_assert!(!matches,
-                         "event time {:?} should not match from_time {:?}",
-                         event_time, from_time);
-        }
-    }
-
-    /// Property: Upper bound filter excludes timestamps after to_timestamp
-    ///
-    /// Events after to_timestamp should not match
-    #[test]
-    fn prop_timestamp_to_boundary(
-        to_time in iso8601_timestamp_strategy(),
-        event_time in iso8601_timestamp_strategy(),
-    ) {
-        if event_time > to_time {
-            let matches = event_time <= to_time;
-            prop_assert!(!matches,
-                         "event time {:?} should not match to_time {:?}",
-                         event_time, to_time);
-        }
-    }
-}
-
-// ============================================================================
-// CONTRACT ID VALIDATION TESTS
-// ============================================================================
-
-proptest! {
-    /// Property: Valid contract IDs match Stellar format
-    ///
-    /// Contract IDs should start with 'C' followed by 55 base32 characters
-    #[test]
-    fn prop_contract_id_format(contract_id in contract_id_strategy()) {
-        prop_assert!(contract_id.starts_with('C'),
-                     "contract ID {} should start with 'C'", contract_id);
-        prop_assert_eq!(contract_id.len(), 56,
-                        "contract ID {} should be 56 chars long", contract_id);
-        prop_assert!(contract_id[1..].chars().all(|c| c >= 'A' && c <= 'Z' || c >= '2' && c <= '7'),
-                     "contract ID {} contains invalid characters", contract_id);
-    }
-
-    /// Property: Contract ID filtering is case-sensitive
-    ///
-    /// Contract ID comparisons should preserve case
-    #[test]
-    fn prop_contract_id_case_sensitive(id1 in contract_id_strategy(), id2 in contract_id_strategy()) {
-        if id1 == id2 {
-            prop_assert_eq!(id1, id2);
-        }
-    }
-}
-
-// ============================================================================
-// TRANSACTION HASH VALIDATION TESTS
-// ============================================================================
-
-proptest! {
-    /// Property: Valid transaction hashes are lowercase hex
-    ///
-    /// Transaction hashes should be 64 lowercase hex characters
-    #[test]
-    fn prop_tx_hash_format(tx_hash in tx_hash_strategy()) {
-        prop_assert_eq!(tx_hash.len(), 64,
-                        "tx hash {} should be 64 chars long", tx_hash);
-        prop_assert!(tx_hash.chars().all(|c| c.is_ascii_hexdigit()),
-                     "tx hash {} contains non-hex characters", tx_hash);
-    }
-}
-
-// ============================================================================
-// COMBINED FILTER TESTS
-// ============================================================================
-
-proptest! {
-    /// Property: Multiple filters can be applied independently
-    ///
-    /// Combining ledger and timestamp filters should work correctly
-    #[test]
-    fn prop_combined_ledger_timestamp_filters(
-        from_ledger in ledger_strategy(),
-        to_ledger in ledger_strategy(),
-        from_time in iso8601_timestamp_strategy(),
-        to_time in iso8601_timestamp_strategy(),
-        event_ledger in ledger_strategy(),
-        event_time in iso8601_timestamp_strategy(),
-    ) {
-        let (from_l, to_l) = if from_ledger <= to_ledger {
-            (from_ledger, to_ledger)
-        } else {
-            (to_ledger, from_ledger)
-        };
-
-        let (from_t, to_t) = if from_time <= to_time {
-            (from_time, to_time)
-        } else {
-            (to_time, from_time)
-        };
-
-        let ledger_match = event_ledger >= from_l && event_ledger <= to_l;
-        let time_match = event_time >= from_t && event_time <= to_t;
-        let both_match = ledger_match && time_match;
-
-        // Both filters should be independent
-        prop_assert!(!(both_match && !ledger_match));
-        prop_assert!(!(both_match && !time_match));
+        prop_assert_eq!(params2.page(), page_resolved);
+        prop_assert_eq!(params2.limit(), limit_resolved);
+        prop_assert_eq!(params2.offset(), offset_resolved);
     }
 }
