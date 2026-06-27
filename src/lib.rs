@@ -1,4 +1,5 @@
 pub mod abi;
+pub mod audit_logging;
 pub mod bloom_filter;
 pub mod config;
 pub mod content_filter;
@@ -19,9 +20,11 @@ pub mod notification_dedup;
 pub mod pruner;
 pub mod pubsub;
 pub mod queue_publisher;
+pub mod rate_limiter;
 pub mod routes;
 pub mod rpc_client;
 pub mod schema_validator;
 pub mod subscriptions;
 pub mod webhook;
+pub mod webhook_verification;
 pub mod xdr_validation;

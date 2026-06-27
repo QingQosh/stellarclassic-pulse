@@ -5,6 +5,7 @@
     clippy::missing_panics_doc,      // panics only on misconfiguration at startup
     clippy::wildcard_imports,        // used sparingly in test modules only
 )]
+mod audit_logging;
 mod bloom_filter;
 mod config;
 mod content_filter;
@@ -31,6 +32,7 @@ mod parquet_export;
 mod pruner;
 mod pubsub;
 mod queue_publisher;
+mod rate_limiter;
 mod reencrypt;
 mod routes;
 mod rpc_client;
@@ -38,6 +40,7 @@ mod schema_validator;
 mod stats_refresh;
 mod subscriptions;
 mod webhook;
+mod webhook_verification;
 mod notification_rate_limit;
 mod notification_formatter;
 mod pagerduty;
