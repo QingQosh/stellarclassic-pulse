@@ -123,6 +123,10 @@ version = "53"
 version = "0.19"
 optional = true
 
+[[bin]]
+name = "gen_subscription_scaffold"
+path = "src/bin/gen_subscription_scaffold.rs"
+
 [[bench]]
 name = "pagination"
 harness = false
