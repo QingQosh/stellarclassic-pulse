@@ -18,6 +18,9 @@ mod api_compatibility_tests {
     /// Version matrix for backwards compatibility testing
     struct VersionMatrix {
         versions: Vec<ApiVersion>,
+        /// Versions actively supported — used to validate that deprecation notices only
+        /// reference versions that were once supported.
+        #[allow(dead_code)]
         supported_versions: Vec<String>,
     }
 

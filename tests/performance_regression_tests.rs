@@ -6,7 +6,6 @@
 #[cfg(test)]
 mod performance_regression_tests {
     use std::collections::HashMap;
-    use std::time::{Duration, Instant};
 
     /// Performance baseline for key operations
     #[derive(Clone, Debug)]

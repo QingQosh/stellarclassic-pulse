@@ -26,3 +26,39 @@ Thumbs.db
 # Backup dumps
 *.dump
 backups/
+
+# Test snapshots (insta, snapbox, etc.)
+*.snap
+*.snap.new
+**/__snapshots__/
+**/snapshots/*.snap.new
+
+# Proptest regression files
+proptest-regressions/
+**/proptest-regressions/
+
+# Cargo mutation testing output
+mutants.out/
+mutants.out.old/
+
+# Fuzz corpus and artifacts (keep structure, ignore generated inputs)
+fuzz/corpus/
+fuzz/artifacts/
+
+# Criterion benchmark output
+target/criterion/
+
+# Coverage reports
+tarpaulin-report.html
+lcov.info
+coverage/
+
+# Temporary / scratch files
+*.tmp
+*.bak
+*.orig
+
+# SQLx offline query cache (generated, not hand-authored)
+# Keep .sqlx/ directory committed so offline mode works in CI
+# Uncomment the line below only if you regenerate it in CI:
+# .sqlx/
