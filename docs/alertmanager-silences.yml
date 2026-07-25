@@ -1,0 +1,99 @@
+# AlertManager Silence Configuration
+# This file provides templates and examples for silencing alerts during
+# maintenance windows or planned outages.
+#
+# To create a silence via the AlertManager API:
+#   curl -X POST http://alertmanager:9093/api/v2/silences -d @silence.json
+#
+# To create a silence via the CLI:
+#   amtool silence add alertname=IndexerLagHigh component=indexer --duration=2h
+
+# Pre-configured silence templates for common scenarios
+silences:
+  # Maintenance window silence template
+  - name: "maintenance-window"
+    matchers:
+      - name: "alertname"
+        value: ".*"
+        isRegex: true
+    startsAt: "2026-07-26T02:00:00Z"
+    endsAt: "2026-07-26T04:00:00Z"
+    createdBy: "ops-team"
+    comment: "Scheduled maintenance window - all alerts silenced"
+    # Usage: amtool silence add alertname=".*" --start=2026-07-26T02:00:00Z --end=2026-07-26T04:00:00Z --comment="Maintenance"
+
+  # Indexer-specific silence
+  - name: "indexer-maintenance"
+    matchers:
+      - name: "component"
+        value: "indexer"
+    createdBy: "ops-team"
+    comment: "Silence indexer alerts during RPC migration"
+    # Usage: amtool silence add component=indexer --duration=4h --comment="RPC migration"
+
+  # Database maintenance silence
+  - name: "database-maintenance"
+    matchers:
+      - name: "component"
+        value: "database"
+    createdBy: "db-team"
+    comment: "Silence database alerts during schema migration"
+    # Usage: amtool silence add component=database --duration=1h --comment="Schema migration"
+
+  # Specific alert silence
+  - name: "known-issue-lag"
+    matchers:
+      - name: "alertname"
+        value: "IndexerLagHigh"
+      - name: "severity"
+        value: "warning"
+    createdBy: "ops-team"
+    comment: "Known issue - indexer lag during network congestion"
+    # Usage: amtool silence add alertname=IndexerLagHigh severity=warning --duration=30m --comment="Known issue"
+
+# CI/CD silence management
+ci_silence:
+  # Silence non-critical alerts during deployment
+  - name: "deployment-silence"
+    matchers:
+      - name: "severity"
+        value: "warning"
+    duration: "30m"
+    createdBy: "ci-pipeline"
+    comment: "Deployment in progress - warning alerts silenced"
+    enabled: true
+
+  # Silence resource alerts during scaling
+  - name: "scaling-silence"
+    matchers:
+      - name: "alertname"
+        value: "PodMemoryNearLimit"
+    duration: "10m"
+    createdBy: "hpa-controller"
+    comment: "Auto-scaling in progress"
+    enabled: true
+
+# Emergency silence procedures
+emergency_procedures:
+  # Emergency shutdown - silence everything
+  - name: "emergency-shutdown"
+    matchers:
+      - name: "alertname"
+        value: ".*"
+        isRegex: true
+    duration: "24h"
+    createdBy: "incident-commander"
+    comment: "EMERGENCY: Complete system shutdown in progress"
+    requires_approval: true
+    approval_contacts:
+      - "oncall@soroban-pulse.io"
+      - "ops-lead@soroban-pulse.io"
+
+# Monitoring and cleanup
+cleanup_policy:
+  # Auto-expire silences older than 24 hours
+  max_silence_duration: "24h"
+  # Notify when silence is about to expire
+  expiry_warning_minutes: 15
+  # Clean up expired silences
+  auto_cleanup: true
