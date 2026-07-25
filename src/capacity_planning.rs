@@ -85,6 +85,12 @@ pub struct CapacityPlanner {
     alert_thresholds: HashMap<String, f64>,
 }
 
+impl Default for CapacityPlanner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CapacityPlanner {
     pub fn new() -> Self {
         let mut planner = Self {
@@ -122,7 +128,7 @@ impl CapacityPlanner {
     pub fn record_metric(&mut self, metric_name: String, value: f64) {
         self.metrics_history
             .entry(metric_name)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(CapacityMetric {
                 timestamp: std::time::SystemTime::now(),
                 value,

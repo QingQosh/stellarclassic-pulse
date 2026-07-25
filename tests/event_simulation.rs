@@ -1,4 +1,4 @@
-// Contract Event Simulation (Issue #590)
+// Contract Event Simulation (Issue #715)
 //
 // This module creates realistic contract event fixtures for testing.
 // It provides event generators, XDR fixture generation, and scenario templates.
@@ -9,14 +9,12 @@ mod event_simulation_tests {
 
     /// Contract event simulator for generating realistic test data
     struct EventSimulator {
-        contract_id_prefix: String,
         ledger_counter: u64,
     }
 
     impl EventSimulator {
         fn new() -> Self {
             Self {
-                contract_id_prefix: "C".to_string(),
                 ledger_counter: 1000,
             }
         }
@@ -69,11 +67,15 @@ mod event_simulation_tests {
         /// Generate XDR fixture for Stellar Soroban event
         fn generate_xdr_fixture(&mut self) -> String {
             let event = self.generate_transfer_event();
+            // Extract the raw string value from the JSON (not the JSON-quoted representation)
+            let topic = event["event_data"]["topics"][0]
+                .as_str()
+                .unwrap_or("");
             format!(
                 "AAAAAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\
                  AAAAAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\
                  {}",
-                event["event_data"]["topics"][0]
+                topic
             )
         }
 
@@ -194,7 +196,7 @@ mod event_simulation_tests {
         let scenario = simulator.generate_contract_scenario(5);
 
         assert_eq!(scenario.len(), 5);
-        
+
         // Verify all events are valid
         for event in scenario {
             assert!(event["id"].is_string());
@@ -232,7 +234,8 @@ mod event_simulation_tests {
     fn factory_create_subscription() {
         let mut factory = ContractFactory::new();
         let contract = factory.create_contract();
-        let subscription = factory.create_subscription(contract["contract_id"].as_str().unwrap().to_string());
+        let subscription =
+            factory.create_subscription(contract["contract_id"].as_str().unwrap().to_string());
 
         assert!(subscription["id"].is_string());
         assert!(subscription["webhook_url"].is_string());
@@ -272,8 +275,8 @@ mod event_simulation_tests {
 
         let timestamp = event["timestamp"].as_str().unwrap();
         // Should be valid RFC3339 format
-        assert!(timestamp.contains("T"));
-        assert!(timestamp.contains("Z") || timestamp.contains("+"));
+        assert!(timestamp.contains('T'));
+        assert!(timestamp.contains('Z') || timestamp.contains('+'));
     }
 
     /// Test: Complex contract scenario with mixed event types
@@ -282,9 +285,16 @@ mod event_simulation_tests {
         let mut simulator = EventSimulator::new();
         let scenario = simulator.generate_contract_scenario(10);
 
+        // transfer events occur at every 3rd index (0, 3, 6, 9)
+        // topic is "AAAADwAAAAVUUkFOU0ZFUg==" which contains "VFJA" substring
         let transfer_events: Vec<_> = scenario
             .iter()
-            .filter(|e| e["event_data"]["topics"][0].as_str().unwrap().contains("VFJBTlNGRVI"))
+            .filter(|e| {
+                e["event_data"]["topics"][0]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("VFJBTlNGRVI")
+            })
             .collect();
 
         assert!(!transfer_events.is_empty(), "Scenario should include transfer events");
@@ -296,12 +306,10 @@ mod event_simulation_tests {
         let mut simulator = EventSimulator::new();
         let xdr = simulator.generate_xdr_fixture();
 
-        // XDR should be base64-encoded
-        let is_valid_base64 = xdr.chars().all(|c| c.is_ascii_alphanumeric() || c == '=' || c == '+' || c == '/');
-        assert!(is_valid_base64, "XDR should be valid base64");
+        // XDR should be base64-encoded (all chars are alphanumeric, '=', '+', or '/')
+        let is_valid_base64 = xdr
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '=' || c == '+' || c == '/');
+        assert!(is_valid_base64, "XDR should be valid base64, got: {xdr}");
     }
 }
-
-// Re-export uuid for the tests to use
-use uuid;
-use chrono;
