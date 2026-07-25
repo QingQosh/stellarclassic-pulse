@@ -20,6 +20,28 @@ jobs:
           components: rustfmt
       - run: cargo fmt --check
 
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+          arguments: --all-features
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans
+          arguments: --all-features
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+          arguments: --all-features
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check sources
+          arguments: --all-features
+
   check-migrations:
     name: Check Migrations
     runs-on: ubuntu-latest
