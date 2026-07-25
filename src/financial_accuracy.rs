@@ -189,7 +189,7 @@ impl EventValidator for AmountRangeValidator {
             }
         }
 
-        ValidationRest::with_findings(findings)
+        ValidationResult::with_findings(findings)
     }
 }
 

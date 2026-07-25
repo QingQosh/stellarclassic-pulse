@@ -55,7 +55,8 @@ impl TimezoneConfig {
     /// US Pacific (PST/PDT): UTC-8 standard, UTC-7 DST (Mar–Nov).
     pub fn us_pacific() -> Self {
         Self {
-            name: "America/Los_Angeles".to_string(         offset_seconds: -8 * 3600,
+            name: "America/Los_Angeles".to_string(),
+            offset_seconds: -8 * 3600,
             dst_offset_seconds: 3600,
             dst_start_month: Some(3),
             dst_end_month: Some(11),
@@ -170,7 +171,8 @@ impl Locale {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "en-us" | "en_us" => Some(Self::EnUs),
-            "en-gb" | "en_gb" => Some(       "de" | "de-de" => Some(Self::De),
+            "en-gb" | "en_gb" => Some(Self::EnGb),
+            "de" | "de-de" => Some(Self::De),
             "ja" | "ja-jp" => Some(Self::Ja),
             "fr" | "fr-fr" => Some(Self::Fr),
             "ng" | "en-ng" => Some(Self::Ng),
@@ -298,7 +300,7 @@ pub enum DstTransitionKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DstTransition {
-    pub tine: String,
+    pub timezone: String,
     pub kind: DstTransitionKind,
     pub utc_at: DateTime<Utc>,
     pub offset_before_seconds: i32,
@@ -368,7 +370,7 @@ pub struct TimezoneHandlingDoc {
 }
 
 impl TimezoneHandlingDoc {
-    pub fn generate() -Self {
+    pub fn generate() -> Self {
         Self {
             storage_format: "All timestamps stored as UTC (DateTime<Utc>) in PostgreSQL TIMESTAMPTZ columns.",
             api_input_format: "ISO 8601 / RFC 3339 strings accepted; bare naive datetimes interpreted as UTC.",
