@@ -8,7 +8,6 @@ use soroban_pulse::timezone_locale::{
     convert_to_all_timezones, detect_dst_transition, format_datetime_for_locale,
     format_number_for_locale, parse_timestamp_lenient, scan_for_dst_transitions,
     validate_timestamp_range, DstTransitionKind, Locale, TimezoneConfig, TimezoneHandlingDoc,
-    SumVerificationConfig,
 };
 
 // ---------------------------------------------------------------------------
