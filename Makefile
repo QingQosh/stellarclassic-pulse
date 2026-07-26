@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help build test test-db lint fmt run docker-up docker-down migrate clean gen-openapi gen-postman
+.PHONY: help build test test-db lint fmt run docker-up docker-down migrate clean gen-openapi gen-postman deny
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*##"}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -23,6 +23,12 @@ lint: ## Run clippy with warnings as errors
 
 fmt: ## Format source code
 	cargo fmt
+
+deny: ## Run cargo-deny checks (advisories, bans, licenses, sources)
+	cargo deny check advisories
+	cargo deny check bans
+	cargo deny check licenses
+	cargo deny check sources
 
 run: ## Start the development server
 	cargo run
