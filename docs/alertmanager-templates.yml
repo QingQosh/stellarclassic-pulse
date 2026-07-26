@@ -1,0 +1,81 @@
+{{ define "slack.default.title" -}}
+[{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ .GroupLabels.alertname }}
+{{- end }}
+
+{{ define "slack.default.text" -}}
+{{ range .Alerts }}
+*Alert:* {{ .Annotations.summary }}
+*Severity:* {{ .Labels.severity }}
+*Component:* {{ .Labels.component }}
+*Description:* {{ .Annotations.description }}
+*Runbook:* <{{ .Annotations.runbook_url }}|View Runbook>
+{{ end }}
+{{- end }}
+
+{{ define "slack.critical.title" -}}
+🚨 [CRITICAL] {{ .GroupLabels.alertname }}
+{{- end }}
+
+{{ define "slack.critical.text" -}}
+{{ range .Alerts }}
+*Alert:* {{ .Annotations.summary }}
+*Severity:* {{ .Labels.severity }}
+*Component:* {{ .Labels.component }}
+*Description:* {{ .Annotations.description }}
+*Runbook:* <{{ .Annotations.runbook_url }}|View Runbook>
+*Action Required:* Immediate investigation needed
+{{ end }}
+{{- end }}
+
+{{ define "slack.warning.title" -}}
+⚠️ [WARNING] {{ .GroupLabels.alertname }}
+{{- end }}
+
+{{ define "slack.warning.text" -}}
+{{ range .Alerts }}
+*Alert:* {{ .Annotations.summary }}
+*Severity:* {{ .Labels.severity }}
+*Component:* {{ .Labels.component }}
+*Description:* {{ .Annotations.description }}
+*Runbook:* <{{ .Annotations.runbook_url }}|View Runbook>
+{{ end }}
+{{- end }}
+
+{{ define "slack.indexer.title" -}}
+🔄 [{{ .Status | toUpper }}] Indexer Alert: {{ .GroupLabels.alertname }}
+{{- end }}
+
+{{ define "slack.indexer.text" -}}
+{{ range .Alerts }}
+*Alert:* {{ .Annotations.summary }}
+*Severity:* {{ .Labels.severity }}
+*Description:* {{ .Annotations.description }}
+*Runbook:* <{{ .Annotations.runbook_url }}|View Runbook>
+{{ end }}
+{{- end }}
+
+{{ define "slack.database.title" -}}
+🗄️ [{{ .Status | toUpper }}] Database Alert: {{ .GroupLabels.alertname }}
+{{- end }}
+
+{{ define "slack.database.text" -}}
+{{ range .Alerts }}
+*Alert:* {{ .Annotations.summary }}
+*Severity:* {{ .Labels.severity }}
+*Description:* {{ .Annotations.description }}
+*Runbook:* <{{ .Annotations.runbook_url }}|View Runbook>
+{{ end }}
+{{- end }}
+
+{{ define "slack.notifications.title" -}}
+📧 [{{ .Status | toUpper }}] Notification Alert: {{ .GroupLabels.alertname }}
+{{- end }}
+
+{{ define "slack.notifications.text" -}}
+{{ range .Alerts }}
+*Alert:* {{ .Annotations.summary }}
+*Severity:* {{ .Labels.severity }}
+*Description:* {{ .Annotations.description }}
+*Runbook:* <{{ .Annotations.runbook_url }}|View Runbook>
+{{ end }}
+{{- end }}
