@@ -439,6 +439,9 @@ pub fn create_router_with_tx_and_tenant_map(
         .route("/admin/statistics/health", axum::routing::get(handlers::get_statistics_health))
         .route("/admin/statistics/refresh", axum::routing::post(handlers::refresh_statistics))
         .route("/admin/statistics/jobs", axum::routing::get(handlers::get_analysis_jobs))
+        // #696: SLI / SLO dashboard reporting endpoints (admin-gated)
+        .route("/admin/slo/report", axum::routing::get(handlers::get_slo_report))
+        .route("/admin/slo/sample", axum::routing::post(handlers::record_slo_sample))
         .route_layer(axum::middleware::from_fn_with_state(
             Arc::clone(&admin_auth_state),
             middleware::admin_auth_middleware,

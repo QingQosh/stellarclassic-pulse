@@ -788,6 +788,71 @@ pub fn record_batch_config_updated() {
     m::counter!("soroban_pulse_batch_config_updates_total").increment(1);
 }
 
+// ── Issue #696: SLI / SLO dashboard metrics ────────────────────────────────
+
+/// Set the rolling SLO completion ratio in `[0.0, 1.0]`.
+///
+/// A value of `1.0` means every sample in the window met the SLO target, while
+/// `0.5` means half met it. Steady values != 1.0 across the window surface as
+/// SLO completion gaps in the Grafana panel.
+pub fn update_slo_completion_ratio(slo: &str, component: &str, ratio: f64) {
+    m::gauge!(
+        "soroban_pulse_slo_completion_ratio",
+        "slo" => slo.to_string(),
+        "component" => component.to_string()
+    )
+    .set(ratio.clamp(0.0, 1.0));
+}
+
+/// Set the fraction of the error budget remaining in `[0.0, 1.0]`.
+///
+/// `1.0` = full budget, `0.0` = exhausted. Values < 0.1 trigger the
+/// `SLOErrorBudgetLow` Prometheus alert defined in `docs/alerts.yml`.
+pub fn update_slo_error_budget_remaining(slo: &str, component: &str, ratio: f64) {
+    m::gauge!(
+        "soroban_pulse_slo_error_budget_remaining",
+        "slo" => slo.to_string(),
+        "component" => component.to_string()
+    )
+    .set(ratio.clamp(0.0, 1.0));
+}
+
+/// Set the SLO burn rate (0 == no consumption; 1 == on track to exhaust budget
+/// exactly at end of window; > 2 == critical).
+pub fn update_slo_burn_rate(slo: &str, component: &str, rate: f64) {
+    let safe = if rate.is_finite() { rate.max(0.0) } else { 100.0 };
+    m::gauge!(
+        "soroban_pulse_slo_burn_rate",
+        "slo" => slo.to_string(),
+        "component" => component.to_string()
+    )
+    .set(safe);
+}
+
+/// Set the most recent SLI observation for an SLO (rendered in the SLI trend
+/// line chart).
+pub fn update_sli_current_value(slo: &str, component: &str, value: f64) {
+    let safe = if value.is_finite() { value } else { 0.0 };
+    m::gauge!(
+        "soroban_pulse_sli_current_value",
+        "slo" => slo.to_string(),
+        "component" => component.to_string()
+    )
+    .set(safe);
+}
+
+/// Record an SLO status transition (Met → AtRisk → Breached). Used by the
+/// Grafana alert panel and the `SLOStatusAtRisk` / `SLOStatusBreached` alert
+/// rules.
+pub fn record_slo_status_transition(slo: &str, status: &str) {
+    m::counter!(
+        "soroban_pulse_slo_evaluation_total",
+        "slo" => slo.to_string(),
+        "status" => status.to_string()
+    )
+    .increment(1);
+}
+
 // ── Issue #630: Resource utilization metrics ────────────────────────────────
 
 /// Update file descriptor count gauge

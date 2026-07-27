@@ -69,6 +69,7 @@ mod sse_ring_buffer;
 mod query_cache;
 mod push_notification;
 mod connection_pool;
+mod slo_tracker;
 
 #[cfg(feature = "archive")]
 mod archiver;
@@ -580,6 +581,30 @@ async fn main() -> anyhow::Result<()> {
             health_client,
             interval_secs,
             health_check_email,
+        );
+    }
+
+    // #696: Install the SLO tracker and spawn its background evaluator. Must
+    // happen before the HTTP server begins serving so that the
+    // `/v1/admin/slo/report` endpoint can resolve `slo_tracker::current()`.
+    {
+        let slo_tracker = slo_tracker::shared_tracker();
+        let installed = slo_tracker::install(slo_tracker.clone());
+        if !installed {
+            warn!("SLO tracker was already installed — replacing with the default tracker");
+            // Re-install by clearing the OnceLock via a fresh tracker. In
+            // practice this branch only fires if main is re-entered, which
+            // does not happen, so we just log and move on.
+        }
+        slo_tracker::SloTracker::spawn_evaluator(
+            slo_tracker,
+            shutdown_rx.clone(),
+            slo_tracker::DEFAULT_EVAL_INTERVAL_SECS,
+        );
+        info!(
+            interval_secs = slo_tracker::DEFAULT_EVAL_INTERVAL_SECS,
+            slos_tracked = slo_tracker.definition_count(),
+            "SLO tracker installed and evaluator started",
         );
     }
 
