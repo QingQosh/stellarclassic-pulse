@@ -263,6 +263,14 @@ HAVING COUNT(*) > 10;
 
 When a webhook endpoint is persistently unavailable, consider temporarily disabling it via `PATCH /v1/webhooks/:id` and re-enabling it once the endpoint recovers. This prevents your retry queue from building up.
 
+## Anti-Patterns to Avoid
+
+- Subscribing to every contract and filtering in the consumer when a contract or topic filter is available.
+- Performing long-running work before returning `200 OK` from a webhook handler.
+- Creating duplicate subscriptions for the same contract, topic set, and destination.
+- Ignoring `Retry-After` on REST polling clients after `429` or `503` responses.
+- Reconnecting SSE clients in tight loops without jitter or `Last-Event-ID`.
+
 ## Related Documentation
 
 - [Webhook verification](webhook-verification.md)

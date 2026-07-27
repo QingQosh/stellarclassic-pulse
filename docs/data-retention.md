@@ -234,6 +234,12 @@ psql "$DATABASE_URL" -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
 
 Revoke database credentials and destroy any object-store archives according to your organisation's data disposal policy.
 
+## Audit Trail Retention
+
+Keep admin audit logs for at least 365 days, or longer when required by your compliance program. Audit records should include the actor, action, target resource, request identifier, timestamp, and outcome, but should not store full secrets or unnecessary payload data.
+
+Audit logs should be immutable to normal application users. Export them to append-only object storage or a SIEM before database purge jobs run, and restrict deletion permissions to break-glass administrators. When responding to GDPR erasure requests, retain audit entries needed to prove compliance while redacting direct personal identifiers where legally required.
+
 ## Related Documentation
 
 - [Encryption at rest setup guide](encryption.md)

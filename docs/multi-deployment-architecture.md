@@ -210,3 +210,18 @@ curl https://region-b.pulse.example.com/healthz/ready
 curl https://region-a.pulse.example.com/v1/metrics | grep soroban_pulse_indexer_is_leader
 curl https://region-b.pulse.example.com/v1/metrics | grep soroban_pulse_indexer_is_leader
 ```
+
+## Data Consistency
+
+SorobanPulse should use a single writable PostgreSQL primary per network. Cross-region replicas are eventually consistent and can lag behind the primary, so route admin operations, subscription changes, webhook registration, and replay jobs to the primary region.
+
+For read traffic, choose a consistency mode per workload:
+
+| Workload | Recommended routing | Consistency expectation |
+|---|---|---|
+| Dashboard analytics | Nearest healthy replica | Eventual consistency is acceptable |
+| Alerting and webhook delivery | Primary region | Avoid missed or duplicated delivery decisions |
+| Replay/backfill jobs | Primary region | Reads the latest checkpoint and writes deterministic output |
+| Public event search | Replica with lag checks | Reject or reroute when replica lag exceeds the SLA |
+
+Use idempotent consumers and ledger checkpoints to handle duplicate reads after failover. After promotion, verify the new primary has replayed all WAL up to the last known `indexer_checkpoints` row before enabling webhook delivery.

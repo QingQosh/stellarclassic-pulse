@@ -182,6 +182,18 @@ GET /v1/events?event_type=contract
 - Events exceeding this limit are logged and skipped
 - The `soroban_pulse_events_oversized_total` counter tracks skipped events
 
+## Schema Validation Rules
+
+Use these rules when publishing or validating decoded contract events:
+
+- `contract_id` must be a valid Stellar contract strkey starting with `C`.
+- `tx_hash` and `ledger_hash`, when present, must be lowercase hex strings.
+- `ledger` must be a positive integer and `ledger_closed_at` must be an RFC 3339 timestamp.
+- `topic` must contain base64-encoded XDR `ScVal` segments, with `topic[0]` as a symbol for filterable contract events.
+- Numeric Soroban values larger than JavaScript's safe integer range must be serialized as strings.
+- `event_type` must be one of `contract`, `system`, or `diagnostic`.
+- `value` must be valid JSON and stay within `MAX_EVENT_DATA_BYTES`.
+
 ## Versioning
 
 The event schema is tied to the Soroban protocol version. Breaking changes are announced in `CHANGELOG.md` and the `schema_version` column in the database tracks the protocol version in effect when each event was stored.
