@@ -96,6 +96,7 @@ otel = ["dep:tracing-opentelemetry", "dep:opentelemetry", "dep:opentelemetry-otl
 zipkin = ["dep:opentelemetry", "dep:opentelemetry-zipkin", "dep:opentelemetry_sdk"]
 encryption = ["dep:aes-gcm", "dep:rand"]
 kinesis = ["dep:aws-sdk-kinesis", "dep:aws-config"]
+sqs = []
 pubsub = ["dep:google-cloud-pubsub"]
 archive = []
 lua = ["dep:mlua"]

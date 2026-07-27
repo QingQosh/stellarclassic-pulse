@@ -17,6 +17,7 @@ mod distributed_tracing;
 mod email;
 mod encryption;
 mod error;
+mod event_hubs;
 mod graceful_shutdown;
 mod handlers;
 mod index_monitor;
@@ -43,6 +44,7 @@ mod resource_metrics;
 mod routes;
 mod rpc_client;
 mod schema_validator;
+mod sqs;
 mod stats_refresh;
 mod subscriptions;
 mod webhook;
@@ -491,6 +493,37 @@ async fn main() -> anyhow::Result<()> {
                 info!("Pub/Sub publisher enabled");
             }
             Err(e) => tracing::warn!(error = %e, "Failed to initialize Pub/Sub publisher"),
+        }
+    }
+
+    // Issue #706: Initialize SQS publisher if configured
+    #[cfg(feature = "sqs")]
+    if let (Some(queue_url), Some(region)) =
+        (config.sqs_queue_url.clone(), config.aws_region.clone())
+    {
+        let publisher = sqs::aws::AwsSqsPublisher::from_env(
+            queue_url,
+            region,
+            config.sqs_dlq_url.clone(),
+            config.sqs_batch_size,
+        )
+        .await;
+        indexer.set_sqs_publisher(std::sync::Arc::new(publisher));
+        info!("SQS publisher enabled");
+    }
+
+    // Issue #707: Initialize Azure Event Hubs publisher if configured
+    if let Some(connection_string) = config.event_hubs_connection_string.clone() {
+        match event_hubs::HttpEventHubsPublisher::from_connection_string(
+            &connection_string,
+            config.event_hub_name.clone().unwrap_or_default(),
+            config.event_hubs_partition_strategy.clone(),
+        ) {
+            Ok(publisher) => {
+                indexer.set_event_hubs_publisher(std::sync::Arc::new(publisher));
+                info!("Event Hubs publisher enabled");
+            }
+            Err(e) => warn!(error = %e, "Failed to initialize Event Hubs publisher"),
         }
     }
 

@@ -260,6 +260,14 @@ pub struct Config {
     // Issue #265: AWS Kinesis streaming
     pub kinesis_stream_name: Option<String>,
     pub aws_region: Option<String>,
+    // Issue #706: AWS SQS streaming
+    pub sqs_queue_url: Option<String>,
+    pub sqs_dlq_url: Option<String>,
+    pub sqs_batch_size: usize,
+    // Issue #707: Azure Event Hubs streaming
+    pub event_hubs_connection_string: Option<String>,
+    pub event_hub_name: Option<String>,
+    pub event_hubs_partition_strategy: String,
     // Issue #264: GCP Pub/Sub streaming
     pub pubsub_project_id: Option<String>,
     pub pubsub_topic_id: Option<String>,
@@ -472,6 +480,12 @@ impl Default for Config {
             dedup_window_secs: 3600,
             kinesis_stream_name: None,
             aws_region: None,
+            sqs_queue_url: None,
+            sqs_dlq_url: None,
+            sqs_batch_size: 10,
+            event_hubs_connection_string: None,
+            event_hub_name: None,
+            event_hubs_partition_strategy: "contract_id".to_string(),
             pubsub_project_id: None,
             pubsub_topic_id: None,
             pubsub_enable_message_ordering: true,
@@ -1315,6 +1329,15 @@ impl Config {
                 .ok()
                 .filter(|s| !s.is_empty()),
             aws_region: env::var("AWS_REGION").ok().filter(|s| !s.is_empty()),
+            sqs_queue_url: env_or_file("SQS_QUEUE_URL", &file),
+            sqs_dlq_url: env_or_file("SQS_DLQ_URL", &file),
+            sqs_batch_size: env_or_file("SQS_BATCH_SIZE", &file)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10),
+            event_hubs_connection_string: env_or_file("EVENT_HUBS_CONNECTION_STRING", &file),
+            event_hub_name: env_or_file("EVENT_HUB_NAME", &file),
+            event_hubs_partition_strategy: env_or_file("EVENT_HUBS_PARTITION_STRATEGY", &file)
+                .unwrap_or_else(|| "contract_id".to_string()),
             pubsub_project_id: env::var("PUBSUB_PROJECT_ID").ok().filter(|s| !s.is_empty()),
             pubsub_topic_id: env::var("PUBSUB_TOPIC_ID").ok().filter(|s| !s.is_empty()),
             pubsub_enable_message_ordering: env_or_file("PUBSUB_ENABLE_MESSAGE_ORDERING", &file)

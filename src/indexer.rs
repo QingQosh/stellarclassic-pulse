@@ -304,6 +304,8 @@ pub struct Indexer<R: RpcClient> {
     session_bloom: SessionBloomFilter,
     kinesis_publisher: Option<Arc<dyn KinesisPublisher>>,
     pubsub_publisher: Option<Arc<dyn PubSubPublisher>>,
+    sqs_publisher: Option<Arc<dyn crate::sqs::SqsPublisher>>,
+    event_hubs_publisher: Option<Arc<dyn crate::event_hubs::EventHubsPublisher>>,
     sse_ring_buffer: Option<Arc<crate::sse_ring_buffer::SseRingBuffer>>,
     #[cfg(feature = "kafka")]
     kafka_publisher: Option<Arc<dyn crate::kafka::KafkaPublisher>>,
@@ -333,6 +335,8 @@ impl<R: RpcClient> Indexer<R> {
             session_bloom: SessionBloomFilter::new(50_000, 0.001),
             kinesis_publisher: None,
             pubsub_publisher: None,
+            sqs_publisher: None,
+            event_hubs_publisher: None,
             sse_ring_buffer: None,
             #[cfg(feature = "kafka")]
             kafka_publisher: None,
@@ -376,6 +380,19 @@ impl<R: RpcClient> Indexer<R> {
     /// Set the Pub/Sub publisher for streaming events (issue #264).
     pub fn set_pubsub_publisher(&mut self, publisher: Arc<dyn PubSubPublisher>) {
         self.pubsub_publisher = Some(publisher);
+    }
+
+    /// Set the SQS publisher for serverless event processing.
+    pub fn set_sqs_publisher(&mut self, publisher: Arc<dyn crate::sqs::SqsPublisher>) {
+        self.sqs_publisher = Some(publisher);
+    }
+
+    /// Set the Event Hubs publisher for multi-cloud event streaming.
+    pub fn set_event_hubs_publisher(
+        &mut self,
+        publisher: Arc<dyn crate::event_hubs::EventHubsPublisher>,
+    ) {
+        self.event_hubs_publisher = Some(publisher);
     }
 
     /// Set the Kafka publisher and topic for event streaming.
@@ -876,6 +893,12 @@ impl<R: RpcClient> Indexer<R> {
                             // Issue #264: publish to Pub/Sub
                             if let Some(ref publisher) = self.pubsub_publisher {
                                 crate::pubsub::publish_event(publisher.as_ref(), &event).await;
+                            }
+                            if let Some(ref publisher) = self.sqs_publisher {
+                                crate::sqs::publish_event(publisher.as_ref(), &event).await;
+                            }
+                            if let Some(ref publisher) = self.event_hubs_publisher {
+                                crate::event_hubs::publish_event(publisher.as_ref(), &event).await;
                             }
                             #[cfg(feature = "kafka")]
                             if let (Some(ref publisher), Some(ref topic)) =
@@ -1502,6 +1525,12 @@ mod tests {
                 bloom_filter_capacity: 100_000,
                 kinesis_stream_name: None,
                 aws_region: None,
+                sqs_queue_url: None,
+                sqs_dlq_url: None,
+                sqs_batch_size: 10,
+                event_hubs_connection_string: None,
+                event_hub_name: None,
+                event_hubs_partition_strategy: "contract_id".to_string(),
                 pubsub_project_id: None,
                 pubsub_topic_id: None,
                 max_event_data_bytes: 65536,
@@ -1766,6 +1795,12 @@ mod tests {
                 bloom_filter_capacity: 100_000,
                 kinesis_stream_name: None,
                 aws_region: None,
+                sqs_queue_url: None,
+                sqs_dlq_url: None,
+                sqs_batch_size: 10,
+                event_hubs_connection_string: None,
+                event_hub_name: None,
+                event_hubs_partition_strategy: "contract_id".to_string(),
                 pubsub_project_id: None,
                 pubsub_topic_id: None,
                 max_event_data_bytes: 65536,
