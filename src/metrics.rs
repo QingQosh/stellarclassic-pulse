@@ -711,6 +711,28 @@ pub fn record_query_plan_estimated_rows(query_type: &str, estimated_rows: f64) {
     .record(estimated_rows);
 }
 
+// ── Query Response Streaming metrics (Issue #688) ──────────────────────────────
+
+/// Record item sent in streaming response
+pub fn record_streaming_response_item_sent() {
+    m::counter!("soroban_pulse_streaming_response_items_sent_total").increment(1);
+}
+
+/// Record streaming response completed with item count
+pub fn record_streaming_response_completed(item_count: u64) {
+    m::counter!("soroban_pulse_streaming_responses_completed_total").increment(1);
+    m::histogram!("soroban_pulse_streaming_response_items_per_stream").record(item_count as f64);
+}
+
+/// Record streaming response error
+pub fn record_streaming_response_error(error_type: &str) {
+    m::counter!(
+        "soroban_pulse_streaming_response_errors_total",
+        "error_type" => error_type.to_string()
+    )
+    .increment(1);
+}
+
 // ── JSON Serialization metrics (Issue #687) ──────────────────────────────────
 
 /// Record JSON serialization cache hit

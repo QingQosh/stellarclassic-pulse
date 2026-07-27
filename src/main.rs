@@ -14,6 +14,7 @@ mod cursor_expiry_handler;
 mod db;
 mod advisory_lock;
 mod serialization_cache;
+mod streaming_response;
 mod dedup;
 mod distributed_tracing;
 mod email;
