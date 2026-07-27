@@ -172,6 +172,8 @@ pub struct AppState {
         handlers::upsert_anonymization_rule,
         handlers::delete_anonymization_rule,
         handlers::scan_event_for_pii,
+        handlers::get_index_fragmentation,
+        handlers::reindex_index,
     ),
     components(schemas(
         crate::models::Event,
@@ -544,6 +546,9 @@ pub fn create_router_with_tx_and_tenant_map(
         // #587: Feature flag management
         .route("/admin/feature-flags", axum::routing::get(handlers::list_feature_flags))
         .route("/admin/feature-flags/audit", axum::routing::get(handlers::get_feature_flag_audit))
+        // #694: Index fragmentation monitoring
+        .route("/admin/indexes/fragmentation", axum::routing::get(handlers::get_index_fragmentation))
+        .route("/admin/indexes/{index_name}/reindex", axum::routing::post(handlers::reindex_index))
         // Issue #609: Multi-chain networks
         .route("/networks", axum::routing::get(handlers::list_networks))
         // Issue #608: Ledger hash endpoints
