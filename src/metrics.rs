@@ -762,6 +762,28 @@ pub fn record_serialization_time(entity_type: &str, duration_us: u64) {
     .record(duration_us as f64);
 }
 
+// ── PostgreSQL Query Plan Caching metrics (Issue #689) ─────────────────────────
+
+/// Record query plan cache hit
+pub fn record_query_plan_cache_hit() {
+    m::counter!("soroban_pulse_query_plan_cache_hits_total").increment(1);
+}
+
+/// Record query plan cache miss
+pub fn record_query_plan_cache_miss() {
+    m::counter!("soroban_pulse_query_plan_cache_misses_total").increment(1);
+}
+
+/// Record query plan cached
+pub fn record_query_plan_cached() {
+    m::counter!("soroban_pulse_query_plans_cached_total").increment(1);
+}
+
+/// Record query planning time in milliseconds
+pub fn record_query_planning_time(planning_time_ms: f64) {
+    m::histogram!("soroban_pulse_query_planning_time_ms").record(planning_time_ms);
+}
+
 // ── Advisory Lock metrics (Issue #686) ────────────────────────────────────────
 
 /// Record successful advisory lock acquisition

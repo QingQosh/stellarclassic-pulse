@@ -70,6 +70,7 @@ mod feature_flags;
 mod graphql;
 mod sse_ring_buffer;
 mod query_cache;
+mod query_plan_cache;
 mod push_notification;
 mod connection_pool;
 
