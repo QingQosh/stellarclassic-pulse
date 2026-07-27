@@ -11,6 +11,7 @@ use tracing::{error, info, instrument, span, warn, Level};
 use crate::{
     bloom_filter::{EventBloomFilter, SessionBloomFilter},
     config::{Config, HealthState, IndexerState},
+    cursor_expiry_handler::{CursorExpiryBackoff, is_cursor_expiry_error},
     kinesis::KinesisPublisher,
     metrics,
     models::{GetEventsResult, LatestLedgerResult, RpcResponse, SorobanEvent},
@@ -717,6 +718,8 @@ impl<R: RpcClient> Indexer<R> {
         let mut total_rpc_ms = 0u128;
         let mut total_db_ms = 0u128;
         let start_ledger_for_log = start_ledger;
+        // Issue #685: Handle cursor expiry with exponential backoff
+        let mut cursor_expiry_backoff = CursorExpiryBackoff::new();
 
         tracing::debug!(
             start_ledger = start_ledger,
@@ -737,10 +740,41 @@ impl<R: RpcClient> Indexer<R> {
                 )
                 .await
             {
-                Ok(r) => r,
+                Ok(r) => {
+                    // Reset backoff on successful RPC call
+                    cursor_expiry_backoff.reset();
+                    r
+                }
                 Err(msg) => {
                     warn!(error = %msg, "RPC error");
                     metrics::record_rpc_error();
+
+                    // Issue #685: Handle cursor expiry with exponential backoff and fallback
+                    if is_cursor_expiry_error(&msg) {
+                        if cursor_expiry_backoff.should_fallback() {
+                            warn!(
+                                retry_count = cursor_expiry_backoff.retry_count(),
+                                "Cursor expired: max retries reached, falling back to ledger-based pagination"
+                            );
+                            // Fallback: clear cursor and retry from ledger position
+                            cursor = None;
+                            cursor_expiry_backoff.reset();
+                            // Wait before retry
+                            sleep(Duration::from_millis(100)).await;
+                            continue;
+                        } else {
+                            // Apply exponential backoff and retry
+                            let backoff_duration = cursor_expiry_backoff.next_backoff();
+                            warn!(
+                                retry_count = cursor_expiry_backoff.retry_count(),
+                                backoff_ms = backoff_duration.as_millis(),
+                                "Cursor expired: applying exponential backoff and retrying"
+                            );
+                            sleep(backoff_duration).await;
+                            continue;
+                        }
+                    }
+
                     return Err(IndexerFetchError::Rpc(msg));
                 }
             };
