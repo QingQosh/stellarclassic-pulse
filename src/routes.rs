@@ -431,6 +431,14 @@ pub fn create_router_with_tx_and_tenant_map(
         .route("/admin/contracts/{contract_id}/schema", axum::routing::post(handlers::register_contract_schema).get(handlers::get_contract_schema).delete(handlers::delete_contract_schema))
         .route("/admin/contracts/{contract_id}/validate", axum::routing::post(handlers::validate_event_data_against_schema))
         .route("/admin/schemas", axum::routing::get(handlers::list_contract_schemas))
+        .route("/admin/pool-config", axum::routing::get(handlers::get_pool_tuning_guide))
+        .route("/admin/pool-config/statistics", axum::routing::get(handlers::get_pool_statistics))
+        .route("/admin/pool-config/health", axum::routing::get(handlers::get_pool_health))
+        .route("/admin/statistics/report", axum::routing::get(handlers::get_statistics_report))
+        .route("/admin/statistics/stale", axum::routing::get(handlers::detect_stale_statistics))
+        .route("/admin/statistics/health", axum::routing::get(handlers::get_statistics_health))
+        .route("/admin/statistics/refresh", axum::routing::post(handlers::refresh_statistics))
+        .route("/admin/statistics/jobs", axum::routing::get(handlers::get_analysis_jobs))
         .route_layer(axum::middleware::from_fn_with_state(
             Arc::clone(&admin_auth_state),
             middleware::admin_auth_middleware,

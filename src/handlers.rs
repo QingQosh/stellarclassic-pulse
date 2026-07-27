@@ -4347,6 +4347,234 @@ pub async fn resume_indexer(
     Ok(Json(json!({ "indexer_paused": false })))
 }
 
+/// Get current database connection pool statistics
+#[utoipa::path(
+    get,
+    path = "/v1/admin/pool-config/statistics",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Pool statistics retrieved", body = PoolStatistics),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    )
+)]
+pub async fn get_pool_statistics(
+    State(state): State<AppState>,
+) -> Result<Json<crate::models::PoolStatistics>, (StatusCode, Json<Value>)> {
+    crate::pool_management::get_pool_config(&state.db, state.pool_stats.clone(), state.config.db.max_connections)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))
+}
+
+/// Get pool configuration and generate tuning recommendations
+#[utoipa::path(
+    get,
+    path = "/v1/admin/pool-config",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Pool configuration retrieved", body = PoolTuningGuide),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    )
+)]
+pub async fn get_pool_tuning_guide(
+    State(state): State<AppState>,
+) -> Result<Json<crate::models::PoolTuningGuide>, (StatusCode, Json<Value>)> {
+    let pool_stats = crate::pool_management::get_pool_config(&state.db, state.pool_stats.clone(), state.config.db.max_connections)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+
+    let current_config = crate::models::PoolConfig {
+        max_connections: state.config.db.max_connections,
+        min_connections: state.config.db.min_connections.unwrap_or(1),
+        connection_timeout_secs: 30,
+        idle_timeout_secs: 600,
+        exhaustion_threshold: 0.9,
+        sample_interval_secs: 15,
+    };
+
+    let guide = crate::pool_management::generate_tuning_guide(&pool_stats, &current_config);
+    Ok(Json(guide))
+}
+
+/// Get pool health status
+#[utoipa::path(
+    get,
+    path = "/v1/admin/pool-config/health",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Pool health status", body = Value),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    )
+)]
+pub async fn get_pool_health(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    crate::pool_management::check_pool_health(
+        &state.db,
+        state.pool_stats.clone(),
+        state.config.db.max_connections,
+        0.9,
+    )
+    .await
+    .map(Json)
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))
+}
+
+/// Get comprehensive statistics report for all tables
+#[utoipa::path(
+    get,
+    path = "/v1/admin/statistics/report",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Statistics report for all tables", body = Vec<StatisticsReportItem>),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Failed to generate report", body = ErrorResponse),
+    )
+)]
+pub async fn get_statistics_report(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::models::StatisticsReportItem>>, (StatusCode, Json<Value>)> {
+    crate::statistics_management::get_statistics_report(&state.db)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))
+}
+
+/// Detect which tables have stale statistics
+#[utoipa::path(
+    get,
+    path = "/v1/admin/statistics/stale",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Stale statistics detection results", body = Vec<StalenessDetection>),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Failed to detect stale statistics", body = ErrorResponse),
+    )
+)]
+pub async fn detect_stale_statistics(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::models::StalenessDetection>>, (StatusCode, Json<Value>)> {
+    crate::statistics_management::detect_stale_statistics(&state.db)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))
+}
+
+/// Get overall statistics health score
+#[utoipa::path(
+    get,
+    path = "/v1/admin/statistics/health",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Statistics health score (0-100)", body = StatisticsHealth),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Failed to get health score", body = ErrorResponse),
+    )
+)]
+pub async fn get_statistics_health(
+    State(state): State<AppState>,
+) -> Result<Json<crate::models::StatisticsHealth>, (StatusCode, Json<Value>)> {
+    let health_score = crate::statistics_management::get_statistics_health_score(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+
+    let stale = crate::statistics_management::detect_stale_statistics(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+
+    let stale_count = stale.iter().filter(|s| s.is_stale).count();
+    let total_count = stale.len();
+
+    let status = if health_score >= 80 {
+        "healthy"
+    } else if health_score >= 60 {
+        "degraded"
+    } else {
+        "critical"
+    };
+
+    Ok(Json(crate::models::StatisticsHealth {
+        health_score,
+        status: status.to_string(),
+        stale_tables_count: stale_count as u32,
+        total_tables: total_count as u32,
+        timestamp: chrono::Utc::now(),
+    }))
+}
+
+/// Refresh statistics for all tables or a specific table
+#[utoipa::path(
+    post,
+    path = "/v1/admin/statistics/refresh",
+    tag = "admin",
+    params(
+        ("table_name" = Option<String>, Query, description = "Optional table name to refresh only one table")
+    ),
+    responses(
+        (status = 202, description = "Statistics refresh job started"),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Failed to refresh statistics", body = ErrorResponse),
+    )
+)]
+pub async fn refresh_statistics(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
+    let table_name = params.get("table_name").map(|s| s.as_str());
+
+    match crate::statistics_management::refresh_table_statistics(&state.db, table_name).await {
+        Ok(results) => {
+            let summary = if let Some(table) = table_name {
+                format!("Refreshed statistics for table: {}", table)
+            } else {
+                format!("Refreshed statistics for {} tables", results.len())
+            };
+
+            Ok((
+                StatusCode::ACCEPTED,
+                Json(json!({
+                    "message": summary,
+                    "results_count": results.len(),
+                    "timestamp": chrono::Utc::now()
+                })),
+            ))
+        }
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )),
+    }
+}
+
+/// Get recent statistics analysis jobs
+#[utoipa::path(
+    get,
+    path = "/v1/admin/statistics/jobs",
+    tag = "admin",
+    params(
+        ("limit" = Option<i64>, Query, description = "Maximum number of jobs to return (default 50)")
+    ),
+    responses(
+        (status = 200, description = "Recent analysis jobs", body = Vec<StatisticsAnalysisJobInfo>),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Failed to retrieve jobs", body = ErrorResponse),
+    )
+)]
+pub async fn get_analysis_jobs(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Vec<crate::models::StatisticsAnalysisJobInfo>>, (StatusCode, Json<Value>)> {
+    let limit = params
+        .get("limit")
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(50);
+
+    crate::statistics_management::get_recent_analysis_jobs(&state.db, limit)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))
+}
+
 /// Start a background re-encryption job to migrate events from old key to new key.
 #[utoipa::path(
     post,
