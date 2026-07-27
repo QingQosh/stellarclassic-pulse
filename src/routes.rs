@@ -434,6 +434,11 @@ pub fn create_router_with_tx_and_tenant_map(
         .route("/admin/pool-config", axum::routing::get(handlers::get_pool_tuning_guide))
         .route("/admin/pool-config/statistics", axum::routing::get(handlers::get_pool_statistics))
         .route("/admin/pool-config/health", axum::routing::get(handlers::get_pool_health))
+        .route("/admin/statistics/report", axum::routing::get(handlers::get_statistics_report))
+        .route("/admin/statistics/stale", axum::routing::get(handlers::detect_stale_statistics))
+        .route("/admin/statistics/health", axum::routing::get(handlers::get_statistics_health))
+        .route("/admin/statistics/refresh", axum::routing::post(handlers::refresh_statistics))
+        .route("/admin/statistics/jobs", axum::routing::get(handlers::get_analysis_jobs))
         .route_layer(axum::middleware::from_fn_with_state(
             Arc::clone(&admin_auth_state),
             middleware::admin_auth_middleware,

@@ -45,3 +45,4 @@ pub mod push_notification;
 pub mod connection_pool;
 pub mod push_preload;
 pub mod pool_management;
+pub mod statistics_management;

@@ -1329,3 +1329,52 @@ pub struct PoolTuningGuide {
     pub recommendations: Vec<String>,
     pub reasoning: String,
 }
+
+// ── Issue #693: Database statistics auto-analysis ──────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct StatisticsReportItem {
+    pub table_name: String,
+    pub last_analyzed: Option<DateTime<Utc>>,
+    pub hours_since_analyze: Option<i32>,
+    pub is_stale: bool,
+    pub row_count: Option<i64>,
+    pub table_size_mb: Option<f64>,
+    pub recent_jobs_count: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct StatisticsAnalysisJobInfo {
+    pub job_id: String,
+    pub table_name: String,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub duration_seconds: Option<i32>,
+    pub row_count_analyzed: Option<i64>,
+    pub status: String,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct StalenessDetection {
+    pub table_name: String,
+    pub is_stale: bool,
+    pub hours_since_analyze: i32,
+    pub staleness_threshold_hours: i32,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct StatisticsHealth {
+    pub health_score: u32,
+    pub status: String,
+    pub stale_tables_count: u32,
+    pub total_tables: u32,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AutoAnalyzeScheduleResponse {
+    pub message: String,
+    pub tables_scheduled: u32,
+    pub timestamp: DateTime<Utc>,
+}
