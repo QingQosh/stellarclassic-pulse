@@ -196,6 +196,36 @@ jobs:
       - run: sudo apt-get install -y libpq-dev pkg-config libssl-dev
       - run: cargo test --test resilience
 
+  chaos-tests:
+    name: Chaos Engineering Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: soroban_pulse_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      - uses: actions/cache@v4
+        with:
+          path: .sqlx
+          key: ${{ runner.os }}-sqlx-${{ hashFiles('.sqlx/**') }}
+          restore-keys: ${{ runner.os }}-sqlx-
+      - run: sudo apt-get install -y libpq-dev pkg-config libssl-dev
+      - run: cargo test --test chaos_tests
+
   bench:
     name: Bench (non-blocking)
     runs-on: ubuntu-latest
