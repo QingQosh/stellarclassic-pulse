@@ -36,6 +36,7 @@ pub mod rpc_client;
 pub mod schema_validator;
 pub mod subscriptions;
 pub mod webhook;
+pub mod webhook_template;
 pub mod webhook_verification;
 pub mod xdr_validation;
 pub mod financial_accuracy;
