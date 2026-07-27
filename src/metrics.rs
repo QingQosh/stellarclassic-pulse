@@ -711,6 +711,62 @@ pub fn record_query_plan_estimated_rows(query_type: &str, estimated_rows: f64) {
     .record(estimated_rows);
 }
 
+// ── Advisory Lock metrics (Issue #686) ────────────────────────────────────────
+
+/// Record successful advisory lock acquisition
+pub fn record_advisory_lock_acquired(lock_id: i64) {
+    m::counter!(
+        "soroban_pulse_advisory_lock_acquired_total",
+        "lock_id" => lock_id.to_string()
+    )
+    .increment(1);
+}
+
+/// Record advisory lock release
+pub fn record_advisory_lock_released(lock_id: i64) {
+    m::counter!(
+        "soroban_pulse_advisory_lock_released_total",
+        "lock_id" => lock_id.to_string()
+    )
+    .increment(1);
+}
+
+/// Record advisory lock acquisition retry
+pub fn record_advisory_lock_retry(lock_id: i64) {
+    m::counter!(
+        "soroban_pulse_advisory_lock_retries_total",
+        "lock_id" => lock_id.to_string()
+    )
+    .increment(1);
+}
+
+/// Record advisory lock acquisition timeout
+pub fn record_advisory_lock_timeout(lock_id: i64) {
+    m::counter!(
+        "soroban_pulse_advisory_lock_timeouts_total",
+        "lock_id" => lock_id.to_string()
+    )
+    .increment(1);
+}
+
+/// Record advisory lock acquisition error
+pub fn record_advisory_lock_error(lock_id: i64) {
+    m::counter!(
+        "soroban_pulse_advisory_lock_errors_total",
+        "lock_id" => lock_id.to_string()
+    )
+    .increment(1);
+}
+
+/// Record advisory lock release error
+pub fn record_advisory_lock_release_error(lock_id: i64) {
+    m::counter!(
+        "soroban_pulse_advisory_lock_release_errors_total",
+        "lock_id" => lock_id.to_string()
+    )
+    .increment(1);
+}
+
 // ── Health check metrics ──────────────────────────────────────────────────────
 
 /// Record successful PostgreSQL health check

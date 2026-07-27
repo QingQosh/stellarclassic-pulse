@@ -12,6 +12,7 @@ mod content_filter;
 mod cross_chain_correlation;
 mod cursor_expiry_handler;
 mod db;
+mod advisory_lock;
 mod dedup;
 mod distributed_tracing;
 mod email;
