@@ -480,6 +480,8 @@ pub fn create_router_with_tx_and_tenant_map(
         .route("/config/anonymization/rules", axum::routing::post(handlers::upsert_anonymization_rule))
         .route("/config/anonymization/rules/{name}", axum::routing::delete(handlers::delete_anonymization_rule))
         .route("/config/anonymization/scan", axum::routing::post(handlers::scan_event_for_pii))
+        .route("/cross-chain/trace/{tx_hash}", get(handlers::get_cross_chain_trace))
+        .route("/cross-chain/causality", get(handlers::analyze_causality))
         .route("/contracts/{contract_id}/summary", get(handlers::get_contract_summary))
         .route("/contracts/{contract_id}/event-counts", get(handlers::get_contract_event_counts))
         .route("/admin/replay", axum::routing::post(handlers::replay_events))

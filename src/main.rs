@@ -9,6 +9,7 @@ mod audit_logging;
 mod bloom_filter;
 mod config;
 mod content_filter;
+mod cross_chain_correlation;
 mod cursor_expiry_handler;
 mod db;
 mod dedup;
