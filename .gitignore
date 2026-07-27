@@ -58,35 +58,48 @@ coverage/
 *.bak
 *.orig
 
+# Scratch / one-off patch and fix scripts
+patch.py
+patch2.py
+patch3.py
+patch_handlers.py
+fix_all.py
+fix_sort.py
+fix_sort2.py
+fix_openapi.py
+fix_openapi2.py
+add_openapi_info.py
+
+# Implementation summary / session artefacts
+IMPLEMENTATION_SUMMARY.md
+IMPLEMENTATION_COMPLETE.md
+SDK_IMPLEMENTATION_SUMMARY.md
+validate_implementation.ps1
+test_email_feature.sh
+q-dev-chat-*.md
+ai-chatbot-ui.html
+
+# Leftover generated / backup source files
+src/*.rs.new
+src/*.rs.bak
+
 # SQLx offline query cache (generated, not hand-authored)
 # Keep .sqlx/ directory committed so offline mode works in CI
 # Uncomment the line below only if you regenerate it in CI:
 # .sqlx/
 
-# Scratch / one-off patch scripts (not part of the project)
-patch.py
-patch2.py
-patch3.py
-patch_handlers.py
-fix_sort.py
-fix_sort2.py
-fix_all.py
-fix_openapi.py
-fix_openapi2.py
-add_openapi_info.py
-validate_implementation.ps1
-
-# Throwaway implementation notes generated during dev
-IMPLEMENTATION_SUMMARY.md
-IMPLEMENTATION_COMPLETE.md
-SDK_IMPLEMENTATION_SUMMARY.md
-
-# AI / chat session artefacts
-ai-chatbot-ui.html
-q-dev-chat-*.md
-
-# Local test scripts
-test_email_feature.sh
-
-# Generated handlers backup
-src/handlers.rs.new
+# Terraform state and sensitive files
+# Track source (.tf files and .tfvars.example templates)
+# Ignore state, lock, and working directories
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfstate.*.backup
+.terraform.lock.hcl
+terraform/.terraform.lock.hcl
+terraform/**/.terraform/
+terraform/**/terraform.tfstate
+terraform/**/terraform.tfstate.backup
+# Never commit actual tfvars (may contain secrets)
+terraform.tfvars
+**/terraform.tfvars

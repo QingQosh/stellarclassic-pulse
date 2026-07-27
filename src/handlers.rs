@@ -13223,3 +13223,872 @@ pub async fn scan_event_for_pii(
         "detections": detections,
     })))
 }
+
+// ── Issue #670: GET /v1/admin/audit-logs ─────────────────────────────────────
+
+/// Query audit logs for sensitive operations.
+///
+/// `GET /v1/admin/audit-logs`
+///
+/// Requires admin API key. Supports filtering by event_type, resource_type,
+/// user_email, severity, success, and date range. Defaults to the last 100
+/// entries ordered by most-recent first.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/audit-logs",
+    tag = "admin",
+    params(
+        ("event_type"    = Option<String>, Query, description = "Filter by event type (DELETE, CONFIG_CHANGE, ADMIN_API_CALL, …)"),
+        ("resource_type" = Option<String>, Query, description = "Filter by resource type"),
+        ("user_email"    = Option<String>, Query, description = "Filter by user email"),
+        ("severity"      = Option<String>, Query, description = "Filter by severity (LOW, INFO, WARNING, CRITICAL)"),
+        ("success"       = Option<bool>,   Query, description = "Filter by success flag"),
+        ("from"          = Option<String>, Query, description = "ISO-8601 start datetime (inclusive)"),
+        ("to"            = Option<String>, Query, description = "ISO-8601 end datetime (inclusive)"),
+        ("limit"         = Option<i64>,    Query, description = "Max results to return (default 100, max 1000)"),
+        ("offset"        = Option<i64>,    Query, description = "Pagination offset"),
+    ),
+    responses(
+        (status = 200, description = "Audit log entries"),
+        (status = 400, description = "Invalid query parameters"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden – admin key required"),
+        (status = 500, description = "Internal server error"),
+    ),
+    security(("admin_key" = []))
+)]
+pub async fn get_audit_logs(
+    State(state): State<AppState>,
+    Query(params): Query<AuditLogQueryParams>,
+) -> Result<Json<Value>, AppError> {
+    // Clamp limit
+    let limit = params.limit.unwrap_or(100).clamp(1, 1000);
+    let offset = params.offset.unwrap_or(0).max(0);
+
+    // Parse optional datetime bounds
+    let from_dt: Option<DateTime<Utc>> = params
+        .from
+        .as_deref()
+        .map(|s| {
+            s.parse::<DateTime<Utc>>()
+                .map_err(|_| AppError::Validation(format!("invalid 'from' datetime: {s}")))
+        })
+        .transpose()?;
+
+    let to_dt: Option<DateTime<Utc>> = params
+        .to
+        .as_deref()
+        .map(|s| {
+            s.parse::<DateTime<Utc>>()
+                .map_err(|_| AppError::Validation(format!("invalid 'to' datetime: {s}")))
+        })
+        .transpose()?;
+
+    if let (Some(f), Some(t)) = (from_dt, to_dt) {
+        if f >= t {
+            return Err(AppError::Validation(
+                "'from' must be before 'to'".to_string(),
+            ));
+        }
+    }
+
+    // Build WHERE conditions with positional bind params
+    let mut conditions: Vec<String> = Vec::new();
+    let mut idx: i32 = 1;
+
+    if params.event_type.is_some() {
+        conditions.push(format!("event_type = ${idx}"));
+        idx += 1;
+    }
+    if params.resource_type.is_some() {
+        conditions.push(format!("resource_type = ${idx}"));
+        idx += 1;
+    }
+    if params.user_email.is_some() {
+        conditions.push(format!("user_email = ${idx}"));
+        idx += 1;
+    }
+    if params.severity.is_some() {
+        conditions.push(format!("severity = ${idx}"));
+        idx += 1;
+    }
+    if params.success.is_some() {
+        conditions.push(format!("success = ${idx}"));
+        idx += 1;
+    }
+    if from_dt.is_some() {
+        conditions.push(format!("created_at >= ${idx}"));
+        idx += 1;
+    }
+    if to_dt.is_some() {
+        conditions.push(format!("created_at <= ${idx}"));
+        idx += 1;
+    }
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    // Count total matching rows
+    let count_sql = format!("SELECT COUNT(*) FROM audit_logs {where_clause}");
+    let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
+    if let Some(ref v) = params.event_type    { count_q = count_q.bind(v); }
+    if let Some(ref v) = params.resource_type { count_q = count_q.bind(v); }
+    if let Some(ref v) = params.user_email    { count_q = count_q.bind(v); }
+    if let Some(ref v) = params.severity      { count_q = count_q.bind(v); }
+    if let Some(v)     = params.success       { count_q = count_q.bind(v); }
+    if let Some(v)     = from_dt              { count_q = count_q.bind(v); }
+    if let Some(v)     = to_dt               { count_q = count_q.bind(v); }
+    let total: i64 = count_q.fetch_one(&state.pool).await?;
+
+    // Fetch page
+    let data_sql = format!(
+        "SELECT id, event_type, action, resource_type, resource_id, \
+         resource_description, request_path, request_method, \
+         api_key_hash, user_email, user_id, ip_address::text, user_agent, \
+         changes, old_value, new_value, \
+         status_code, success, error_message, \
+         created_by, severity, created_at, expires_at \
+         FROM audit_logs {where_clause} \
+         ORDER BY created_at DESC \
+         LIMIT ${idx} OFFSET ${}",
+        idx + 1
+    );
+
+    let mut data_q = sqlx::query(&data_sql);
+    if let Some(ref v) = params.event_type    { data_q = data_q.bind(v); }
+    if let Some(ref v) = params.resource_type { data_q = data_q.bind(v); }
+    if let Some(ref v) = params.user_email    { data_q = data_q.bind(v); }
+    if let Some(ref v) = params.severity      { data_q = data_q.bind(v); }
+    if let Some(v)     = params.success       { data_q = data_q.bind(v); }
+    if let Some(v)     = from_dt              { data_q = data_q.bind(v); }
+    if let Some(v)     = to_dt               { data_q = data_q.bind(v); }
+    data_q = data_q.bind(limit).bind(offset);
+
+    let rows = data_q.fetch_all(&state.pool).await?;
+
+    let entries: Vec<Value> = rows
+        .iter()
+        .map(|row| {
+            json!({
+                "id":                   row.try_get::<uuid::Uuid, _>("id").ok(),
+                "event_type":           row.try_get::<String, _>("event_type").ok(),
+                "action":               row.try_get::<String, _>("action").ok(),
+                "resource_type":        row.try_get::<String, _>("resource_type").ok(),
+                "resource_id":          row.try_get::<Option<String>, _>("resource_id").ok().flatten(),
+                "resource_description": row.try_get::<Option<String>, _>("resource_description").ok().flatten(),
+                "request_path":         row.try_get::<Option<String>, _>("request_path").ok().flatten(),
+                "request_method":       row.try_get::<Option<String>, _>("request_method").ok().flatten(),
+                "api_key_hash":         row.try_get::<Option<String>, _>("api_key_hash").ok().flatten(),
+                "user_email":           row.try_get::<Option<String>, _>("user_email").ok().flatten(),
+                "user_id":              row.try_get::<Option<String>, _>("user_id").ok().flatten(),
+                "ip_address":           row.try_get::<Option<String>, _>("ip_address").ok().flatten(),
+                "user_agent":           row.try_get::<Option<String>, _>("user_agent").ok().flatten(),
+                "changes":              row.try_get::<Option<Value>, _>("changes").ok().flatten(),
+                "old_value":            row.try_get::<Option<Value>, _>("old_value").ok().flatten(),
+                "new_value":            row.try_get::<Option<Value>, _>("new_value").ok().flatten(),
+                "status_code":          row.try_get::<Option<i32>, _>("status_code").ok().flatten(),
+                "success":              row.try_get::<bool, _>("success").ok(),
+                "error_message":        row.try_get::<Option<String>, _>("error_message").ok().flatten(),
+                "created_by":           row.try_get::<Option<String>, _>("created_by").ok().flatten(),
+                "severity":             row.try_get::<String, _>("severity").ok(),
+                "created_at":           row.try_get::<DateTime<Utc>, _>("created_at").ok(),
+                "expires_at":           row.try_get::<Option<DateTime<Utc>>, _>("expires_at").ok().flatten(),
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "data":   entries,
+        "total":  total,
+        "limit":  limit,
+        "offset": offset,
+    })))
+}
+
+/// Query parameters for the audit log endpoint.
+#[derive(Debug, serde::Deserialize)]
+pub struct AuditLogQueryParams {
+    pub event_type:    Option<String>,
+    pub resource_type: Option<String>,
+    pub user_email:    Option<String>,
+    pub severity:      Option<String>,
+    pub success:       Option<bool>,
+    pub from:          Option<String>,
+    pub to:            Option<String>,
+    pub limit:         Option<i64>,
+    pub offset:        Option<i64>,
+}
+
+// ── Issue #671: GET /v1/analytics/trending ───────────────────────────────────
+
+/// Return trending events and contracts using a z-score algorithm.
+///
+/// `GET /v1/analytics/trending`
+///
+/// Compares event counts in the current window against a rolling baseline to
+/// produce a z-score for each (contract_id, event_type) pair. Results are
+/// sorted by z-score descending so the most anomalously active items appear
+/// first.
+///
+/// ### Query parameters
+/// | Name           | Default | Description |
+/// |----------------|---------|-------------|
+/// | `window_mins`  | 60      | Size of the current window in minutes |
+/// | `baseline_hrs` | 24      | Hours of history used to build the baseline mean/stdev |
+/// | `contract_id`  | –       | Restrict to a single contract |
+/// | `event_type`   | –       | Restrict to a single event type |
+/// | `min_zscore`   | 1.0     | Only return items with z-score ≥ this value |
+/// | `limit`        | 20      | Maximum rows to return |
+#[utoipa::path(
+    get,
+    path = "/v1/analytics/trending",
+    tag = "analytics",
+    params(
+        ("window_mins"  = Option<i64>,   Query, description = "Current window size in minutes (default 60)"),
+        ("baseline_hrs" = Option<i64>,   Query, description = "Baseline history in hours (default 24)"),
+        ("contract_id"  = Option<String>,Query, description = "Filter to a specific contract"),
+        ("event_type"   = Option<String>,Query, description = "Filter to a specific event type"),
+        ("min_zscore"   = Option<f64>,   Query, description = "Minimum z-score threshold (default 1.0)"),
+        ("limit"        = Option<i64>,   Query, description = "Max items to return (default 20, max 100)"),
+    ),
+    responses(
+        (status = 200, description = "Trending events"),
+        (status = 400, description = "Invalid parameters"),
+        (status = 500, description = "Internal server error"),
+    )
+)]
+pub async fn get_trending_events(
+    State(state): State<AppState>,
+    Query(params): Query<TrendingParams>,
+) -> Result<Json<Value>, AppError> {
+    let window_mins  = params.window_mins.unwrap_or(60).clamp(1, 1440);
+    let baseline_hrs = params.baseline_hrs.unwrap_or(24).clamp(1, 720);
+    let min_zscore   = params.min_zscore.unwrap_or(1.0_f64);
+    let limit        = params.limit.unwrap_or(20).clamp(1, 100);
+
+    // ── Step 1: counts in the current window ─────────────────────────────────
+    let mut cur_conds = vec!["timestamp >= NOW() - ($1 || ' minutes')::interval".to_string()];
+    let mut idx: i32 = 2;
+    if params.contract_id.is_some() { cur_conds.push(format!("contract_id = ${idx}")); idx += 1; }
+    if params.event_type.is_some()  { cur_conds.push(format!("event_type = ${idx}"));  idx += 1; }
+
+    let cur_sql = format!(
+        "SELECT contract_id, event_type, COUNT(*) AS cnt \
+         FROM events WHERE {} \
+         GROUP BY contract_id, event_type",
+        cur_conds.join(" AND ")
+    );
+
+    let mut cur_q = sqlx::query(&cur_sql).bind(window_mins.to_string());
+    if let Some(ref v) = params.contract_id { cur_q = cur_q.bind(v); }
+    if let Some(ref v) = params.event_type  { cur_q = cur_q.bind(v); }
+    let cur_rows = cur_q.fetch_all(&state.pool).await?;
+
+    // ── Step 2: per-window counts over the baseline period ───────────────────
+    // We slice the baseline into same-sized windows and count events per slice.
+    // Then we compute mean and stdev across those window counts.
+    let mut base_conds = vec![
+        format!("timestamp >= NOW() - ($1 || ' hours')::interval"),
+        format!("timestamp < NOW() - ($2 || ' minutes')::interval"),
+    ];
+    let mut bidx: i32 = 3;
+    if params.contract_id.is_some() { base_conds.push(format!("contract_id = ${bidx}")); bidx += 1; }
+    if params.event_type.is_some()  { base_conds.push(format!("event_type = ${bidx}"));  bidx += 1; }
+
+    let base_sql = format!(
+        "SELECT contract_id, event_type, \
+                COUNT(*) AS total_cnt, \
+                GREATEST(1, FLOOR(EXTRACT(EPOCH FROM (NOW() - ($2 || ' minutes')::interval - (NOW() - ($1 || ' hours')::interval))) / ({window_mins} * 60.0))) AS num_windows
+         FROM events WHERE {} \
+         GROUP BY contract_id, event_type",
+        base_conds.join(" AND ")
+    );
+
+    let mut base_q = sqlx::query(&base_sql)
+        .bind(baseline_hrs.to_string())
+        .bind(window_mins.to_string());
+    if let Some(ref v) = params.contract_id { base_q = base_q.bind(v); }
+    if let Some(ref v) = params.event_type  { base_q = base_q.bind(v); }
+    let base_rows = base_q.fetch_all(&state.pool).await?;
+
+    // Build baseline lookup: (contract_id, event_type) -> (mean_per_window, stdev estimate)
+    use std::collections::HashMap;
+    let mut baseline: HashMap<(String, String), (f64, f64)> = HashMap::new();
+    for row in &base_rows {
+        let cid: String  = row.try_get("contract_id").unwrap_or_default();
+        let et:  String  = row.try_get("event_type").unwrap_or_default();
+        let total: i64   = row.try_get("total_cnt").unwrap_or(0);
+        let n: f64       = row.try_get::<f64, _>("num_windows").unwrap_or(1.0).max(1.0);
+        let mean = total as f64 / n;
+        // Poisson-like stdev: sqrt(mean), floor to 1 so we never divide by 0
+        let stdev = mean.sqrt().max(1.0);
+        baseline.insert((cid, et), (mean, stdev));
+    }
+
+    // ── Step 3: compute z-scores ──────────────────────────────────────────────
+    let mut results: Vec<Value> = Vec::new();
+    for row in &cur_rows {
+        let cid: String = row.try_get("contract_id").unwrap_or_default();
+        let et:  String = row.try_get("event_type").unwrap_or_default();
+        let cnt: i64    = row.try_get("cnt").unwrap_or(0);
+
+        let (mean, stdev) = baseline
+            .get(&(cid.clone(), et.clone()))
+            .copied()
+            .unwrap_or((0.0, 1.0));
+
+        let zscore = (cnt as f64 - mean) / stdev;
+
+        if zscore >= min_zscore {
+            results.push(json!({
+                "contract_id":    cid,
+                "event_type":     et,
+                "count":          cnt,
+                "baseline_mean":  (mean  * 100.0).round() / 100.0,
+                "baseline_stdev": (stdev * 100.0).round() / 100.0,
+                "zscore":         (zscore * 100.0).round() / 100.0,
+            }));
+        }
+    }
+
+    // Sort by zscore desc, apply limit
+    results.sort_by(|a, b| {
+        b["zscore"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .partial_cmp(&a["zscore"].as_f64().unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    results.truncate(limit as usize);
+
+    Ok(Json(json!({
+        "trending": results,
+        "count":          results.len(),
+        "window_mins":    window_mins,
+        "baseline_hrs":   baseline_hrs,
+        "min_zscore":     min_zscore,
+        "algorithm":      "zscore",
+    })))
+}
+
+/// Query parameters for the trending endpoint.
+#[derive(Debug, serde::Deserialize)]
+pub struct TrendingParams {
+    pub window_mins:  Option<i64>,
+    pub baseline_hrs: Option<i64>,
+    pub contract_id:  Option<String>,
+    pub event_type:   Option<String>,
+    pub min_zscore:   Option<f64>,
+    pub limit:        Option<i64>,
+}
+
+// ── Issue #672: GET /v1/analytics/correlations ───────────────────────────────
+
+/// Detect correlated event activity across contracts.
+///
+/// `GET /v1/analytics/correlations`
+///
+/// Buckets events into fixed-width time slots and computes a Pearson
+/// correlation coefficient for every pair of contracts that both have activity
+/// within the requested window.  Only pairs whose |r| ≥ `min_correlation` are
+/// returned, sorted by descending |r|.
+///
+/// ### Query parameters
+/// | Name              | Default | Description |
+/// |-------------------|---------|-------------|
+/// | `window_hrs`      | 24      | How far back to look (hours) |
+/// | `bucket_mins`     | 60      | Slot width in minutes |
+/// | `min_correlation` | 0.5     | Minimum |r| to include in results |
+/// | `contract_ids`    | –       | Comma-separated list to restrict analysis |
+/// | `event_type`      | –       | Restrict to a specific event type |
+/// | `limit`           | 50      | Max pairs to return |
+#[utoipa::path(
+    get,
+    path = "/v1/analytics/correlations",
+    tag = "analytics",
+    params(
+        ("window_hrs"      = Option<i64>,   Query, description = "Lookback window in hours (default 24)"),
+        ("bucket_mins"     = Option<i64>,   Query, description = "Time-bucket width in minutes (default 60)"),
+        ("min_correlation" = Option<f64>,   Query, description = "Minimum absolute Pearson r (default 0.5)"),
+        ("contract_ids"    = Option<String>,Query, description = "Comma-separated contract IDs to analyse"),
+        ("event_type"      = Option<String>,Query, description = "Restrict to a specific event type"),
+        ("limit"           = Option<i64>,   Query, description = "Max pairs to return (default 50, max 200)"),
+    ),
+    responses(
+        (status = 200, description = "Correlation pairs"),
+        (status = 400, description = "Invalid parameters"),
+        (status = 500, description = "Internal server error"),
+    )
+)]
+pub async fn get_event_correlations(
+    State(state): State<AppState>,
+    Query(params): Query<CorrelationParams>,
+) -> Result<Json<Value>, AppError> {
+    let window_hrs      = params.window_hrs.unwrap_or(24).clamp(1, 720);
+    let bucket_mins     = params.bucket_mins.unwrap_or(60).clamp(1, 1440);
+    let min_correlation = params.min_correlation.unwrap_or(0.5_f64).clamp(0.0, 1.0);
+    let limit           = params.limit.unwrap_or(50).clamp(1, 200);
+
+    // Optional contract list filter
+    let contract_filter: Option<Vec<String>> = params
+        .contract_ids
+        .as_deref()
+        .map(|s| s.split(',').map(|id| id.trim().to_string()).collect());
+
+    // Build per-bucket counts: (contract_id, bucket_start) -> count
+    let mut conds = vec![
+        "timestamp >= NOW() - ($1 || ' hours')::interval".to_string(),
+    ];
+    let mut idx: i32 = 2;
+    if params.event_type.is_some() {
+        conds.push(format!("event_type = ${idx}"));
+        idx += 1;
+    }
+    // contract_ids filter handled post-query to avoid dynamic IN clause
+    let _ = idx; // suppress unused warning
+
+    let bucket_sql = format!(
+        "SELECT contract_id, \
+                date_trunc('hour', timestamp) + \
+                  (EXTRACT(MINUTE FROM timestamp)::int / {bucket_mins} * {bucket_mins} || ' minutes')::interval AS bucket, \
+                COUNT(*) AS cnt \
+         FROM events WHERE {} \
+         GROUP BY contract_id, bucket \
+         ORDER BY bucket",
+        conds.join(" AND ")
+    );
+
+    let mut q = sqlx::query(&bucket_sql).bind(window_hrs.to_string());
+    if let Some(ref v) = params.event_type { q = q.bind(v); }
+    let rows = q.fetch_all(&state.pool).await?;
+
+    // Build time-series map: contract_id -> Vec<(bucket, count)>
+    use std::collections::HashMap;
+    let mut series: HashMap<String, Vec<(String, f64)>> = HashMap::new();
+    for row in &rows {
+        let cid: String = row.try_get("contract_id").unwrap_or_default();
+        let bucket: DateTime<Utc> = row.try_get("bucket").unwrap_or_else(|_| Utc::now());
+        let cnt: i64 = row.try_get("cnt").unwrap_or(0);
+
+        if let Some(ref filter) = contract_filter {
+            if !filter.contains(&cid) {
+                continue;
+            }
+        }
+        series
+            .entry(cid)
+            .or_default()
+            .push((bucket.to_rfc3339(), cnt as f64));
+    }
+
+    // Collect all unique buckets to align vectors
+    let mut all_buckets: Vec<String> = series
+        .values()
+        .flat_map(|v| v.iter().map(|(b, _)| b.clone()))
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    all_buckets.sort();
+
+    // Build aligned count vectors per contract
+    let contract_ids: Vec<String> = series.keys().cloned().collect();
+    let mut vectors: HashMap<String, Vec<f64>> = HashMap::new();
+    for cid in &contract_ids {
+        let bucket_map: HashMap<String, f64> = series[cid]
+            .iter()
+            .cloned()
+            .collect();
+        let vec: Vec<f64> = all_buckets
+            .iter()
+            .map(|b| *bucket_map.get(b).unwrap_or(&0.0))
+            .collect();
+        vectors.insert(cid.clone(), vec);
+    }
+
+    // Pearson correlation helper
+    fn pearson(a: &[f64], b: &[f64]) -> f64 {
+        let n = a.len() as f64;
+        if n == 0.0 { return 0.0; }
+        let mean_a = a.iter().sum::<f64>() / n;
+        let mean_b = b.iter().sum::<f64>() / n;
+        let cov: f64 = a.iter().zip(b).map(|(x, y)| (x - mean_a) * (y - mean_b)).sum();
+        let std_a = (a.iter().map(|x| (x - mean_a).powi(2)).sum::<f64>() / n).sqrt();
+        let std_b = (b.iter().map(|x| (x - mean_b).powi(2)).sum::<f64>() / n).sqrt();
+        if std_a == 0.0 || std_b == 0.0 { return 0.0; }
+        cov / (std_a * std_b)
+    }
+
+    // Compute all pairs
+    let mut pairs: Vec<Value> = Vec::new();
+    for i in 0..contract_ids.len() {
+        for j in (i + 1)..contract_ids.len() {
+            let cid_a = &contract_ids[i];
+            let cid_b = &contract_ids[j];
+            let va = vectors.get(cid_a).map(Vec::as_slice).unwrap_or(&[]);
+            let vb = vectors.get(cid_b).map(Vec::as_slice).unwrap_or(&[]);
+            let r = pearson(va, vb);
+
+            if r.abs() >= min_correlation {
+                pairs.push(json!({
+                    "contract_a":  cid_a,
+                    "contract_b":  cid_b,
+                    "correlation": (r * 10000.0).round() / 10000.0,
+                    "direction":   if r >= 0.0 { "positive" } else { "negative" },
+                    "strength":    if r.abs() >= 0.9 { "very_strong" }
+                                   else if r.abs() >= 0.7 { "strong" }
+                                   else if r.abs() >= 0.5 { "moderate" }
+                                   else { "weak" },
+                }));
+            }
+        }
+    }
+
+    pairs.sort_by(|a, b| {
+        b["correlation"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .abs()
+            .partial_cmp(&a["correlation"].as_f64().unwrap_or(0.0).abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    pairs.truncate(limit as usize);
+
+    Ok(Json(json!({
+        "correlations":    pairs,
+        "count":           pairs.len(),
+        "contracts_analysed": contract_ids.len(),
+        "buckets":         all_buckets.len(),
+        "window_hrs":      window_hrs,
+        "bucket_mins":     bucket_mins,
+        "min_correlation": min_correlation,
+        "algorithm":       "pearson",
+    })))
+}
+
+/// Query parameters for the correlations endpoint.
+#[derive(Debug, serde::Deserialize)]
+pub struct CorrelationParams {
+    pub window_hrs:      Option<i64>,
+    pub bucket_mins:     Option<i64>,
+    pub min_correlation: Option<f64>,
+    pub contract_ids:    Option<String>,
+    pub event_type:      Option<String>,
+    pub limit:           Option<i64>,
+}
+
+// ── Issue #673: Dedicated /v1/export/* endpoints ─────────────────────────────
+
+/// Export events as CSV.
+///
+/// `GET /v1/export/csv`
+///
+/// Thin wrapper around the existing export_events logic with `format=csv`
+/// forced. Accepts the same filter query parameters.
+#[utoipa::path(
+    get,
+    path = "/v1/export/csv",
+    tag = "export",
+    params(
+        ("contract_id"   = Option<String>,   Query, description = "Filter by contract ID"),
+        ("event_type"    = Option<String>,   Query, description = "Filter by event type"),
+        ("from_ledger"   = Option<i64>,      Query, description = "Start ledger (inclusive)"),
+        ("to_ledger"     = Option<i64>,      Query, description = "End ledger (inclusive)"),
+        ("from_timestamp"= Option<DateTime<Utc>>, Query, description = "Start timestamp (inclusive)"),
+        ("to_timestamp"  = Option<DateTime<Utc>>, Query, description = "End timestamp (exclusive)"),
+    ),
+    responses(
+        (status = 200, description = "CSV file", content_type = "text/csv"),
+        (status = 400, description = "Invalid parameters"),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal server error"),
+    ),
+    security(("api_key" = []))
+)]
+pub async fn export_events_csv(
+    state: State<AppState>,
+    Query(mut params): Query<ExportParams>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, AppError> {
+    params.format = Some("csv".to_string());
+    export_events(state, Query(params), headers).await
+}
+
+/// Export events as JSON (newline-delimited).
+///
+/// `GET /v1/export/json`
+///
+/// Returns one JSON object per line (NDJSON/JSONL).
+#[utoipa::path(
+    get,
+    path = "/v1/export/json",
+    tag = "export",
+    params(
+        ("contract_id"   = Option<String>,   Query, description = "Filter by contract ID"),
+        ("event_type"    = Option<String>,   Query, description = "Filter by event type"),
+        ("from_ledger"   = Option<i64>,      Query, description = "Start ledger (inclusive)"),
+        ("to_ledger"     = Option<i64>,      Query, description = "End ledger (inclusive)"),
+        ("from_timestamp"= Option<DateTime<Utc>>, Query, description = "Start timestamp (inclusive)"),
+        ("to_timestamp"  = Option<DateTime<Utc>>, Query, description = "End timestamp (exclusive)"),
+    ),
+    responses(
+        (status = 200, description = "NDJSON file", content_type = "application/x-ndjson"),
+        (status = 400, description = "Invalid parameters"),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal server error"),
+    ),
+    security(("api_key" = []))
+)]
+pub async fn export_events_json(
+    state: State<AppState>,
+    Query(mut params): Query<ExportParams>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, AppError> {
+    params.format = Some("jsonl".to_string());
+    export_events(state, Query(params), headers).await
+}
+
+/// Export events as Apache Parquet.
+///
+/// `GET /v1/export/parquet`
+///
+/// Returns a binary Parquet file.
+#[utoipa::path(
+    get,
+    path = "/v1/export/parquet",
+    tag = "export",
+    params(
+        ("contract_id"   = Option<String>,   Query, description = "Filter by contract ID"),
+        ("event_type"    = Option<String>,   Query, description = "Filter by event type"),
+        ("from_ledger"   = Option<i64>,      Query, description = "Start ledger (inclusive)"),
+        ("to_ledger"     = Option<i64>,      Query, description = "End ledger (inclusive)"),
+        ("from_timestamp"= Option<DateTime<Utc>>, Query, description = "Start timestamp (inclusive)"),
+        ("to_timestamp"  = Option<DateTime<Utc>>, Query, description = "End timestamp (exclusive)"),
+    ),
+    responses(
+        (status = 200, description = "Parquet file", content_type = "application/octet-stream"),
+        (status = 400, description = "Invalid parameters"),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal server error"),
+    ),
+    security(("api_key" = []))
+)]
+pub async fn export_events_parquet(
+    state: State<AppState>,
+    Query(mut params): Query<ExportParams>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, AppError> {
+    params.format = Some("parquet".to_string());
+    export_events(state, Query(params), headers).await
+}
+
+// ── Issue #673: Export scheduling & history ───────────────────────────────────
+
+/// Schedule an async export job.
+///
+/// `POST /v1/export/schedule`
+///
+/// Creates a background export job and returns a job ID that can be polled
+/// via `GET /v1/export/jobs/{job_id}`.
+#[utoipa::path(
+    post,
+    path = "/v1/export/schedule",
+    tag = "export",
+    request_body(content = ScheduleExportRequest, description = "Export job parameters"),
+    responses(
+        (status = 202, description = "Export job created"),
+        (status = 400, description = "Invalid parameters"),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal server error"),
+    ),
+    security(("api_key" = []))
+)]
+pub async fn schedule_export_job(
+    State(state): State<AppState>,
+    Json(req): Json<ScheduleExportRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    // Validate format
+    let fmt = req.format.as_deref().unwrap_or("csv");
+    if !matches!(fmt, "csv" | "json" | "jsonl" | "parquet") {
+        return Err(AppError::Validation(format!(
+            "unsupported format '{fmt}': use csv, json, or parquet"
+        )));
+    }
+
+    let job_id = Uuid::new_v4();
+    let filter_count = [
+        &req.contract_id,
+        &req.event_type,
+    ]
+    .iter()
+    .filter(|v| v.is_some())
+    .count() as i32;
+
+    sqlx::query(
+        "INSERT INTO batch_download_jobs (id, status, format, filter_count)
+         VALUES ($1, 'pending', $2, $3)",
+    )
+    .bind(job_id)
+    .bind(fmt)
+    .bind(filter_count)
+    .execute(&state.pool)
+    .await?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "job_id":    job_id,
+            "status":    "pending",
+            "format":    fmt,
+            "message":   "Export job created. Poll GET /v1/export/jobs/{job_id} for status.",
+        })),
+    ))
+}
+
+/// Request body for scheduling an export job.
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+pub struct ScheduleExportRequest {
+    /// Output format: csv, json, or parquet
+    pub format:      Option<String>,
+    /// Optional contract filter
+    pub contract_id: Option<String>,
+    /// Optional event type filter
+    pub event_type:  Option<String>,
+    /// Optional ledger range start
+    pub from_ledger: Option<i64>,
+    /// Optional ledger range end
+    pub to_ledger:   Option<i64>,
+}
+
+/// Get status of a scheduled export job.
+///
+/// `GET /v1/export/jobs/{job_id}`
+#[utoipa::path(
+    get,
+    path = "/v1/export/jobs/{job_id}",
+    tag = "export",
+    params(
+        ("job_id" = String, Path, description = "Export job ID"),
+    ),
+    responses(
+        (status = 200, description = "Job status"),
+        (status = 404, description = "Job not found"),
+        (status = 500, description = "Internal server error"),
+    ),
+    security(("api_key" = []))
+)]
+pub async fn get_export_job_status_db(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let id = job_id
+        .parse::<uuid::Uuid>()
+        .map_err(|_| AppError::Validation("invalid job ID".to_string()))?;
+
+    let row = sqlx::query(
+        "SELECT id, status, format, filter_count, event_count, \
+                created_at, completed_at, error \
+         FROM batch_download_jobs WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    match row {
+        None => Err(AppError::NotFound(format!("export job {job_id} not found"))),
+        Some(row) => Ok(Json(json!({
+            "job_id":       row.try_get::<uuid::Uuid, _>("id").ok(),
+            "status":       row.try_get::<String, _>("status").ok(),
+            "format":       row.try_get::<String, _>("format").ok(),
+            "filter_count": row.try_get::<i32, _>("filter_count").ok(),
+            "event_count":  row.try_get::<i64, _>("event_count").ok(),
+            "created_at":   row.try_get::<DateTime<Utc>, _>("created_at").ok(),
+            "completed_at": row.try_get::<Option<DateTime<Utc>>, _>("completed_at").ok().flatten(),
+            "error":        row.try_get::<Option<String>, _>("error").ok().flatten(),
+        }))),
+    }
+}
+
+/// List export job history.
+///
+/// `GET /v1/export/history`
+///
+/// Returns the most recent export jobs (max 100), most-recent first.
+#[utoipa::path(
+    get,
+    path = "/v1/export/history",
+    tag = "export",
+    params(
+        ("limit"  = Option<i64>, Query, description = "Max rows to return (default 20, max 100)"),
+        ("offset" = Option<i64>, Query, description = "Pagination offset"),
+        ("status" = Option<String>, Query, description = "Filter by status: pending, completed, failed"),
+    ),
+    responses(
+        (status = 200, description = "Export job history"),
+        (status = 500, description = "Internal server error"),
+    ),
+    security(("api_key" = []))
+)]
+pub async fn get_export_history(
+    State(state): State<AppState>,
+    Query(params): Query<ExportHistoryParams>,
+) -> Result<Json<Value>, AppError> {
+    let limit  = params.limit.unwrap_or(20).clamp(1, 100);
+    let offset = params.offset.unwrap_or(0).max(0);
+
+    let (where_clause, status_bind) = if let Some(ref s) = params.status {
+        ("WHERE status = $1".to_string(), Some(s.clone()))
+    } else {
+        (String::new(), None)
+    };
+
+    let (lim_idx, off_idx) = if status_bind.is_some() { (2i32, 3i32) } else { (1i32, 2i32) };
+
+    let sql = format!(
+        "SELECT id, status, format, filter_count, event_count, created_at, completed_at, error \
+         FROM batch_download_jobs {where_clause} \
+         ORDER BY created_at DESC LIMIT ${lim_idx} OFFSET ${off_idx}"
+    );
+
+    let mut q = sqlx::query(&sql);
+    if let Some(ref s) = status_bind { q = q.bind(s); }
+    q = q.bind(limit).bind(offset);
+
+    let rows = q.fetch_all(&state.pool).await?;
+
+    let total_sql = format!("SELECT COUNT(*) FROM batch_download_jobs {where_clause}");
+    let mut tq = sqlx::query_scalar::<_, i64>(&total_sql);
+    if let Some(ref s) = status_bind { tq = tq.bind(s); }
+    let total: i64 = tq.fetch_one(&state.pool).await?;
+
+    let jobs: Vec<Value> = rows
+        .iter()
+        .map(|row| json!({
+            "job_id":       row.try_get::<uuid::Uuid, _>("id").ok(),
+            "status":       row.try_get::<String, _>("status").ok(),
+            "format":       row.try_get::<String, _>("format").ok(),
+            "filter_count": row.try_get::<i32, _>("filter_count").ok(),
+            "event_count":  row.try_get::<i64, _>("event_count").ok(),
+            "created_at":   row.try_get::<DateTime<Utc>, _>("created_at").ok(),
+            "completed_at": row.try_get::<Option<DateTime<Utc>>, _>("completed_at").ok().flatten(),
+            "error":        row.try_get::<Option<String>, _>("error").ok().flatten(),
+        }))
+        .collect();
+
+    Ok(Json(json!({
+        "jobs":   jobs,
+        "total":  total,
+        "limit":  limit,
+        "offset": offset,
+    })))
+}
+
+/// Query parameters for export history.
+#[derive(Debug, serde::Deserialize)]
+pub struct ExportHistoryParams {
+    pub limit:  Option<i64>,
+    pub offset: Option<i64>,
+    pub status: Option<String>,
+}

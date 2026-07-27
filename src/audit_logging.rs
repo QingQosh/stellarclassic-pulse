@@ -367,6 +367,18 @@ pub async fn query_audit_logs(
     Ok(rows)
 }
 
+/// Convenience helper: log a simple event by action name and optional detail.
+///
+/// This is a lightweight wrapper around [`log_audit`] for callsites that only
+/// need to record an action string without building a full [`AuditLogEntry`].
+/// Failures are silently ignored (the result is only used for diagnostics) so
+/// callers should not rely on the return value for control flow.
+pub async fn log_event(pool: &PgPool, action: &str, detail: Option<&str>) -> Result<String, sqlx::Error> {
+    let entry = AuditLogEntry::new(AuditEventType::AdminApiCall, action, "system")
+        .with_resource_description(detail.unwrap_or(action));
+    log_audit(pool, &entry).await
+}
+
 /// Clean up expired audit logs (run periodically)
 pub async fn cleanup_expired_audit_logs(pool: &PgPool) -> Result<u64, sqlx::Error> {
     let result = sqlx::query("SELECT cleanup_expired_audit_logs()")
