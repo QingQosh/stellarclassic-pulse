@@ -418,6 +418,17 @@ pub struct Config {
     /// endpoints, and the /v1/push/* endpoints are enabled.
     /// Disabled by default. Set ENABLE_PUSH_PRELOAD=true to opt in.
     pub enable_push_preload: bool,
+
+    // Issue #705: Kafka event publishing
+    /// Comma-separated list of Kafka broker addresses (e.g., "localhost:9092,localhost:9093").
+    /// When set, events are published to Kafka topic specified by kafka_topic.
+    pub kafka_brokers: Option<String>,
+    /// Kafka topic for event publishing. Required when kafka_brokers is set.
+    pub kafka_topic: Option<String>,
+    /// Kafka producer batch size (default: 16384 bytes).
+    pub kafka_batch_size: usize,
+    /// Kafka producer linger time in milliseconds (default: 100ms).
+    pub kafka_linger_ms: u64,
 }
 
 impl Default for Config {
@@ -562,6 +573,10 @@ impl Default for Config {
             query_cache_ttl_secs: crate::query_cache::DEFAULT_TTL_SECS,
             query_cache_max_capacity: crate::query_cache::DEFAULT_MAX_CAPACITY,
             enable_push_preload: false,
+            kafka_brokers: None,
+            kafka_topic: None,
+            kafka_batch_size: 16384,
+            kafka_linger_ms: 100,
         }
     }
 }
@@ -1571,6 +1586,15 @@ impl Config {
             enable_push_preload: env_or_file("ENABLE_PUSH_PRELOAD", &file)
                 .map(|v| matches!(v.to_ascii_lowercase().as_str(), "true" | "1" | "yes"))
                 .unwrap_or(false),
+            // Issue #705: Kafka event publishing
+            kafka_brokers: env_or_file("KAFKA_BROKERS", &file),
+            kafka_topic: env_or_file("KAFKA_TOPIC", &file),
+            kafka_batch_size: env_or_file("KAFKA_BATCH_SIZE", &file)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(16384),
+            kafka_linger_ms: env_or_file("KAFKA_LINGER_MS", &file)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(100),
         }
     }
 }
