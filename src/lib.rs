@@ -16,6 +16,7 @@ pub mod encryption;
 pub mod error;
 pub mod event_replay;
 pub mod event_aggregation;
+pub mod anomaly_detection;
 pub mod graceful_shutdown;
 pub mod handlers;
 pub mod health_check;
