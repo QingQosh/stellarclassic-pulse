@@ -124,6 +124,7 @@ pub struct AppState {
         handlers::email_bounce_webhook,
         handlers::status,
         handlers::get_events,
+        handlers::get_events_feed,
         handlers::get_event_stats,
         handlers::get_contract_stats_history,
         handlers::get_events_diff,
@@ -447,6 +448,7 @@ pub fn create_router_with_tx_and_tenant_map(
     // Versioned v1 routes
     let v1 = Router::new()
         .route("/events", get(handlers::get_events))
+        .route("/events/feed.rss", get(handlers::get_events_feed))
         .route("/events/stats", get(handlers::get_event_stats))
         .route("/contracts/{contract_id}/stats/history", get(handlers::get_contract_stats_history))
         .route("/events/diff", get(handlers::get_events_diff))
