@@ -31,6 +31,7 @@ backups/
 *.snap
 *.snap.new
 **/__snapshots__/
+**/snapshots/
 **/snapshots/*.snap.new
 
 # Proptest regression files
