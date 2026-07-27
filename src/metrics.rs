@@ -711,6 +711,135 @@ pub fn record_query_plan_estimated_rows(query_type: &str, estimated_rows: f64) {
     .record(estimated_rows);
 }
 
+// ── Query Response Streaming metrics (Issue #688) ──────────────────────────────
+
+/// Record item sent in streaming response
+pub fn record_streaming_response_item_sent() {
+    m::counter!("soroban_pulse_streaming_response_items_sent_total").increment(1);
+}
+
+/// Record streaming response completed with item count
+pub fn record_streaming_response_completed(item_count: u64) {
+    m::counter!("soroban_pulse_streaming_responses_completed_total").increment(1);
+    m::histogram!("soroban_pulse_streaming_response_items_per_stream").record(item_count as f64);
+}
+
+/// Record streaming response error
+pub fn record_streaming_response_error(error_type: &str) {
+    m::counter!(
+        "soroban_pulse_streaming_response_errors_total",
+        "error_type" => error_type.to_string()
+    )
+    .increment(1);
+}
+
+// ── JSON Serialization metrics (Issue #687) ──────────────────────────────────
+
+/// Record JSON serialization cache hit
+pub fn record_serialization_cache_hit(entity_type: &str) {
+    m::counter!(
+        "soroban_pulse_serialization_cache_hits_total",
+        "entity_type" => entity_type.to_string()
+    )
+    .increment(1);
+}
+
+/// Record JSON serialization cache miss
+pub fn record_serialization_cache_miss(entity_type: &str) {
+    m::counter!(
+        "soroban_pulse_serialization_cache_misses_total",
+        "entity_type" => entity_type.to_string()
+    )
+    .increment(1);
+}
+
+/// Record JSON serialization time in microseconds
+pub fn record_serialization_time(entity_type: &str, duration_us: u64) {
+    m::histogram!(
+        "soroban_pulse_serialization_time_us",
+        "entity_type" => entity_type.to_string()
+    )
+    .record(duration_us as f64);
+}
+
+// ── PostgreSQL Query Plan Caching metrics (Issue #689) ─────────────────────────
+
+/// Record query plan cache hit
+pub fn record_query_plan_cache_hit() {
+    m::counter!("soroban_pulse_query_plan_cache_hits_total").increment(1);
+}
+
+/// Record query plan cache miss
+pub fn record_query_plan_cache_miss() {
+    m::counter!("soroban_pulse_query_plan_cache_misses_total").increment(1);
+}
+
+/// Record query plan cached
+pub fn record_query_plan_cached() {
+    m::counter!("soroban_pulse_query_plans_cached_total").increment(1);
+}
+
+/// Record query planning time in milliseconds
+pub fn record_query_planning_time(planning_time_ms: f64) {
+    m::histogram!("soroban_pulse_query_planning_time_ms").record(planning_time_ms);
+}
+
+// ── Advisory Lock metrics (Issue #686) ────────────────────────────────────────
+
+/// Record successful advisory lock acquisition
+pub fn record_advisory_lock_acquired(lock_id: i64) {
+    m::counter!(
+        "soroban_pulse_advisory_lock_acquired_total",
+        "lock_id" => lock_id.to_string()
+    )
+    .increment(1);
+}
+
+/// Record advisory lock release
+pub fn record_advisory_lock_released(lock_id: i64) {
+    m::counter!(
+        "soroban_pulse_advisory_lock_released_total",
+        "lock_id" => lock_id.to_string()
+    )
+    .increment(1);
+}
+
+/// Record advisory lock acquisition retry
+pub fn record_advisory_lock_retry(lock_id: i64) {
+    m::counter!(
+        "soroban_pulse_advisory_lock_retries_total",
+        "lock_id" => lock_id.to_string()
+    )
+    .increment(1);
+}
+
+/// Record advisory lock acquisition timeout
+pub fn record_advisory_lock_timeout(lock_id: i64) {
+    m::counter!(
+        "soroban_pulse_advisory_lock_timeouts_total",
+        "lock_id" => lock_id.to_string()
+    )
+    .increment(1);
+}
+
+/// Record advisory lock acquisition error
+pub fn record_advisory_lock_error(lock_id: i64) {
+    m::counter!(
+        "soroban_pulse_advisory_lock_errors_total",
+        "lock_id" => lock_id.to_string()
+    )
+    .increment(1);
+}
+
+/// Record advisory lock release error
+pub fn record_advisory_lock_release_error(lock_id: i64) {
+    m::counter!(
+        "soroban_pulse_advisory_lock_release_errors_total",
+        "lock_id" => lock_id.to_string()
+    )
+    .increment(1);
+}
+
 // ── Health check metrics ──────────────────────────────────────────────────────
 
 /// Record successful PostgreSQL health check

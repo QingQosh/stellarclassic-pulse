@@ -1,6 +1,7 @@
 use sqlx::{postgres::PgPoolOptions, Executor, PgPool};
 use std::time::Duration;
 use tracing::{debug, info, info_span, Instrument};
+use crate::advisory_lock::{AdvisoryLock, AdvisoryLockConfig};
 
 /// Per-endpoint query timeout configuration (in milliseconds)
 pub struct QueryTimeouts {
@@ -82,13 +83,23 @@ pub async fn run_migrations(pool: &PgPool) -> Result<usize, sqlx::migrate::Migra
             .await
             .map_err(sqlx::migrate::MigrateError::from)?;
 
-        debug!(lock_id = MIGRATION_LOCK_ID, "Acquiring advisory lock");
-        sqlx::query("SELECT pg_advisory_lock($1)")
-            .bind(MIGRATION_LOCK_ID)
-            .execute(&mut *conn)
+        // Use the new AdvisoryLock with improved error handling and metrics
+        let config = AdvisoryLockConfig {
+            acquire_timeout_ms: 30000,
+            lock_timeout_ms: 5000,
+            max_retries: 3,
+        };
+        let lock = AdvisoryLock::with_config(MIGRATION_LOCK_ID, config);
+
+        // Validate connection before acquiring lock
+        lock.validate_connection(&mut conn)
             .await
-            .map_err(sqlx::migrate::MigrateError::from)?;
-        debug!(lock_id = MIGRATION_LOCK_ID, "Advisory lock acquired");
+            .map_err(|e| sqlx::Error::Configuration(format!("Connection validation failed: {}", e).into()))?;
+
+        // Acquire the advisory lock with retry logic
+        lock.acquire(&mut conn)
+            .await
+            .map_err(|e| sqlx::Error::Configuration(format!("Advisory lock acquisition failed: {}", e).into()))?;
 
         // Record which migrations are already applied before running, so we can
         // identify exactly which ones this run applies.
@@ -114,11 +125,7 @@ pub async fn run_migrations(pool: &PgPool) -> Result<usize, sqlx::migrate::Migra
         .unwrap_or_default();
 
         // Always release — ignore unlock errors so the migration result is returned.
-        let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
-            .bind(MIGRATION_LOCK_ID)
-            .execute(&mut *conn)
-            .await;
-        debug!(lock_id = MIGRATION_LOCK_ID, "Advisory lock released");
+        let _ = lock.release(&mut conn).await;
 
         result?;
 

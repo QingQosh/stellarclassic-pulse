@@ -12,6 +12,9 @@ mod content_filter;
 mod cross_chain_correlation;
 mod cursor_expiry_handler;
 mod db;
+mod advisory_lock;
+mod serialization_cache;
+mod streaming_response;
 mod dedup;
 mod distributed_tracing;
 mod email;
@@ -67,6 +70,7 @@ mod feature_flags;
 mod graphql;
 mod sse_ring_buffer;
 mod query_cache;
+mod query_plan_cache;
 mod push_notification;
 mod connection_pool;
 
