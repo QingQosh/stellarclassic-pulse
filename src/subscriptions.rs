@@ -30,6 +30,10 @@ pub struct Subscription {
     pub subscription_type: String,
     pub batch_size: i32,
     pub batch_timeout_ms: i32,
+    #[sqlx(default)]
+    pub webhook_template: Option<String>,
+    #[sqlx(default)]
+    pub webhook_template_enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,6 +43,8 @@ pub struct CreateSubscriptionRequest {
     pub subscription_type: Option<String>,
     pub batch_size: Option<i32>,
     pub batch_timeout_ms: Option<i32>,
+    pub webhook_template: Option<String>,
+    pub webhook_template_enabled: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,6 +57,33 @@ pub struct UpdateBatchConfigRequest {
     pub subscription_type: Option<String>,
     pub batch_size: Option<i32>,
     pub batch_timeout_ms: Option<i32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+pub struct WebhookTemplate {
+    pub id: Uuid,
+    pub subscription_id: Uuid,
+    pub name: String,
+    pub template_content: String,
+    pub description: Option<String>,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateWebhookTemplateRequest {
+    pub name: String,
+    pub template_content: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateWebhookTemplateRequest {
+    pub name: Option<String>,
+    pub template_content: Option<String>,
+    pub description: Option<String>,
+    pub is_active: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]

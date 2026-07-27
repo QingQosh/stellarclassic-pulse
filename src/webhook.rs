@@ -24,9 +24,28 @@ pub async fn validate_webhook_url(url: &str) -> Result<(), String> {
     }
 }
 
-use crate::{metrics, models::SorobanEvent};
+use crate::{metrics, models::SorobanEvent, webhook_template::WebhookTemplate};
+use serde_json::Value;
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// Transform webhook payload using a template (Issue #678).
+/// Returns the transformed payload or the original event if template is invalid.
+pub fn transform_webhook_payload(
+    template: &str,
+    event: &SorobanEvent,
+) -> Result<Value, String> {
+    let webhook_template = WebhookTemplate::new(template.to_string());
+
+    // Validate template syntax
+    webhook_template.validate()?;
+
+    // Transform the event using the template
+    let event_value = serde_json::to_value(event)
+        .map_err(|e| format!("Failed to convert event to JSON: {}", e))?;
+
+    webhook_template.transform(&event_value)
+}
 
 /// Sign a payload with HMAC-SHA256 and return the hex digest.
 pub fn sign_payload(secret: &str, body: &[u8]) -> String {
