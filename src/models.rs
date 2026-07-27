@@ -15,6 +15,8 @@ pub enum NotificationFormat {
     Discord,
     Teams,
     Pagerduty,
+    Github,
+    Telegram,
 }
 
 impl fmt::Display for NotificationFormat {
@@ -25,6 +27,8 @@ impl fmt::Display for NotificationFormat {
             NotificationFormat::Discord => write!(f, "discord"),
             NotificationFormat::Teams => write!(f, "teams"),
             NotificationFormat::Pagerduty => write!(f, "pagerduty"),
+            NotificationFormat::Github => write!(f, "github"),
+            NotificationFormat::Telegram => write!(f, "telegram"),
         }
     }
 }
@@ -38,6 +42,8 @@ impl FromStr for NotificationFormat {
             "discord" => Ok(NotificationFormat::Discord),
             "teams" => Ok(NotificationFormat::Teams),
             "pagerduty" => Ok(NotificationFormat::Pagerduty),
+            "github" => Ok(NotificationFormat::Github),
+            "telegram" => Ok(NotificationFormat::Telegram),
             other => Err(format!("unknown notification format: {other}")),
         }
     }

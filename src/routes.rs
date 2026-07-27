@@ -507,6 +507,14 @@ pub fn create_router_with_tx_and_tenant_map(
         .route("/subscriptions/{id}/push", get(crate::push_notification::get_subscription_push).put(crate::push_notification::update_subscription_push))
         // Issue #628: Batch subscription config and delivery
         .route("/subscriptions/{id}/batch", get(subscriptions::get_subscription_batch_config).put(subscriptions::update_subscription_batch_config).post(subscriptions::deliver_batch))
+        // Issue #674: GitHub integration
+        .route("/subscriptions/{id}/integrations/github", axum::routing::post(crate::integration_handlers::setup_github_integration).get(crate::integration_handlers::get_github_integration).delete(crate::integration_handlers::delete_github_integration))
+        // Issue #675: Discord integration
+        .route("/subscriptions/{id}/integrations/discord", axum::routing::post(crate::integration_handlers::setup_discord_integration).get(crate::integration_handlers::get_discord_integration).delete(crate::integration_handlers::delete_discord_integration))
+        // Issue #676: Slack integration
+        .route("/subscriptions/{id}/integrations/slack", axum::routing::post(crate::integration_handlers::setup_slack_integration).get(crate::integration_handlers::get_slack_integration).delete(crate::integration_handlers::delete_slack_integration))
+        // Issue #677: Telegram integration
+        .route("/subscriptions/{id}/integrations/telegram", axum::routing::post(crate::integration_handlers::setup_telegram_integration).get(crate::integration_handlers::get_telegram_integration).delete(crate::integration_handlers::delete_telegram_integration))
         // Issue #487: email open tracking (public – email clients fetch the pixel)
         .route("/notifications/email/track/{token}", get(handlers::track_email_open))
         // Issue #487: email open stats (admin)
@@ -535,6 +543,19 @@ pub fn create_router_with_tx_and_tenant_map(
         .route("/contracts/{contract_id}/abi/cached", axum::routing::get(handlers::get_contract_abi_cached))
         // Issue #632: Feature flag client-side endpoint
         .route("/features", axum::routing::get(handlers::get_feature_flag_status))
+        // Issue #670: Audit log query endpoint (admin)
+        .route("/admin/audit-logs", axum::routing::get(handlers::get_audit_logs))
+        // Issue #671: Trending analytics
+        .route("/analytics/trending", axum::routing::get(handlers::get_trending_events))
+        // Issue #672: Event correlation analysis
+        .route("/analytics/correlations", axum::routing::get(handlers::get_event_correlations))
+        // Issue #673: Dedicated export endpoints
+        .route("/export/csv", axum::routing::get(handlers::export_events_csv))
+        .route("/export/json", axum::routing::get(handlers::export_events_json))
+        .route("/export/parquet", axum::routing::get(handlers::export_events_parquet))
+        .route("/export/schedule", axum::routing::post(handlers::schedule_export_job))
+        .route("/export/jobs/{job_id}", axum::routing::get(handlers::get_export_job_status_db))
+        .route("/export/history", axum::routing::get(handlers::get_export_history))
         // Push-preload endpoints: read-only schema/ABI lookup for HTTP/2 push
         // and client-side preloading. Gated by enable_push_preload at the
         // handler level so the routes are always registered (returning 501 when

@@ -1,0 +1,49 @@
+{
+  "mappings": [
+    {
+      "name": "getLatestLedger",
+      "request": {
+        "method": "POST",
+        "url": "/",
+        "bodyPatterns": [
+          { "contains": "\"getLatestLedger\"" }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": { "Content-Type": "application/json" },
+        "jsonBody": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": {
+            "id": "abc123ledgerid",
+            "protocolVersion": 21,
+            "sequence": 1000
+          }
+        }
+      }
+    },
+    {
+      "name": "getEvents-empty",
+      "request": {
+        "method": "POST",
+        "url": "/",
+        "bodyPatterns": [
+          { "contains": "\"getEvents\"" }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": { "Content-Type": "application/json" },
+        "jsonBody": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": {
+            "events": [],
+            "latestLedger": 1000
+          }
+        }
+      }
+    }
+  ]
+}
