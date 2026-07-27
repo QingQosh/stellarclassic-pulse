@@ -4575,6 +4575,133 @@ pub async fn get_analysis_jobs(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))
 }
 
+/// #694: Query and return index fragmentation information.
+///
+/// `GET /v1/admin/indexes/fragmentation`
+///
+/// Returns a list of all user indexes in the public schema with their
+/// estimated bloat ratio, dead/live tuple counts, size, and last vacuum
+/// timestamps.  Results are sorted by index size descending.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/indexes/fragmentation",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Index fragmentation report"),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
+    )
+)]
+pub async fn get_index_fragmentation(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::index_monitor::IndexFragmentationInfo>>, (StatusCode, Json<Value>)> {
+    crate::index_monitor::query_index_fragmentation(&state.pool)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to query index fragmentation");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": format!("Failed to query index fragmentation: {e}"),
+                    "code": "INTERNAL_ERROR"
+                })),
+            )
+        })
+}
+
+/// #694: Trigger a single REINDEX INDEX CONCURRENTLY operation.
+///
+/// `POST /v1/admin/indexes/{index_name}/reindex`
+///
+/// Runs `REINDEX INDEX CONCURRENTLY` on the named index. Returns 202 on
+/// success.  The index must be a valid user index in the public schema.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/indexes/{index_name}/reindex",
+    tag = "admin",
+    params(
+        ("index_name" = String, Path, description = "Name of the index to rebuild"),
+    ),
+    responses(
+        (status = 202, description = "REINDEX scheduled successfully"),
+        (status = 400, description = "Invalid index name", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "REINDEX failed", body = ErrorResponse),
+    )
+)]
+pub async fn reindex_index(
+    State(state): State<AppState>,
+    Path(index_name): Path<String>,
+) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
+    // Basic validation: only allow alphanumeric + underscore index names
+    if index_name.is_empty()
+        || !index_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "invalid index name",
+                "code": "VALIDATION_ERROR"
+            })),
+        ));
+    }
+
+    // Verify the index exists
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = $1 AND relkind = 'i')",
+    )
+    .bind(&index_name)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": format!("Failed to verify index existence: {e}"),
+                "code": "INTERNAL_ERROR"
+            })),
+        )
+    })?;
+
+    if !exists {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": format!("index '{index_name}' not found"),
+                "code": "NOT_FOUND"
+            })),
+        ));
+    }
+
+    tracing::info!(index = %index_name, "Admin-triggered REINDEX INDEX CONCURRENTLY");
+
+    let sql = format!("REINDEX INDEX CONCURRENTLY {index_name}");
+    sqlx::query(&sql).execute(&state.pool).await.map_err(|e| {
+        tracing::error!(index = %index_name, error = %e, "REINDEX failed");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": format!("REINDEX failed: {e}"),
+                "code": "REINDEX_FAILED"
+            })),
+        )
+    })?;
+
+    tracing::info!(index = %index_name, "REINDEX INDEX CONCURRENTLY completed");
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "status": "completed",
+            "index": index_name,
+            "message": "REINDEX INDEX CONCURRENTLY completed successfully"
+        })),
+    ))
+}
+
 /// Start a background re-encryption job to migrate events from old key to new key.
 #[utoipa::path(
     post,

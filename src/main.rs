@@ -541,6 +541,11 @@ async fn main() -> anyhow::Result<()> {
         pool.clone(),
         config.index_check_interval_hours,
         shutdown_rx.clone(),
+        index_monitor::FragmentationThresholds {
+            warn_ratio: config.fragmentation_warn_threshold,
+            critical_ratio: config.fragmentation_critical_threshold,
+            auto_reindex: config.fragmentation_auto_reindex,
+        },
     );
 
     // Spawn replica sync monitoring background task (#586)

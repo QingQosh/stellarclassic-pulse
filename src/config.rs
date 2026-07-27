@@ -418,6 +418,14 @@ pub struct Config {
     /// endpoints, and the /v1/push/* endpoints are enabled.
     /// Disabled by default. Set ENABLE_PUSH_PRELOAD=true to opt in.
     pub enable_push_preload: bool,
+
+    // #694: Index fragmentation monitoring
+    /// Bloat ratio above which a WARN log is emitted (default 0.2 = 20%).
+    pub fragmentation_warn_threshold: f64,
+    /// Bloat ratio above which a CRITICAL alert is raised (default 0.5 = 50%).
+    pub fragmentation_critical_threshold: f64,
+    /// When true, automatically schedule REINDEX for critically bloated indexes.
+    pub fragmentation_auto_reindex: bool,
 }
 
 impl Default for Config {
@@ -562,6 +570,9 @@ impl Default for Config {
             query_cache_ttl_secs: crate::query_cache::DEFAULT_TTL_SECS,
             query_cache_max_capacity: crate::query_cache::DEFAULT_MAX_CAPACITY,
             enable_push_preload: false,
+            fragmentation_warn_threshold: 0.2,
+            fragmentation_critical_threshold: 0.5,
+            fragmentation_auto_reindex: false,
         }
     }
 }
@@ -1569,6 +1580,15 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(crate::query_cache::DEFAULT_MAX_CAPACITY),
             enable_push_preload: env_or_file("ENABLE_PUSH_PRELOAD", &file)
+                .map(|v| matches!(v.to_ascii_lowercase().as_str(), "true" | "1" | "yes"))
+                .unwrap_or(false),
+            fragmentation_warn_threshold: env_or_file("FRAGMENTATION_WARN_THRESHOLD", &file)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.2),
+            fragmentation_critical_threshold: env_or_file("FRAGMENTATION_CRITICAL_THRESHOLD", &file)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.5),
+            fragmentation_auto_reindex: env_or_file("FRAGMENTATION_AUTO_REINDEX", &file)
                 .map(|v| matches!(v.to_ascii_lowercase().as_str(), "true" | "1" | "yes"))
                 .unwrap_or(false),
         }

@@ -759,6 +759,31 @@ pub fn record_batch_config_updated() {
     m::counter!("soroban_pulse_batch_config_updates_total").increment(1);
 }
 
+// ── #694: Index fragmentation metrics ─────────────────────────────────────
+
+/// Record a REINDEX operation.
+pub fn record_reindex_operation(index_name: &str) {
+    m::counter!(
+        "soroban_pulse_reindex_operations_total",
+        "index" => index_name.to_string()
+    )
+    .increment(1);
+}
+
+/// Record a REINDEX failure.
+pub fn record_reindex_failure(index_name: &str) {
+    m::counter!(
+        "soroban_pulse_reindex_failures_total",
+        "index" => index_name.to_string()
+    )
+    .increment(1);
+}
+
+/// Record a fragmentation check run.
+pub fn record_fragmentation_check() {
+    m::counter!("soroban_pulse_fragmentation_checks_total").increment(1);
+}
+
 // ── Issue #630: Resource utilization metrics ────────────────────────────────
 
 /// Update file descriptor count gauge
