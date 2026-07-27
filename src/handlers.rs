@@ -14511,3 +14511,75 @@ pub struct ExportHistoryParams {
     pub offset: Option<i64>,
     pub status: Option<String>,
 }
+
+// ── Issue #696: SLI / SLO admin reporting endpoint ──────────────────────────
+
+/// Return the current SLI / SLO aggregate report.
+///
+/// The report is generated in-memory by `crate::slo_tracker` from the rolling
+/// sample buffers. It is the JSON counterpart of the Prometheus gauges
+/// `soroban_pulse_slo_completion_ratio`, `soroban_pulse_slo_error_budget_remaining`,
+/// and `soroban_pulse_slo_burn_rate` published by the background evaluator.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/slo/report",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Current SLO report for every tracked SLO"),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 503, description = "SLO tracker not initialized"),
+    )
+)]
+pub async fn get_slo_report() -> Result<Json<Value>, AppError> {
+    let tracker = crate::slo_tracker::current().ok_or_else(|| {
+        AppError::Internal(
+            "SLO tracker not initialized — server is still starting up".to_string(),
+        )
+    })?;
+
+    let report = {
+        let guard = tracker.read().await;
+        guard.generate_report()
+    };
+    Ok(Json(serde_json::to_value(&report).unwrap_or_else(|e| {
+        json!({
+            "error": "failed to serialize SLO report",
+            "details": e.to_string(),
+        })
+    })))
+}
+
+/// Record an SLI sample against a named SLO. Used by internal callers and
+/// by integration tests; not part of the documented admin surface but exposed
+/// for symmetry with `get_slo_report`.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/slo/sample",
+    tag = "admin",
+    responses(
+        (status = 202, description = "Sample accepted"),
+        (status = 400, description = "Invalid request"),
+        (status = 503, description = "SLO tracker not initialized"),
+    )
+)]
+pub async fn record_slo_sample(
+    Json(payload): Json<serde_json::Value>,
+) -> Result<axum::http::StatusCode, AppError> {
+    let slo_name = payload
+        .get("slo")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::Validation("missing 'slo' field".to_string()))?;
+    let value = payload
+        .get("value")
+        .and_then(|v| v.as_f64())
+        .ok_or_else(|| AppError::Validation("missing numeric 'value' field".to_string()))?;
+
+    let tracker = crate::slo_tracker::current().ok_or_else(|| {
+        AppError::Internal(
+            "SLO tracker not initialized — server is still starting up".to_string(),
+        )
+    })?;
+
+    crate::slo_tracker::record_sli_sample(&tracker, slo_name, value).await;
+    Ok(axum::http::StatusCode::ACCEPTED)
+}
