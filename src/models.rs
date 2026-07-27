@@ -1265,3 +1265,67 @@ pub struct ConfigReloadResponse {
     pub message: String,
     pub updated_fields: Vec<String>,
 }
+
+// ── Issue #692: Connection pool configuration ──────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct PoolConfigRequest {
+    /// Maximum number of connections in the pool
+    pub max_connections: Option<u32>,
+    /// Minimum number of idle connections to maintain
+    pub min_connections: Option<u32>,
+    /// Connection timeout in seconds
+    pub connection_timeout_secs: Option<u64>,
+    /// Idle timeout in seconds
+    pub idle_timeout_secs: Option<u64>,
+    /// Exhaustion threshold (0.0-1.0) for alerts
+    pub exhaustion_threshold: Option<f64>,
+    /// Sample interval in seconds for pool monitoring
+    pub sample_interval_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct PoolConfig {
+    pub max_connections: u32,
+    pub min_connections: u32,
+    pub connection_timeout_secs: u64,
+    pub idle_timeout_secs: u64,
+    pub exhaustion_threshold: f64,
+    pub sample_interval_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct PoolStatistics {
+    /// Current pool size (total connections)
+    pub pool_size: u32,
+    /// Number of idle connections
+    pub idle_connections: u32,
+    /// Number of active connections
+    pub active_connections: u32,
+    /// Maximum allowed connections
+    pub max_connections: u32,
+    /// Current utilization (0.0-1.0)
+    pub utilization: f64,
+    /// Peak utilization since startup
+    pub peak_utilization: f64,
+    /// Number of exhaustion events (≥90% utilization)
+    pub exhaustion_events: u64,
+    /// Average connection acquire latency in milliseconds
+    pub avg_acquire_latency_ms: f64,
+    /// Timestamp of this snapshot
+    pub snapshot_timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct PoolConfigResponse {
+    pub config: PoolConfig,
+    pub success: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct PoolTuningGuide {
+    pub current_config: PoolConfig,
+    pub recommendations: Vec<String>,
+    pub reasoning: String,
+}

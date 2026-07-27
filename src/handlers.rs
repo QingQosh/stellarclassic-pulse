@@ -4347,6 +4347,79 @@ pub async fn resume_indexer(
     Ok(Json(json!({ "indexer_paused": false })))
 }
 
+/// Get current database connection pool statistics
+#[utoipa::path(
+    get,
+    path = "/v1/admin/pool-config/statistics",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Pool statistics retrieved", body = PoolStatistics),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    )
+)]
+pub async fn get_pool_statistics(
+    State(state): State<AppState>,
+) -> Result<Json<crate::models::PoolStatistics>, (StatusCode, Json<Value>)> {
+    crate::pool_management::get_pool_config(&state.db, state.pool_stats.clone(), state.config.db.max_connections)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))
+}
+
+/// Get pool configuration and generate tuning recommendations
+#[utoipa::path(
+    get,
+    path = "/v1/admin/pool-config",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Pool configuration retrieved", body = PoolTuningGuide),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    )
+)]
+pub async fn get_pool_tuning_guide(
+    State(state): State<AppState>,
+) -> Result<Json<crate::models::PoolTuningGuide>, (StatusCode, Json<Value>)> {
+    let pool_stats = crate::pool_management::get_pool_config(&state.db, state.pool_stats.clone(), state.config.db.max_connections)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))?;
+
+    let current_config = crate::models::PoolConfig {
+        max_connections: state.config.db.max_connections,
+        min_connections: state.config.db.min_connections.unwrap_or(1),
+        connection_timeout_secs: 30,
+        idle_timeout_secs: 600,
+        exhaustion_threshold: 0.9,
+        sample_interval_secs: 15,
+    };
+
+    let guide = crate::pool_management::generate_tuning_guide(&pool_stats, &current_config);
+    Ok(Json(guide))
+}
+
+/// Get pool health status
+#[utoipa::path(
+    get,
+    path = "/v1/admin/pool-config/health",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Pool health status", body = Value),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    )
+)]
+pub async fn get_pool_health(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    crate::pool_management::check_pool_health(
+        &state.db,
+        state.pool_stats.clone(),
+        state.config.db.max_connections,
+        0.9,
+    )
+    .await
+    .map(Json)
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))))
+}
+
 /// Start a background re-encryption job to migrate events from old key to new key.
 #[utoipa::path(
     post,
