@@ -13223,3 +13223,75 @@ pub async fn scan_event_for_pii(
         "detections": detections,
     })))
 }
+
+/// GraphQL endpoint for querying Soroban events
+/// Issue #683: Add GraphQL API layer
+#[utoipa::path(
+    post,
+    path = "/graphql",
+    tag = "graphql",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "GraphQL query result"),
+        (status = 400, description = "Bad request"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(("api_key" = []))
+)]
+pub async fn graphql_query(
+    State(state): State<AppState>,
+    body: String,
+) -> Result<impl IntoResponse, AppError> {
+    use async_graphql::http::GraphQLRequest;
+
+    let req: GraphQLRequest = match serde_json::from_str(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return Err(AppError::BadRequest(format!("Invalid GraphQL request: {}", e)));
+        }
+    };
+
+    let schema = crate::graphql::create_schema();
+
+    // Build GraphQL context with database pool
+    let mut request = req.into_inner();
+    request.data.insert(state.pool.clone());
+    request.data.insert(state.event_tx.subscribe());
+
+    let response = schema.execute(request).await;
+
+    Ok(Json(response))
+}
+
+/// GraphQL playground/IDE endpoint
+/// Issue #683: Add GraphQL API layer
+pub async fn graphql_playground() -> impl IntoResponse {
+    let html = r#"
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>GraphQL Playground</title>
+    <link href="https://cdn.jsdelivr.net/npm/graphql-playground-react/build/static/css/index.css" rel="stylesheet" />
+    <link rel="shortcut icon" href="https://cdn.jsdelivr.net/npm/graphql-playground-react/build/favicon.png" />
+    <script src="https://cdn.jsdelivr.net/npm/graphql-playground-react/build/static/js/middleware.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+    <script>
+        window.addEventListener('load', function (event) {
+            GraphQLPlayground.init(document.getElementById('root'), {
+                endpoint: '/graphql',
+                subscriptionEndpoint: '/graphql/ws',
+            })
+        })
+    </script>
+</body>
+</html>
+"#;
+    (
+        StatusCode::OK,
+        [("Content-Type", "text/html; charset=utf-8")],
+        html,
+    )
+}

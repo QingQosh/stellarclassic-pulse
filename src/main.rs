@@ -58,6 +58,7 @@ mod oncall;
 mod xdr_validation;
 mod replica_monitor;
 mod feature_flags;
+mod graphql;
 mod sse_ring_buffer;
 mod query_cache;
 mod push_notification;

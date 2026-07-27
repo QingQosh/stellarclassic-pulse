@@ -85,6 +85,11 @@ jsonschema = "0.18"
 # Issue #XXX: Lua scripting for event transformation (optional, behind lua feature flag)
 mlua = { version = "0.9", features = ["lua54", "async", "serialize"], optional = true }
 
+# Issue #683: GraphQL API layer
+async-graphql = { version = "0.12", features = ["chrono", "uuid"] }
+async-graphql-axum = "0.2"
+tokio-tungstenite = "0.21"
+
 [features]
 default = []
 otel = ["dep:tracing-opentelemetry", "dep:opentelemetry", "dep:opentelemetry-otlp", "dep:opentelemetry_sdk"]

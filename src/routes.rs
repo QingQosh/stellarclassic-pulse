@@ -1,6 +1,6 @@
 use axum::extract::MatchedPath;
 use axum::http::{HeaderValue, Method, Request};
-use axum::{body::Body, routing::get, Router};
+use axum::{body::Body, routing::{get, post}, Router};
 use dashmap::DashMap;
 use metrics_exporter_prometheus::PrometheusHandle;
 use sqlx::PgPool;
@@ -625,6 +625,7 @@ pub fn create_router_with_tx_and_tenant_map(
             .route("/status", get(handlers::status))
             .route("/openapi.json", get(handlers::openapi_json))
             .route("/docs", get(handlers::swagger_ui))
+            .merge(graphql_routes())
             .nest("/v1", v1)
             .merge(deprecated)
             .layer(axum::middleware::from_fn(
@@ -652,6 +653,7 @@ pub fn create_router_with_tx_and_tenant_map(
             .route("/status", get(handlers::status))
             .route("/openapi.json", get(handlers::openapi_json))
             .route("/docs", get(handlers::swagger_ui))
+            .merge(graphql_routes())
             .nest("/v1", v1)
             .merge(deprecated)
             .layer(axum::middleware::from_fn(
@@ -679,6 +681,7 @@ pub fn create_router_with_tx_and_tenant_map(
             .route("/status", get(handlers::status))
             .route("/openapi.json", get(handlers::openapi_json))
             .route("/docs", get(handlers::swagger_ui))
+            .merge(graphql_routes())
             .nest("/v1", v1)
             .merge(deprecated)
             .layer(axum::middleware::from_fn(
@@ -787,6 +790,13 @@ fn rate_limit_json_response(original: axum::response::Response<Body>) -> axum::r
         }
     }
     builder.body(Body::from(json_bytes)).unwrap()
+}
+
+/// Issue #683: GraphQL API routes
+fn graphql_routes() -> Router<AppState> {
+    Router::new()
+        .route("/graphql", post(handlers::graphql_query))
+        .route("/graphql", get(handlers::graphql_playground))
 }
 
 fn build_cors(allowed_origins: &[String]) -> CorsLayer {
