@@ -568,6 +568,35 @@ pub fn update_notification_rate_per_minute(channel: &str, rate: f64) {
     .set(rate);
 }
 
+/// #695: Record a successful notification delivery attempt.
+pub fn record_notification_delivery_success() {
+    m::counter!("soroban_pulse_notification_delivery_success_total").increment(1);
+}
+
+/// #695: Record a failed notification delivery attempt.
+pub fn record_notification_delivery_failure() {
+    m::counter!("soroban_pulse_notification_delivery_failure_total").increment(1);
+}
+
+/// #695: Record a successful webhook delivery.
+pub fn record_webhook_delivery_success() {
+    m::counter!("soroban_pulse_webhook_delivery_success_total").increment(1);
+}
+
+/// #695: Update the per-contract event count gauge (used for top-10 contract popularity panel).
+pub fn update_contract_event_count(contract_id: &str, count: i64) {
+    m::gauge!(
+        "soroban_pulse_contract_event_count",
+        "contract_id" => contract_id.to_string()
+    )
+    .set(count as f64);
+}
+
+/// #695: Record an observation of indexer lag for heatmap distribution.
+pub fn record_indexer_lag_observation(lag: u64) {
+    m::histogram!("soroban_pulse_indexer_lag_observation_ledgers").record(lag as f64);
+}
+
 // ── Issue #607: Contract ABI cache metrics ───────────────────────────────────
 
 pub fn record_abi_cache_hit(contract_id: &str) {
@@ -875,6 +904,40 @@ mod tests {
 
         // This should not panic
         update_db_pool_metrics(&pool);
+        assert!(true);
+    }
+
+    // ── Issue #695: new custom dashboard panel metrics ───────────────────
+
+    #[test]
+    fn test_record_webhook_delivery_success() {
+        record_webhook_delivery_success();
+        assert!(true);
+    }
+
+    #[test]
+    fn test_record_notification_delivery_success() {
+        record_notification_delivery_success();
+        assert!(true);
+    }
+
+    #[test]
+    fn test_record_notification_delivery_failure() {
+        record_notification_delivery_failure();
+        assert!(true);
+    }
+
+    #[test]
+    fn test_update_contract_event_count() {
+        update_contract_event_count("CABCDEF12345678901234567890123456789012345678901234567", 42);
+        update_contract_event_count("CABCDEF12345678901234567890123456789012345678901234567", 0);
+        assert!(true);
+    }
+
+    #[test]
+    fn test_record_indexer_lag_observation() {
+        record_indexer_lag_observation(0);
+        record_indexer_lag_observation(1000);
         assert!(true);
     }
 

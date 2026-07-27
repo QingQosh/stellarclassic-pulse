@@ -194,6 +194,7 @@ pub async fn deliver_with_retry_policy(
                             priority = %event.event_type,
                             "Webhook delivered successfully"
                         );
+                        crate::metrics::record_webhook_delivery_success();
                         Ok(())
                     }
                     Ok(resp) => {
@@ -304,6 +305,7 @@ pub async fn deliver_with_failover(
             match req.send().await {
                 Ok(resp) if resp.status().is_success() => {
                     info!(url = %url, attempt = attempt, "Webhook delivered (primary)");
+                    crate::metrics::record_webhook_delivery_success();
                     Ok(())
                 }
                 Ok(resp) => Err(format!("HTTP {}", resp.status())),
@@ -342,6 +344,7 @@ pub async fn deliver_with_failover(
                 match req.send().await {
                     Ok(resp) if resp.status().is_success() => {
                         info!(url = %url, attempt = attempt, "Webhook delivered (failover)");
+                        crate::metrics::record_webhook_delivery_success();
                         Ok(())
                     }
                     Ok(resp) => Err(format!("HTTP {}", resp.status())),
