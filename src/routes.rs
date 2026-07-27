@@ -533,6 +533,19 @@ pub fn create_router_with_tx_and_tenant_map(
         .route("/contracts/{contract_id}/abi/cached", axum::routing::get(handlers::get_contract_abi_cached))
         // Issue #632: Feature flag client-side endpoint
         .route("/features", axum::routing::get(handlers::get_feature_flag_status))
+        // Issue #670: Audit log query endpoint (admin)
+        .route("/admin/audit-logs", axum::routing::get(handlers::get_audit_logs))
+        // Issue #671: Trending analytics
+        .route("/analytics/trending", axum::routing::get(handlers::get_trending_events))
+        // Issue #672: Event correlation analysis
+        .route("/analytics/correlations", axum::routing::get(handlers::get_event_correlations))
+        // Issue #673: Dedicated export endpoints
+        .route("/export/csv", axum::routing::get(handlers::export_events_csv))
+        .route("/export/json", axum::routing::get(handlers::export_events_json))
+        .route("/export/parquet", axum::routing::get(handlers::export_events_parquet))
+        .route("/export/schedule", axum::routing::post(handlers::schedule_export_job))
+        .route("/export/jobs/{job_id}", axum::routing::get(handlers::get_export_job_status_db))
+        .route("/export/history", axum::routing::get(handlers::get_export_history))
         // Push-preload endpoints: read-only schema/ABI lookup for HTTP/2 push
         // and client-side preloading. Gated by enable_push_preload at the
         // handler level so the routes are always registered (returning 501 when

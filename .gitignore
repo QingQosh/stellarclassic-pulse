@@ -58,6 +58,35 @@ coverage/
 *.bak
 *.orig
 
+# Patch / fix scripts generated during development (not part of the codebase)
+patch.py
+patch2.py
+patch3.py
+patch_handlers.py
+fix_all.py
+fix_sort.py
+fix_sort2.py
+fix_openapi.py
+fix_openapi2.py
+add_openapi_info.py
+validate_implementation.ps1
+test_email_feature.sh
+
+# AI assistant chat logs
+q-dev-chat-*.md
+*.chat.md
+
+# Miscellaneous generated / temp HTML
+ai-chatbot-ui.html
+
+# Implementation notes (generated, not part of production codebase)
+IMPLEMENTATION_SUMMARY.md
+IMPLEMENTATION_COMPLETE.md
+SDK_IMPLEMENTATION_SUMMARY.md
+
+# Staged/in-progress handler files
+src/handlers.rs.new
+
 # SQLx offline query cache (generated, not hand-authored)
 # Keep .sqlx/ directory committed so offline mode works in CI
 # Uncomment the line below only if you regenerate it in CI:
