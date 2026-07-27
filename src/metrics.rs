@@ -187,6 +187,26 @@ pub fn record_pagerduty_failure() {
     m::counter!("soroban_pulse_pagerduty_failures_total").increment(1);
 }
 
+/// Record a GitHub delivery failure (all retries exhausted)
+pub fn record_github_failure() {
+    m::counter!("soroban_pulse_github_failures_total").increment(1);
+}
+
+/// Record a Discord delivery failure (all retries exhausted)
+pub fn record_discord_failure() {
+    m::counter!("soroban_pulse_discord_failures_total").increment(1);
+}
+
+/// Record a Slack delivery failure (all retries exhausted)
+pub fn record_slack_failure() {
+    m::counter!("soroban_pulse_slack_failures_total").increment(1);
+}
+
+/// Record a Telegram delivery failure (all retries exhausted)
+pub fn record_telegram_failure() {
+    m::counter!("soroban_pulse_telegram_failures_total").increment(1);
+}
+
 /// Record a Redis queue publish failure (all retries exhausted)
 pub fn record_queue_publish_failure() {
     m::counter!("soroban_pulse_redis_publish_failures_total").increment(1);
