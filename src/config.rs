@@ -260,6 +260,14 @@ pub struct Config {
     // Issue #265: AWS Kinesis streaming
     pub kinesis_stream_name: Option<String>,
     pub aws_region: Option<String>,
+    // Issue #706: AWS SQS streaming
+    pub sqs_queue_url: Option<String>,
+    pub sqs_dlq_url: Option<String>,
+    pub sqs_batch_size: usize,
+    // Issue #707: Azure Event Hubs streaming
+    pub event_hubs_connection_string: Option<String>,
+    pub event_hub_name: Option<String>,
+    pub event_hubs_partition_strategy: String,
     // Issue #264: GCP Pub/Sub streaming
     pub pubsub_project_id: Option<String>,
     pub pubsub_topic_id: Option<String>,
@@ -419,13 +427,16 @@ pub struct Config {
     /// Disabled by default. Set ENABLE_PUSH_PRELOAD=true to opt in.
     pub enable_push_preload: bool,
 
-    // #694: Index fragmentation monitoring
-    /// Bloat ratio above which a WARN log is emitted (default 0.2 = 20%).
-    pub fragmentation_warn_threshold: f64,
-    /// Bloat ratio above which a CRITICAL alert is raised (default 0.5 = 50%).
-    pub fragmentation_critical_threshold: f64,
-    /// When true, automatically schedule REINDEX for critically bloated indexes.
-    pub fragmentation_auto_reindex: bool,
+    // Issue #705: Kafka event publishing
+    /// Comma-separated list of Kafka broker addresses (e.g., "localhost:9092,localhost:9093").
+    /// When set, events are published to Kafka topic specified by kafka_topic.
+    pub kafka_brokers: Option<String>,
+    /// Kafka topic for event publishing. Required when kafka_brokers is set.
+    pub kafka_topic: Option<String>,
+    /// Kafka producer batch size (default: 16384 bytes).
+    pub kafka_batch_size: usize,
+    /// Kafka producer linger time in milliseconds (default: 100ms).
+    pub kafka_linger_ms: u64,
 }
 
 impl Default for Config {
@@ -480,6 +491,12 @@ impl Default for Config {
             dedup_window_secs: 3600,
             kinesis_stream_name: None,
             aws_region: None,
+            sqs_queue_url: None,
+            sqs_dlq_url: None,
+            sqs_batch_size: 10,
+            event_hubs_connection_string: None,
+            event_hub_name: None,
+            event_hubs_partition_strategy: "contract_id".to_string(),
             pubsub_project_id: None,
             pubsub_topic_id: None,
             pubsub_enable_message_ordering: true,
@@ -570,9 +587,10 @@ impl Default for Config {
             query_cache_ttl_secs: crate::query_cache::DEFAULT_TTL_SECS,
             query_cache_max_capacity: crate::query_cache::DEFAULT_MAX_CAPACITY,
             enable_push_preload: false,
-            fragmentation_warn_threshold: 0.2,
-            fragmentation_critical_threshold: 0.5,
-            fragmentation_auto_reindex: false,
+            kafka_brokers: None,
+            kafka_topic: None,
+            kafka_batch_size: 16384,
+            kafka_linger_ms: 100,
         }
     }
 }
@@ -1326,6 +1344,15 @@ impl Config {
                 .ok()
                 .filter(|s| !s.is_empty()),
             aws_region: env::var("AWS_REGION").ok().filter(|s| !s.is_empty()),
+            sqs_queue_url: env_or_file("SQS_QUEUE_URL", &file),
+            sqs_dlq_url: env_or_file("SQS_DLQ_URL", &file),
+            sqs_batch_size: env_or_file("SQS_BATCH_SIZE", &file)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10),
+            event_hubs_connection_string: env_or_file("EVENT_HUBS_CONNECTION_STRING", &file),
+            event_hub_name: env_or_file("EVENT_HUB_NAME", &file),
+            event_hubs_partition_strategy: env_or_file("EVENT_HUBS_PARTITION_STRATEGY", &file)
+                .unwrap_or_else(|| "contract_id".to_string()),
             pubsub_project_id: env::var("PUBSUB_PROJECT_ID").ok().filter(|s| !s.is_empty()),
             pubsub_topic_id: env::var("PUBSUB_TOPIC_ID").ok().filter(|s| !s.is_empty()),
             pubsub_enable_message_ordering: env_or_file("PUBSUB_ENABLE_MESSAGE_ORDERING", &file)
@@ -1582,15 +1609,15 @@ impl Config {
             enable_push_preload: env_or_file("ENABLE_PUSH_PRELOAD", &file)
                 .map(|v| matches!(v.to_ascii_lowercase().as_str(), "true" | "1" | "yes"))
                 .unwrap_or(false),
-            fragmentation_warn_threshold: env_or_file("FRAGMENTATION_WARN_THRESHOLD", &file)
+            // Issue #705: Kafka event publishing
+            kafka_brokers: env_or_file("KAFKA_BROKERS", &file),
+            kafka_topic: env_or_file("KAFKA_TOPIC", &file),
+            kafka_batch_size: env_or_file("KAFKA_BATCH_SIZE", &file)
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(0.2),
-            fragmentation_critical_threshold: env_or_file("FRAGMENTATION_CRITICAL_THRESHOLD", &file)
+                .unwrap_or(16384),
+            kafka_linger_ms: env_or_file("KAFKA_LINGER_MS", &file)
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(0.5),
-            fragmentation_auto_reindex: env_or_file("FRAGMENTATION_AUTO_REINDEX", &file)
-                .map(|v| matches!(v.to_ascii_lowercase().as_str(), "true" | "1" | "yes"))
-                .unwrap_or(false),
+                .unwrap_or(100),
         }
     }
 }

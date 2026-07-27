@@ -124,6 +124,7 @@ pub struct AppState {
         handlers::email_bounce_webhook,
         handlers::status,
         handlers::get_events,
+        handlers::get_events_feed,
         handlers::get_event_stats,
         handlers::get_contract_stats_history,
         handlers::get_events_diff,
@@ -441,8 +442,9 @@ pub fn create_router_with_tx_and_tenant_map(
         .route("/admin/statistics/health", axum::routing::get(handlers::get_statistics_health))
         .route("/admin/statistics/refresh", axum::routing::post(handlers::refresh_statistics))
         .route("/admin/statistics/jobs", axum::routing::get(handlers::get_analysis_jobs))
-        .route("/admin/indexes/fragmentation", axum::routing::get(handlers::get_index_fragmentation))
-        .route("/admin/indexes/{index_name}/reindex", axum::routing::post(handlers::reindex_index))
+        // #696: SLI / SLO dashboard reporting endpoints (admin-gated)
+        .route("/admin/slo/report", axum::routing::get(handlers::get_slo_report))
+        .route("/admin/slo/sample", axum::routing::post(handlers::record_slo_sample))
         .route_layer(axum::middleware::from_fn_with_state(
             Arc::clone(&admin_auth_state),
             middleware::admin_auth_middleware,
@@ -451,6 +453,7 @@ pub fn create_router_with_tx_and_tenant_map(
     // Versioned v1 routes
     let v1 = Router::new()
         .route("/events", get(handlers::get_events))
+        .route("/events/feed.rss", get(handlers::get_events_feed))
         .route("/events/stats", get(handlers::get_event_stats))
         .route("/contracts/{contract_id}/stats/history", get(handlers::get_contract_stats_history))
         .route("/events/diff", get(handlers::get_events_diff))

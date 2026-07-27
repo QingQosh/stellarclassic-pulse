@@ -568,6 +568,35 @@ pub fn update_notification_rate_per_minute(channel: &str, rate: f64) {
     .set(rate);
 }
 
+/// #695: Record a successful notification delivery attempt.
+pub fn record_notification_delivery_success() {
+    m::counter!("soroban_pulse_notification_delivery_success_total").increment(1);
+}
+
+/// #695: Record a failed notification delivery attempt.
+pub fn record_notification_delivery_failure() {
+    m::counter!("soroban_pulse_notification_delivery_failure_total").increment(1);
+}
+
+/// #695: Record a successful webhook delivery.
+pub fn record_webhook_delivery_success() {
+    m::counter!("soroban_pulse_webhook_delivery_success_total").increment(1);
+}
+
+/// #695: Update the per-contract event count gauge (used for top-10 contract popularity panel).
+pub fn update_contract_event_count(contract_id: &str, count: i64) {
+    m::gauge!(
+        "soroban_pulse_contract_event_count",
+        "contract_id" => contract_id.to_string()
+    )
+    .set(count as f64);
+}
+
+/// #695: Record an observation of indexer lag for heatmap distribution.
+pub fn record_indexer_lag_observation(lag: u64) {
+    m::histogram!("soroban_pulse_indexer_lag_observation_ledgers").record(lag as f64);
+}
+
 // ── Issue #607: Contract ABI cache metrics ───────────────────────────────────
 
 pub fn record_abi_cache_hit(contract_id: &str) {
@@ -711,6 +740,135 @@ pub fn record_query_plan_estimated_rows(query_type: &str, estimated_rows: f64) {
     .record(estimated_rows);
 }
 
+// ── Query Response Streaming metrics (Issue #688) ──────────────────────────────
+
+/// Record item sent in streaming response
+pub fn record_streaming_response_item_sent() {
+    m::counter!("soroban_pulse_streaming_response_items_sent_total").increment(1);
+}
+
+/// Record streaming response completed with item count
+pub fn record_streaming_response_completed(item_count: u64) {
+    m::counter!("soroban_pulse_streaming_responses_completed_total").increment(1);
+    m::histogram!("soroban_pulse_streaming_response_items_per_stream").record(item_count as f64);
+}
+
+/// Record streaming response error
+pub fn record_streaming_response_error(error_type: &str) {
+    m::counter!(
+        "soroban_pulse_streaming_response_errors_total",
+        "error_type" => error_type.to_string()
+    )
+    .increment(1);
+}
+
+// ── JSON Serialization metrics (Issue #687) ──────────────────────────────────
+
+/// Record JSON serialization cache hit
+pub fn record_serialization_cache_hit(entity_type: &str) {
+    m::counter!(
+        "soroban_pulse_serialization_cache_hits_total",
+        "entity_type" => entity_type.to_string()
+    )
+    .increment(1);
+}
+
+/// Record JSON serialization cache miss
+pub fn record_serialization_cache_miss(entity_type: &str) {
+    m::counter!(
+        "soroban_pulse_serialization_cache_misses_total",
+        "entity_type" => entity_type.to_string()
+    )
+    .increment(1);
+}
+
+/// Record JSON serialization time in microseconds
+pub fn record_serialization_time(entity_type: &str, duration_us: u64) {
+    m::histogram!(
+        "soroban_pulse_serialization_time_us",
+        "entity_type" => entity_type.to_string()
+    )
+    .record(duration_us as f64);
+}
+
+// ── PostgreSQL Query Plan Caching metrics (Issue #689) ─────────────────────────
+
+/// Record query plan cache hit
+pub fn record_query_plan_cache_hit() {
+    m::counter!("soroban_pulse_query_plan_cache_hits_total").increment(1);
+}
+
+/// Record query plan cache miss
+pub fn record_query_plan_cache_miss() {
+    m::counter!("soroban_pulse_query_plan_cache_misses_total").increment(1);
+}
+
+/// Record query plan cached
+pub fn record_query_plan_cached() {
+    m::counter!("soroban_pulse_query_plans_cached_total").increment(1);
+}
+
+/// Record query planning time in milliseconds
+pub fn record_query_planning_time(planning_time_ms: f64) {
+    m::histogram!("soroban_pulse_query_planning_time_ms").record(planning_time_ms);
+}
+
+// ── Advisory Lock metrics (Issue #686) ────────────────────────────────────────
+
+/// Record successful advisory lock acquisition
+pub fn record_advisory_lock_acquired(lock_id: i64) {
+    m::counter!(
+        "soroban_pulse_advisory_lock_acquired_total",
+        "lock_id" => lock_id.to_string()
+    )
+    .increment(1);
+}
+
+/// Record advisory lock release
+pub fn record_advisory_lock_released(lock_id: i64) {
+    m::counter!(
+        "soroban_pulse_advisory_lock_released_total",
+        "lock_id" => lock_id.to_string()
+    )
+    .increment(1);
+}
+
+/// Record advisory lock acquisition retry
+pub fn record_advisory_lock_retry(lock_id: i64) {
+    m::counter!(
+        "soroban_pulse_advisory_lock_retries_total",
+        "lock_id" => lock_id.to_string()
+    )
+    .increment(1);
+}
+
+/// Record advisory lock acquisition timeout
+pub fn record_advisory_lock_timeout(lock_id: i64) {
+    m::counter!(
+        "soroban_pulse_advisory_lock_timeouts_total",
+        "lock_id" => lock_id.to_string()
+    )
+    .increment(1);
+}
+
+/// Record advisory lock acquisition error
+pub fn record_advisory_lock_error(lock_id: i64) {
+    m::counter!(
+        "soroban_pulse_advisory_lock_errors_total",
+        "lock_id" => lock_id.to_string()
+    )
+    .increment(1);
+}
+
+/// Record advisory lock release error
+pub fn record_advisory_lock_release_error(lock_id: i64) {
+    m::counter!(
+        "soroban_pulse_advisory_lock_release_errors_total",
+        "lock_id" => lock_id.to_string()
+    )
+    .increment(1);
+}
+
 // ── Health check metrics ──────────────────────────────────────────────────────
 
 /// Record successful PostgreSQL health check
@@ -759,29 +917,69 @@ pub fn record_batch_config_updated() {
     m::counter!("soroban_pulse_batch_config_updates_total").increment(1);
 }
 
-// ── #694: Index fragmentation metrics ─────────────────────────────────────
+// ── Issue #696: SLI / SLO dashboard metrics ────────────────────────────────
 
-/// Record a REINDEX operation.
-pub fn record_reindex_operation(index_name: &str) {
-    m::counter!(
-        "soroban_pulse_reindex_operations_total",
-        "index" => index_name.to_string()
+/// Set the rolling SLO completion ratio in `[0.0, 1.0]`.
+///
+/// A value of `1.0` means every sample in the window met the SLO target, while
+/// `0.5` means half met it. Steady values != 1.0 across the window surface as
+/// SLO completion gaps in the Grafana panel.
+pub fn update_slo_completion_ratio(slo: &str, component: &str, ratio: f64) {
+    m::gauge!(
+        "soroban_pulse_slo_completion_ratio",
+        "slo" => slo.to_string(),
+        "component" => component.to_string()
     )
-    .increment(1);
+    .set(ratio.clamp(0.0, 1.0));
 }
 
-/// Record a REINDEX failure.
-pub fn record_reindex_failure(index_name: &str) {
-    m::counter!(
-        "soroban_pulse_reindex_failures_total",
-        "index" => index_name.to_string()
+/// Set the fraction of the error budget remaining in `[0.0, 1.0]`.
+///
+/// `1.0` = full budget, `0.0` = exhausted. Values < 0.1 trigger the
+/// `SLOErrorBudgetLow` Prometheus alert defined in `docs/alerts.yml`.
+pub fn update_slo_error_budget_remaining(slo: &str, component: &str, ratio: f64) {
+    m::gauge!(
+        "soroban_pulse_slo_error_budget_remaining",
+        "slo" => slo.to_string(),
+        "component" => component.to_string()
     )
-    .increment(1);
+    .set(ratio.clamp(0.0, 1.0));
 }
 
-/// Record a fragmentation check run.
-pub fn record_fragmentation_check() {
-    m::counter!("soroban_pulse_fragmentation_checks_total").increment(1);
+/// Set the SLO burn rate (0 == no consumption; 1 == on track to exhaust budget
+/// exactly at end of window; > 2 == critical).
+pub fn update_slo_burn_rate(slo: &str, component: &str, rate: f64) {
+    let safe = if rate.is_finite() { rate.max(0.0) } else { 100.0 };
+    m::gauge!(
+        "soroban_pulse_slo_burn_rate",
+        "slo" => slo.to_string(),
+        "component" => component.to_string()
+    )
+    .set(safe);
+}
+
+/// Set the most recent SLI observation for an SLO (rendered in the SLI trend
+/// line chart).
+pub fn update_sli_current_value(slo: &str, component: &str, value: f64) {
+    let safe = if value.is_finite() { value } else { 0.0 };
+    m::gauge!(
+        "soroban_pulse_sli_current_value",
+        "slo" => slo.to_string(),
+        "component" => component.to_string()
+    )
+    .set(safe);
+}
+
+/// Record an SLO status transition (Met → AtRisk → Breached). Used by the
+/// Grafana alert panel and the `SLOStatusAtRisk` / `SLOStatusBreached` alert
+/// rules.
+pub fn record_slo_status_transition(slo: &str, status: &str) {
+    m::counter!(
+        "soroban_pulse_slo_evaluation_total",
+        "slo" => slo.to_string(),
+        "status" => status.to_string()
+    )
+    .increment(1);
 }
 
 // ── Issue #630: Resource utilization metrics ────────────────────────────────
@@ -900,6 +1098,40 @@ mod tests {
 
         // This should not panic
         update_db_pool_metrics(&pool);
+        assert!(true);
+    }
+
+    // ── Issue #695: new custom dashboard panel metrics ───────────────────
+
+    #[test]
+    fn test_record_webhook_delivery_success() {
+        record_webhook_delivery_success();
+        assert!(true);
+    }
+
+    #[test]
+    fn test_record_notification_delivery_success() {
+        record_notification_delivery_success();
+        assert!(true);
+    }
+
+    #[test]
+    fn test_record_notification_delivery_failure() {
+        record_notification_delivery_failure();
+        assert!(true);
+    }
+
+    #[test]
+    fn test_update_contract_event_count() {
+        update_contract_event_count("CABCDEF12345678901234567890123456789012345678901234567", 42);
+        update_contract_event_count("CABCDEF12345678901234567890123456789012345678901234567", 0);
+        assert!(true);
+    }
+
+    #[test]
+    fn test_record_indexer_lag_observation() {
+        record_indexer_lag_observation(0);
+        record_indexer_lag_observation(1000);
         assert!(true);
     }
 

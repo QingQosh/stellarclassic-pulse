@@ -12,11 +12,15 @@ mod content_filter;
 mod cross_chain_correlation;
 mod cursor_expiry_handler;
 mod db;
+mod advisory_lock;
+mod serialization_cache;
+mod streaming_response;
 mod dedup;
 mod distributed_tracing;
 mod email;
 mod encryption;
 mod error;
+mod event_hubs;
 mod graceful_shutdown;
 mod handlers;
 mod index_monitor;
@@ -43,6 +47,7 @@ mod resource_metrics;
 mod routes;
 mod rpc_client;
 mod schema_validator;
+mod sqs;
 mod stats_refresh;
 mod subscriptions;
 mod webhook;
@@ -67,8 +72,10 @@ mod feature_flags;
 mod graphql;
 mod sse_ring_buffer;
 mod query_cache;
+mod query_plan_cache;
 mod push_notification;
 mod connection_pool;
+mod slo_tracker;
 
 #[cfg(feature = "archive")]
 mod archiver;
@@ -494,6 +501,37 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Issue #706: Initialize SQS publisher if configured
+    #[cfg(feature = "sqs")]
+    if let (Some(queue_url), Some(region)) =
+        (config.sqs_queue_url.clone(), config.aws_region.clone())
+    {
+        let publisher = sqs::aws::AwsSqsPublisher::from_env(
+            queue_url,
+            region,
+            config.sqs_dlq_url.clone(),
+            config.sqs_batch_size,
+        )
+        .await;
+        indexer.set_sqs_publisher(std::sync::Arc::new(publisher));
+        info!("SQS publisher enabled");
+    }
+
+    // Issue #707: Initialize Azure Event Hubs publisher if configured
+    if let Some(connection_string) = config.event_hubs_connection_string.clone() {
+        match event_hubs::HttpEventHubsPublisher::from_connection_string(
+            &connection_string,
+            config.event_hub_name.clone().unwrap_or_default(),
+            config.event_hubs_partition_strategy.clone(),
+        ) {
+            Ok(publisher) => {
+                indexer.set_event_hubs_publisher(std::sync::Arc::new(publisher));
+                info!("Event Hubs publisher enabled");
+            }
+            Err(e) => warn!(error = %e, "Failed to initialize Event Hubs publisher"),
+        }
+    }
+
     #[cfg(feature = "kafka")]
     if let (Some(brokers), Some(topic)) = (&config.kafka_brokers, &config.kafka_topic) {
         match crate::kafka::RdKafkaProducer::new(
@@ -585,6 +623,30 @@ async fn main() -> anyhow::Result<()> {
             health_client,
             interval_secs,
             health_check_email,
+        );
+    }
+
+    // #696: Install the SLO tracker and spawn its background evaluator. Must
+    // happen before the HTTP server begins serving so that the
+    // `/v1/admin/slo/report` endpoint can resolve `slo_tracker::current()`.
+    {
+        let slo_tracker = slo_tracker::shared_tracker();
+        let installed = slo_tracker::install(slo_tracker.clone());
+        if !installed {
+            warn!("SLO tracker was already installed — replacing with the default tracker");
+            // Re-install by clearing the OnceLock via a fresh tracker. In
+            // practice this branch only fires if main is re-entered, which
+            // does not happen, so we just log and move on.
+        }
+        slo_tracker::SloTracker::spawn_evaluator(
+            slo_tracker,
+            shutdown_rx.clone(),
+            slo_tracker::DEFAULT_EVAL_INTERVAL_SECS,
+        );
+        info!(
+            interval_secs = slo_tracker::DEFAULT_EVAL_INTERVAL_SECS,
+            slos_tracked = slo_tracker.definition_count(),
+            "SLO tracker installed and evaluator started",
         );
     }
 

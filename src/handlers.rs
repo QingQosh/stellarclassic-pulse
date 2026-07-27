@@ -104,7 +104,7 @@ use reqwest;
 use secrecy::ExposeSecret;
 use regex::Regex;
 use serde_json::{json, Value};
-use sqlx::Row;
+use sqlx::{QueryBuilder, Row};
 use std::convert::Infallible;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -219,6 +219,12 @@ static CONTRACTS_CACHE: OnceLock<Mutex<Option<CacheEntry>>> = OnceLock::new();
 
 fn contracts_cache() -> &'static Mutex<Option<CacheEntry>> {
     CONTRACTS_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+static EVENTS_FEED_CACHE: OnceLock<Mutex<HashMap<String, CacheEntry>>> = OnceLock::new();
+
+fn events_feed_cache() -> &'static Mutex<HashMap<String, CacheEntry>> {
+    EVENTS_FEED_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Extract the tenant_id from request extensions when multi-tenant mode is active.
@@ -2931,6 +2937,191 @@ pub async fn get_events(
         );
     }
     Ok(response)
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/events/feed.rss",
+    tag = "events",
+    params(
+        ("contract_id" = Option<String>, Query, description = "Filter feed by contract ID"),
+        ("event_type" = Option<String>, Query, description = "Filter feed by event type"),
+        ("from_ledger" = Option<i64>, Query, description = "Minimum ledger"),
+        ("to_ledger" = Option<i64>, Query, description = "Maximum ledger"),
+        ("limit" = Option<i64>, Query, description = "Maximum feed items, capped at 100")
+    ),
+    responses(
+        (status = 200, description = "Atom feed for indexed events"),
+        (status = 400, description = "Invalid filter", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse)
+    )
+)]
+pub async fn get_events_feed(
+    State(state): State<AppState>,
+    Query(params): Query<PaginationParams>,
+    extensions: axum::http::Extensions,
+) -> Result<Response, AppError> {
+    let tenant_id = extract_tenant_id(&extensions).map(|s| s.to_owned());
+    let tenant_id = tenant_id.as_deref();
+
+    if let Some(ref cid) = params.contract_id {
+        validate_contract_id(cid)?;
+    }
+    if let Some(from) = params.from_ledger {
+        validate_ledger_param("from_ledger", from)?;
+    }
+    if let Some(to) = params.to_ledger {
+        validate_ledger_param("to_ledger", to)?;
+    }
+    if let (Some(from), Some(to)) = (params.from_ledger, params.to_ledger) {
+        if from > to {
+            return Err(AppError::Validation(
+                "from_ledger must be <= to_ledger".to_string(),
+            ));
+        }
+    }
+
+    let cache_key = format!(
+        "{:?}:{:?}:{:?}:{:?}:{:?}:{:?}",
+        tenant_id,
+        params.contract_id,
+        params.event_type,
+        params.from_ledger,
+        params.to_ledger,
+        params.limit
+    );
+    {
+        let cache = events_feed_cache().lock().await;
+        if let Some(entry) = cache.get(&cache_key) {
+            if std::time::Instant::now() < entry.expires_at {
+                return Ok(xml_response(entry.data.as_str().unwrap_or_default().to_string()));
+            }
+        }
+    }
+
+    let limit = params.limit().min(100);
+    let mut query = QueryBuilder::<sqlx::Postgres>::new(
+        "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data \
+         FROM events",
+    );
+    if params.contract_id.is_some()
+        || params.event_type.is_some()
+        || params.from_ledger.is_some()
+        || params.to_ledger.is_some()
+        || tenant_id.is_some()
+    {
+        query.push(" WHERE ");
+        let mut needs_and = false;
+        if let Some(ref contract_id) = params.contract_id {
+            query.push("contract_id = ");
+            query.push_bind(contract_id);
+            needs_and = true;
+        }
+        if let Some(event_type) = params.event_type {
+            if needs_and {
+                query.push(" AND ");
+            }
+            query.push("event_type = ");
+            query.push_bind(event_type.to_string());
+            needs_and = true;
+        }
+        if let Some(from_ledger) = params.from_ledger {
+            if needs_and {
+                query.push(" AND ");
+            }
+            query.push("ledger >= ");
+            query.push_bind(from_ledger);
+            needs_and = true;
+        }
+        if let Some(to_ledger) = params.to_ledger {
+            if needs_and {
+                query.push(" AND ");
+            }
+            query.push("ledger <= ");
+            query.push_bind(to_ledger);
+            needs_and = true;
+        }
+        if let Some(tid) = tenant_id {
+            if needs_and {
+                query.push(" AND ");
+            }
+            query.push("tenant_id = ");
+            query.push_bind(tid);
+        }
+    }
+    query.push(" ORDER BY ledger DESC, id DESC LIMIT ");
+    query.push_bind(limit);
+
+    let rows = query.build().fetch_all(&state.read_pool).await?;
+    let feed = render_atom_feed(&rows)?;
+    events_feed_cache().lock().await.insert(
+        cache_key,
+        CacheEntry {
+            data: Value::String(feed.clone()),
+            expires_at: std::time::Instant::now() + Duration::from_secs(60),
+        },
+    );
+    Ok(xml_response(feed))
+}
+
+fn xml_response(body: String) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/atom+xml; charset=utf-8")
+        .body(Body::from(body))
+        .unwrap()
+}
+
+fn render_atom_feed(rows: &[sqlx::postgres::PgRow]) -> Result<String, AppError> {
+    let updated = rows
+        .first()
+        .and_then(|row| row.try_get::<DateTime<Utc>, _>("timestamp").ok())
+        .unwrap_or_else(Utc::now)
+        .to_rfc3339();
+    let mut feed = format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\
+         <feed xmlns=\"http://www.w3.org/2005/Atom\">\
+         <title>Soroban Pulse Events</title>\
+         <id>urn:soroban-pulse:events</id><updated>{}</updated>",
+        escape_xml(&updated)
+    );
+    for row in rows {
+        feed.push_str(&render_feed_entry(row)?);
+    }
+    feed.push_str("</feed>");
+    Ok(feed)
+}
+
+fn render_feed_entry(row: &sqlx::postgres::PgRow) -> Result<String, AppError> {
+    let id: Uuid = row.try_get("id")?;
+    let contract_id: String = row.try_get("contract_id")?;
+    let event_type: String = row.try_get("event_type")?;
+    let tx_hash: String = row.try_get("tx_hash")?;
+    let ledger: i64 = row.try_get("ledger")?;
+    let timestamp: DateTime<Utc> = row.try_get("timestamp")?;
+    let event_data: Value = row.try_get("event_data")?;
+    Ok(format!(
+        "<entry><title>{} event for {}</title>\
+         <id>urn:soroban-pulse:event:{}</id><updated>{}</updated>\
+         <summary type=\"html\">ledger {} tx {}</summary>\
+         <content type=\"application/json\">{}</content></entry>",
+        escape_xml(&event_type),
+        escape_xml(&contract_id),
+        id,
+        escape_xml(&timestamp.to_rfc3339()),
+        ledger,
+        escape_xml(&tx_hash),
+        escape_xml(&event_data.to_string())
+    ))
+}
+
+fn escape_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 /// Escape a single CSV field per RFC 4180.
@@ -14446,4 +14637,76 @@ pub struct ExportHistoryParams {
     pub limit:  Option<i64>,
     pub offset: Option<i64>,
     pub status: Option<String>,
+}
+
+// ── Issue #696: SLI / SLO admin reporting endpoint ──────────────────────────
+
+/// Return the current SLI / SLO aggregate report.
+///
+/// The report is generated in-memory by `crate::slo_tracker` from the rolling
+/// sample buffers. It is the JSON counterpart of the Prometheus gauges
+/// `soroban_pulse_slo_completion_ratio`, `soroban_pulse_slo_error_budget_remaining`,
+/// and `soroban_pulse_slo_burn_rate` published by the background evaluator.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/slo/report",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Current SLO report for every tracked SLO"),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 503, description = "SLO tracker not initialized"),
+    )
+)]
+pub async fn get_slo_report() -> Result<Json<Value>, AppError> {
+    let tracker = crate::slo_tracker::current().ok_or_else(|| {
+        AppError::Internal(
+            "SLO tracker not initialized — server is still starting up".to_string(),
+        )
+    })?;
+
+    let report = {
+        let guard = tracker.read().await;
+        guard.generate_report()
+    };
+    Ok(Json(serde_json::to_value(&report).unwrap_or_else(|e| {
+        json!({
+            "error": "failed to serialize SLO report",
+            "details": e.to_string(),
+        })
+    })))
+}
+
+/// Record an SLI sample against a named SLO. Used by internal callers and
+/// by integration tests; not part of the documented admin surface but exposed
+/// for symmetry with `get_slo_report`.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/slo/sample",
+    tag = "admin",
+    responses(
+        (status = 202, description = "Sample accepted"),
+        (status = 400, description = "Invalid request"),
+        (status = 503, description = "SLO tracker not initialized"),
+    )
+)]
+pub async fn record_slo_sample(
+    Json(payload): Json<serde_json::Value>,
+) -> Result<axum::http::StatusCode, AppError> {
+    let slo_name = payload
+        .get("slo")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::Validation("missing 'slo' field".to_string()))?;
+    let value = payload
+        .get("value")
+        .and_then(|v| v.as_f64())
+        .ok_or_else(|| AppError::Validation("missing numeric 'value' field".to_string()))?;
+
+    let tracker = crate::slo_tracker::current().ok_or_else(|| {
+        AppError::Internal(
+            "SLO tracker not initialized — server is still starting up".to_string(),
+        )
+    })?;
+
+    crate::slo_tracker::record_sli_sample(&tracker, slo_name, value).await;
+    Ok(axum::http::StatusCode::ACCEPTED)
 }

@@ -822,4 +822,144 @@ mod tests {
             .get("Permissions-Policy")
             .is_some_and(|v| !v.is_empty()));
     }
+
+    #[test]
+    fn test_hash_api_key_produces_consistent_hash() {
+        let key = "test-api-key-123";
+        let hash1 = hash_api_key(key);
+        let hash2 = hash_api_key(key);
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_hash_api_key_produces_different_hashes_for_different_keys() {
+        let key1 = "api-key-1";
+        let key2 = "api-key-2";
+        let hash1 = hash_api_key(key1);
+        let hash2 = hash_api_key(key2);
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_hash_api_key_output_is_hex() {
+        let key = "test-key";
+        let hash = hash_api_key(key);
+        // SHA256 produces 64 hex characters
+        assert_eq!(hash.len(), 64);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[tokio::test]
+    async fn test_multi_tenant_mode_requires_tenant_mapping() {
+        let mut tenant_map = std::collections::HashMap::new();
+        let key = "tenant-a-key";
+        tenant_map.insert(hash_api_key(key), "tenant-a".to_string());
+
+        let auth_state = Arc::new(AuthState {
+            api_keys: vec![key.to_string()],
+            admin_api_keys: Vec::new(),
+            tenant_map: Arc::new(tenant_map),
+            multi_tenant: true,
+        });
+
+        let app = Router::new()
+            .route("/test", get(|| async { "OK" }))
+            .route_layer(axum::middleware::from_fn_with_state(
+                auth_state,
+                auth_middleware,
+            ));
+
+        // Request with valid tenant-mapped key
+        let response: Response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("X-Api-Key", key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_multi_tenant_mode_rejects_unmapped_key() {
+        let tenant_map = std::collections::HashMap::new();
+
+        let auth_state = Arc::new(AuthState {
+            api_keys: vec!["unmapped-key".to_string()],
+            admin_api_keys: Vec::new(),
+            tenant_map: Arc::new(tenant_map),
+            multi_tenant: true,
+        });
+
+        let app = Router::new()
+            .route("/test", get(|| async { "OK" }))
+            .route_layer(axum::middleware::from_fn_with_state(
+                auth_state,
+                auth_middleware,
+            ));
+
+        // Request with unmapped key should fail
+        let response: Response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("X-Api-Key", "unmapped-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_admin_key_bypasses_tenant_validation() {
+        let tenant_map = std::collections::HashMap::new();
+        let admin_key = "admin-key";
+
+        let auth_state = Arc::new(AuthState {
+            api_keys: vec![],
+            admin_api_keys: vec![admin_key.to_string()],
+            tenant_map: Arc::new(tenant_map),
+            multi_tenant: true,
+        });
+
+        let app = Router::new()
+            .route("/test", get(|| async { "OK" }))
+            .route_layer(axum::middleware::from_fn_with_state(
+                auth_state,
+                auth_middleware,
+            ));
+
+        // Admin key should bypass tenant validation
+        let response: Response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("X-Api-Key", admin_key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn test_tenant_id_extraction() {
+        let mut extensions = axum::http::Extensions::new();
+        let tenant_id = TenantId("tenant-abc".to_string());
+        extensions.insert(tenant_id.clone());
+
+        let extracted = extensions.get::<TenantId>();
+        assert!(extracted.is_some());
+        assert_eq!(extracted.unwrap().0, "tenant-abc");
+    }
 }

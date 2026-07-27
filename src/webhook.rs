@@ -1,6 +1,7 @@
 use hmac::{Hmac, Mac};
 use reqwest::Client;
 use sha2::Sha256;
+use sqlx::Row;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
@@ -144,8 +145,27 @@ pub async fn deliver_with_retry_policy(
         }
     }
 
-    let body = match serde_json::to_vec(&event) {
-        Ok(b) => b,
+    if let Some(pool) = pool {
+        match endpoint_rate_limited(pool, &url).await {
+            Ok(Some(next_retry_at)) => {
+                enqueue_endpoint_retry(
+                    pool,
+                    &url,
+                    &event,
+                    &secret,
+                    "endpoint rate limited",
+                    next_retry_at,
+                )
+                .await;
+                return;
+            }
+            Ok(None) => {}
+            Err(e) => warn!(error = %e, url = %url, "Failed to check webhook endpoint rate limit"),
+        }
+    }
+
+    let mut payload = match serde_json::to_value(&event) {
+        Ok(value) => value,
         Err(e) => {
             error!(error = %e, "Failed to serialize event for webhook delivery");
             return;
@@ -194,6 +214,7 @@ pub async fn deliver_with_retry_policy(
                             priority = %event.event_type,
                             "Webhook delivered successfully"
                         );
+                        crate::metrics::record_webhook_delivery_success();
                         Ok(())
                     }
                     Ok(resp) => {
@@ -212,6 +233,9 @@ pub async fn deliver_with_retry_policy(
 
     match result {
         Ok(()) => {
+            if let Some(pool) = pool {
+                record_endpoint_success(pool, &url).await;
+            }
             // Record the notification for escalation tracking (Issue #493).
             if let Some(pool) = pool {
                 let notification_id = Uuid::new_v4();
@@ -241,8 +265,8 @@ pub async fn deliver_with_retry_policy(
             );
 
             if let Some(pool) = pool {
+                let next_retry = record_endpoint_failure(pool, &url).await;
                 let payload_val = serde_json::to_value(&event).unwrap_or(serde_json::json!({}));
-                let next_retry = chrono::Utc::now() + chrono::Duration::seconds(60);
 
                 if let Err(e) = sqlx::query(
                     "INSERT INTO webhook_failures \
@@ -263,6 +287,112 @@ pub async fn deliver_with_retry_policy(
 
             metrics::record_webhook_failure();
         }
+    }
+}
+
+async fn endpoint_rate_limited(
+    pool: &sqlx::PgPool,
+    url: &str,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, sqlx::Error> {
+    let row = sqlx::query(
+        "INSERT INTO rate_limit_endpoints (endpoint_url, window_start, window_count) \
+         VALUES ($1, NOW(), 1) \
+         ON CONFLICT (endpoint_url) DO UPDATE SET \
+             window_start = CASE \
+                 WHEN rate_limit_endpoints.window_start < NOW() - INTERVAL '1 minute' THEN NOW() \
+                 ELSE rate_limit_endpoints.window_start END, \
+             window_count = CASE \
+                 WHEN rate_limit_endpoints.window_start < NOW() - INTERVAL '1 minute' THEN 1 \
+                 ELSE rate_limit_endpoints.window_count + 1 END, \
+             updated_at = NOW() \
+         RETURNING per_minute_limit, window_count, backoff_until",
+    )
+    .bind(url)
+    .fetch_one(pool)
+    .await?;
+
+    let limit: i32 = row.try_get("per_minute_limit")?;
+    let count: i32 = row.try_get("window_count")?;
+    let backoff_until: Option<chrono::DateTime<chrono::Utc>> = row.try_get("backoff_until")?;
+    let now = chrono::Utc::now();
+    if let Some(backoff_until) = backoff_until {
+        if backoff_until > now {
+            return Ok(Some(backoff_until));
+        }
+    }
+    if count > limit {
+        return Ok(Some(now + chrono::Duration::seconds(60)));
+    }
+    Ok(None)
+}
+
+async fn record_endpoint_success(pool: &sqlx::PgPool, url: &str) {
+    if let Err(e) = sqlx::query(
+        "UPDATE rate_limit_endpoints \
+         SET consecutive_failures = 0, health_status = 'healthy', \
+             backoff_until = NULL, updated_at = NOW() \
+         WHERE endpoint_url = $1",
+    )
+    .bind(url)
+    .execute(pool)
+    .await
+    {
+        warn!(error = %e, url = %url, "Failed to record webhook endpoint success");
+    }
+}
+
+async fn record_endpoint_failure(
+    pool: &sqlx::PgPool,
+    url: &str,
+) -> chrono::DateTime<chrono::Utc> {
+    let next_retry = chrono::Utc::now() + chrono::Duration::seconds(60);
+    if let Err(e) = sqlx::query(
+        "UPDATE rate_limit_endpoints \
+         SET consecutive_failures = consecutive_failures + 1, \
+             health_status = CASE \
+                 WHEN consecutive_failures + 1 >= 3 THEN 'unhealthy' \
+                 ELSE 'degraded' END, \
+             backoff_until = NOW() + make_interval( \
+                 secs => LEAST(900, POWER(2, LEAST(consecutive_failures + 1, 10))::int)), \
+             updated_at = NOW() \
+         WHERE endpoint_url = $1",
+    )
+    .bind(url)
+    .execute(pool)
+    .await
+    {
+        warn!(error = %e, url = %url, "Failed to record webhook endpoint failure");
+    }
+    next_retry
+}
+
+async fn enqueue_endpoint_retry(
+    pool: &sqlx::PgPool,
+    url: &str,
+    event: &SorobanEvent,
+    secret: &Option<String>,
+    reason: &str,
+    next_retry_at: chrono::DateTime<chrono::Utc>,
+) {
+    let payload = serde_json::to_value(event).unwrap_or(serde_json::json!({}));
+    let secret_hash = secret.as_deref().map(|s| {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(s.as_bytes()))
+    });
+    if let Err(e) = sqlx::query(
+        "INSERT INTO webhook_retry_queue \
+         (url, payload, secret_hash, attempt, max_attempts, next_retry_at, last_error, status) \
+         VALUES ($1, $2, $3, 0, 5, $4, $5, 'pending')",
+    )
+    .bind(url)
+    .bind(payload)
+    .bind(secret_hash)
+    .bind(next_retry_at)
+    .bind(reason)
+    .execute(pool)
+    .await
+    {
+        error!(error = %e, url = %url, "Failed to enqueue endpoint-specific webhook retry");
     }
 }
 
@@ -304,6 +434,7 @@ pub async fn deliver_with_failover(
             match req.send().await {
                 Ok(resp) if resp.status().is_success() => {
                     info!(url = %url, attempt = attempt, "Webhook delivered (primary)");
+                    crate::metrics::record_webhook_delivery_success();
                     Ok(())
                 }
                 Ok(resp) => Err(format!("HTTP {}", resp.status())),
@@ -342,6 +473,7 @@ pub async fn deliver_with_failover(
                 match req.send().await {
                     Ok(resp) if resp.status().is_success() => {
                         info!(url = %url, attempt = attempt, "Webhook delivered (failover)");
+                        crate::metrics::record_webhook_delivery_success();
                         Ok(())
                     }
                     Ok(resp) => Err(format!("HTTP {}", resp.status())),

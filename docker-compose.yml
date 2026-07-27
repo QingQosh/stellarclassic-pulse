@@ -2,15 +2,15 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:-soroban}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-soroban}
+      POSTGRES_DB: ${POSTGRES_DB:-soroban_pulse}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-soroban}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -21,11 +21,11 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: ${DATABASE_URL}
-      STELLAR_RPC_URL: ${STELLAR_RPC_URL}
-      START_LEDGER: ${START_LEDGER}
-      PORT: ${PORT}
-      RUST_LOG: ${RUST_LOG}
+      DATABASE_URL: ${DATABASE_URL:-postgres://soroban:soroban@db:5432/soroban_pulse}
+      STELLAR_RPC_URL: ${STELLAR_RPC_URL:-https://soroban-testnet.stellar.org}
+      START_LEDGER: ${START_LEDGER:-0}
+      PORT: ${PORT:-3000}
+      RUST_LOG: ${RUST_LOG:-info}
     ports:
       - "3000:3000"
     healthcheck:
@@ -45,11 +45,42 @@ services:
       - "9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docs/alerts.yml:/etc/prometheus/alerts.yml:ro
       - promdata:/prometheus
     depends_on:
       app:
         condition: service_healthy
 
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafanadata:/var/lib/grafana
+      - ./docs/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docs/grafana-dashboard.json:/var/lib/grafana/dashboards/soroban-pulse-sla.json:ro
+    depends_on:
+      - prometheus
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
 volumes:
   pgdata:
   promdata:
+  grafanadata:
+  redisdata:
