@@ -13,6 +13,7 @@ mod cross_chain_correlation;
 mod cursor_expiry_handler;
 mod db;
 mod advisory_lock;
+mod serialization_cache;
 mod dedup;
 mod distributed_tracing;
 mod email;

@@ -711,6 +711,35 @@ pub fn record_query_plan_estimated_rows(query_type: &str, estimated_rows: f64) {
     .record(estimated_rows);
 }
 
+// ── JSON Serialization metrics (Issue #687) ──────────────────────────────────
+
+/// Record JSON serialization cache hit
+pub fn record_serialization_cache_hit(entity_type: &str) {
+    m::counter!(
+        "soroban_pulse_serialization_cache_hits_total",
+        "entity_type" => entity_type.to_string()
+    )
+    .increment(1);
+}
+
+/// Record JSON serialization cache miss
+pub fn record_serialization_cache_miss(entity_type: &str) {
+    m::counter!(
+        "soroban_pulse_serialization_cache_misses_total",
+        "entity_type" => entity_type.to_string()
+    )
+    .increment(1);
+}
+
+/// Record JSON serialization time in microseconds
+pub fn record_serialization_time(entity_type: &str, duration_us: u64) {
+    m::histogram!(
+        "soroban_pulse_serialization_time_us",
+        "entity_type" => entity_type.to_string()
+    )
+    .record(duration_us as f64);
+}
+
 // ── Advisory Lock metrics (Issue #686) ────────────────────────────────────────
 
 /// Record successful advisory lock acquisition
