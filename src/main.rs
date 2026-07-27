@@ -52,6 +52,7 @@ mod github;
 mod discord;
 mod slack;
 mod telegram;
+mod integration_handlers;
 mod retry_policy;
 mod sms;
 mod aggregation;
