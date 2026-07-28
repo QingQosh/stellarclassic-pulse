@@ -5415,6 +5415,172 @@ pub async fn lua_preview(
     Ok(Json(models::LuaPreviewResponse { results }))
 }
 
+/// Replay already-indexed events through a Lua transformation script (Issue #700).
+///
+/// Fetches events matching the ledger and/or timestamp window (and optional
+/// `contract_id` filter), runs each one through `transformation_script`, and
+/// reports per-event results. In `dry_run` mode nothing is redelivered — the
+/// endpoint only reports what the script *would* do. Otherwise, transformed
+/// events (script returned a table, not `nil`) are broadcast on the same
+/// channel newly-indexed events use, so they flow through the normal
+/// downstream pipeline (webhooks, SSE, email, etc.) exactly like a live event.
+#[utoipa::path(
+    post,
+    path = "/v1/replay/with-transform",
+    tag = "admin",
+    request_body = models::ReplayWithTransformRequest,
+    responses(
+        (status = 200, description = "Replay completed or previewed", body = models::ReplayWithTransformResponse),
+        (status = 400, description = "Invalid request or transformation script"),
+    )
+)]
+pub async fn replay_with_transform(
+    State(state): State<AppState>,
+    Json(request): Json<models::ReplayWithTransformRequest>,
+) -> Result<Json<models::ReplayWithTransformResponse>, AppError> {
+    if request.transformation_script.trim().is_empty() {
+        return Err(AppError::Validation(
+            "transformation_script must not be empty".to_string(),
+        ));
+    }
+    if request.from_ledger.is_none() && request.from_timestamp.is_none() {
+        return Err(AppError::Validation(
+            "either from_ledger or from_timestamp is required".to_string(),
+        ));
+    }
+    if let (Some(from), Some(to)) = (request.from_ledger, request.to_ledger) {
+        if from > to {
+            return Err(AppError::Validation(
+                "from_ledger must be <= to_ledger".to_string(),
+            ));
+        }
+    }
+    if let (Some(from), Some(to)) = (request.from_timestamp, request.to_timestamp) {
+        if from > to {
+            return Err(AppError::Validation(
+                "from_timestamp must be <= to_timestamp".to_string(),
+            ));
+        }
+    }
+
+    let wrapped_script =
+        crate::lua_transform::LuaTransformer::wrap_script_body(&request.transformation_script);
+    crate::lua_transform::LuaTransformer::validate_syntax(&wrapped_script)
+        .map_err(|e| AppError::Validation(format!("invalid transformation script: {e}")))?;
+
+    let limit = request.limit.unwrap_or(100).clamp(1, 1000);
+
+    let mut query = QueryBuilder::<sqlx::Postgres>::new(
+        "SELECT id, contract_id, event_type, tx_hash, ledger, timestamp, event_data \
+         FROM events WHERE ",
+    );
+    let mut needs_and = false;
+    if let Some(from_ledger) = request.from_ledger {
+        query.push("ledger >= ");
+        query.push_bind(from_ledger);
+        needs_and = true;
+    }
+    if let Some(to_ledger) = request.to_ledger {
+        if needs_and {
+            query.push(" AND ");
+        }
+        query.push("ledger <= ");
+        query.push_bind(to_ledger);
+        needs_and = true;
+    }
+    if let Some(from_timestamp) = request.from_timestamp {
+        if needs_and {
+            query.push(" AND ");
+        }
+        query.push("timestamp >= ");
+        query.push_bind(from_timestamp);
+        needs_and = true;
+    }
+    if let Some(to_timestamp) = request.to_timestamp {
+        if needs_and {
+            query.push(" AND ");
+        }
+        query.push("timestamp <= ");
+        query.push_bind(to_timestamp);
+        needs_and = true;
+    }
+    if let Some(ref contract_id) = request.contract_id {
+        if needs_and {
+            query.push(" AND ");
+        }
+        query.push("contract_id = ");
+        query.push_bind(contract_id);
+    }
+    query.push(" ORDER BY ledger ASC LIMIT ");
+    query.push_bind(limit);
+
+    let rows = query.build().fetch_all(&state.pool).await?;
+
+    let ids: Vec<uuid::Uuid> = rows
+        .iter()
+        .map(|r| r.try_get::<uuid::Uuid, _>("id"))
+        .collect::<Result<_, _>>()?;
+    let events: Vec<crate::models::SorobanEvent> = rows
+        .iter()
+        .map(|r| -> Result<_, sqlx::Error> {
+            let timestamp: DateTime<Utc> = r.try_get("timestamp")?;
+            Ok(crate::models::SorobanEvent {
+                id: None,
+                contract_id: r.try_get("contract_id")?,
+                event_type: r.try_get("event_type")?,
+                tx_hash: r.try_get("tx_hash")?,
+                ledger: r.try_get::<i64, _>("ledger")? as u64,
+                ledger_closed_at: timestamp.to_rfc3339(),
+                ledger_hash: None,
+                in_successful_call: true,
+                value: r.try_get("event_data")?,
+                topic: None,
+                tenant_id: None,
+            })
+        })
+        .collect::<Result<_, _>>()?;
+
+    let total_events = events.len() as i64;
+    let timeout_ms = state.config.event_transform_timeout_ms;
+    let mut preview =
+        crate::lua_transform::LuaTransformer::preview_events(wrapped_script, events, timeout_ms)
+            .await;
+    for (item, id) in preview.iter_mut().zip(ids.iter()) {
+        item.event_id = *id;
+    }
+
+    let transformed_events = preview.iter().filter(|i| i.transformed.is_some()).count() as i64;
+    let error_events = preview.iter().filter(|i| i.error.is_some()).count() as i64;
+    let skipped_events = total_events - transformed_events - error_events;
+
+    if !request.dry_run {
+        for item in preview.iter() {
+            if let Some(ref transformed) = item.transformed {
+                if let Ok(event) =
+                    serde_json::from_value::<crate::models::SorobanEvent>(transformed.clone())
+                {
+                    let _ = state.event_tx.send(event);
+                }
+            }
+        }
+    }
+
+    Ok(Json(models::ReplayWithTransformResponse {
+        replay_id: uuid::Uuid::new_v4(),
+        status: if request.dry_run {
+            "dry_run".to_string()
+        } else {
+            "completed".to_string()
+        },
+        dry_run: request.dry_run,
+        total_events,
+        transformed_events,
+        skipped_events,
+        error_events,
+        preview,
+    }))
+}
+
 pub async fn replay_events(
     State(state): State<AppState>,
     Json(request): Json<models::ReplayRequest>,
@@ -14731,6 +14897,8 @@ mod ops_tests {
         assert!(v.get("entries").is_some());
         assert!(v.get("count").is_some());
     }
+}
+
 // ── Issue #696: SLI / SLO admin reporting endpoint ──────────────────────────
 
 /// Return the current SLI / SLO aggregate report.
