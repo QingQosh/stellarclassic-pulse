@@ -142,6 +142,7 @@ pub struct AppState {
         handlers::ws_stream_events,
         handlers::get_contracts,
         handlers::replay_events,
+        handlers::replay_with_transform,
         handlers::start_reencrypt,
         handlers::register_contract_abi,
         handlers::get_contract_abi,
@@ -500,6 +501,7 @@ pub fn create_router_with_tx_and_tenant_map(
         .route("/contracts/{contract_id}/summary", get(handlers::get_contract_summary))
         .route("/contracts/{contract_id}/event-counts", get(handlers::get_contract_event_counts))
         .route("/admin/replay", axum::routing::post(handlers::replay_events))
+        .route("/replay/with-transform", axum::routing::post(handlers::replay_with_transform))
         .route("/admin/reencrypt", axum::routing::post(handlers::start_reencrypt))
         .route("/admin/mask-events", axum::routing::post(handlers::start_mask_events))
         .route("/admin/mask-events/{job_id}", get(handlers::get_mask_job_status))

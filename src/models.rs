@@ -507,6 +507,47 @@ pub struct ReplayRequest {
     pub to_ledger: u64,
 }
 
+/// Request body for POST /v1/replay/with-transform (Issue #700).
+///
+/// Replays already-indexed events matching the given ledger or timestamp
+/// window through a Lua transformation script. Either `from_ledger` or
+/// `from_timestamp` is required.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct ReplayWithTransformRequest {
+    pub from_ledger: Option<i64>,
+    pub to_ledger: Option<i64>,
+    pub from_timestamp: Option<DateTime<Utc>>,
+    pub to_timestamp: Option<DateTime<Utc>>,
+    /// Restrict replay to a single contract.
+    pub contract_id: Option<String>,
+    /// Lua expression or statements evaluated as the body of an implicit
+    /// `function transform_event(event) ... end`. Return the (optionally
+    /// modified) `event` table to keep it, or `nil` to skip it.
+    pub transformation_script: String,
+    /// When true, run the transformation and report results without
+    /// redelivering any events. Defaults to false.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Max events to replay (default 100, max 1000).
+    pub limit: Option<i64>,
+}
+
+/// Response body for POST /v1/replay/with-transform.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ReplayWithTransformResponse {
+    pub replay_id: Uuid,
+    /// "dry_run" or "completed".
+    pub status: String,
+    pub dry_run: bool,
+    pub total_events: i64,
+    pub transformed_events: i64,
+    pub skipped_events: i64,
+    pub error_events: i64,
+    /// Original/transformed event pairs. Always populated (bounded by
+    /// `limit`) so callers can inspect the effect of the script.
+    pub preview: Vec<LuaPreviewItem>,
+}
+
 /// Request body for the batch tx-hash lookup endpoint.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct BatchTxRequest {
