@@ -10,6 +10,7 @@ pub mod capacity_planning;
 pub mod config;
 pub mod content_filter;
 pub mod db;
+pub mod dedup;
 pub mod distributed_tracing;
 pub mod email;
 pub mod encryption;
