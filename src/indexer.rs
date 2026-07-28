@@ -599,6 +599,7 @@ impl<R: RpcClient> Indexer<R> {
                             }
                             let lag = result.latest_ledger - current_ledger;
                             metrics::update_indexer_lag(lag);
+                            metrics::record_indexer_lag_observation(lag);
 
                             // Warn if lag exceeds threshold
                             if lag > self.config.indexer_lag_warn_threshold {
@@ -617,6 +618,7 @@ impl<R: RpcClient> Indexer<R> {
                             }
                             let lag = latest.saturating_sub(current_ledger);
                             metrics::update_indexer_lag(lag);
+                            metrics::record_indexer_lag_observation(lag);
                         }
                         sleep(Duration::from_millis(self.config.indexer_poll_interval_ms)).await;
                     }

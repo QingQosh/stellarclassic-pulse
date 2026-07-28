@@ -182,4 +182,118 @@ mod tests {
         assert_eq!(super::encrypt(&key, &v).unwrap(), v);
         assert_eq!(super::decrypt(&key, None, &v).unwrap(), v);
     }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn decrypt_missing_data_field_returns_error() {
+        let key = test_key(0x42);
+        let invalid = json!({"encrypted": true, "nonce": "xyz"});
+        assert!(super::decrypt(&key, None, &invalid).is_err());
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn decrypt_missing_nonce_field_returns_error() {
+        let key = test_key(0x42);
+        let invalid = json!({"encrypted": true, "data": "xyz"});
+        assert!(super::decrypt(&key, None, &invalid).is_err());
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn decrypt_invalid_base64_data_returns_error() {
+        let key = test_key(0x42);
+        let invalid = json!({"encrypted": true, "data": "!!!invalid!!!", "nonce": "xyz"});
+        assert!(super::decrypt(&key, None, &invalid).is_err());
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn decrypt_invalid_nonce_length_returns_error() {
+        let key = test_key(0x42);
+        // Nonce must be exactly 12 bytes (24 hex characters when base64 encoded)
+        let invalid = json!({"encrypted": true, "data": "dGVzdA==", "nonce": "c2hvcnQ="});
+        assert!(super::decrypt(&key, None, &invalid).is_err());
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn complex_json_roundtrip() {
+        let key = test_key(0x99);
+        let complex = json!({
+            "nested": {
+                "array": [1, 2, 3],
+                "string": "test",
+                "null": null,
+                "bool": true
+            },
+            "deep": {
+                "level": {
+                    "value": {
+                        "amount": "1000000",
+                        "currency": "USD"
+                    }
+                }
+            }
+        });
+
+        let encrypted = super::encrypt(&key, &complex).unwrap();
+        let decrypted = super::decrypt(&key, None, &encrypted).unwrap();
+        assert_eq!(decrypted, complex);
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn empty_json_object_encryption() {
+        let key = test_key(0x42);
+        let empty = json!({});
+
+        let encrypted = super::encrypt(&key, &empty).unwrap();
+        let decrypted = super::decrypt(&key, None, &encrypted).unwrap();
+        assert_eq!(decrypted, empty);
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn large_json_object_encryption() {
+        let key = test_key(0x42);
+        let mut large = serde_json::Map::new();
+        for i in 0..1000 {
+            large.insert(format!("key_{i}"), json!(format!("value_{i}")));
+        }
+        let large_json = json!(large);
+
+        let encrypted = super::encrypt(&key, &large_json).unwrap();
+        let decrypted = super::decrypt(&key, None, &encrypted).unwrap();
+        assert_eq!(decrypted, large_json);
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn multiple_keys_for_field_level_encryption_demo() {
+        let key1 = test_key(0x11);
+        let key2 = test_key(0x22);
+
+        let sensitive1 = json!({"amount": "1000000", "recipient": "GABC123"});
+        let sensitive2 = json!({"amount": "5000000", "recipient": "GXYZ789"});
+
+        let e1 = super::encrypt(&key1, &sensitive1).unwrap();
+        let e2 = super::encrypt(&key2, &sensitive2).unwrap();
+
+        // Each field encrypted with its own key
+        assert!(e1["data"].as_str().is_some());
+        assert!(e2["data"].as_str().is_some());
+        assert_ne!(e1["data"], e2["data"]);
+
+        // Decrypt with correct keys
+        let d1 = super::decrypt(&key1, None, &e1).unwrap();
+        let d2 = super::decrypt(&key2, None, &e2).unwrap();
+
+        assert_eq!(d1, sensitive1);
+        assert_eq!(d2, sensitive2);
+
+        // Cross-decryption fails
+        assert!(super::decrypt(&key2, None, &e1).is_err());
+        assert!(super::decrypt(&key1, None, &e2).is_err());
+    }
 }

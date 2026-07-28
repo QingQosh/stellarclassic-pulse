@@ -172,6 +172,8 @@ pub struct AppState {
         handlers::upsert_anonymization_rule,
         handlers::delete_anonymization_rule,
         handlers::scan_event_for_pii,
+        handlers::get_index_fragmentation,
+        handlers::reindex_index,
     ),
     components(schemas(
         crate::models::Event,
@@ -440,6 +442,9 @@ pub fn create_router_with_tx_and_tenant_map(
         .route("/admin/statistics/health", axum::routing::get(handlers::get_statistics_health))
         .route("/admin/statistics/refresh", axum::routing::post(handlers::refresh_statistics))
         .route("/admin/statistics/jobs", axum::routing::get(handlers::get_analysis_jobs))
+        // #696: SLI / SLO dashboard reporting endpoints (admin-gated)
+        .route("/admin/slo/report", axum::routing::get(handlers::get_slo_report))
+        .route("/admin/slo/sample", axum::routing::post(handlers::record_slo_sample))
         .route_layer(axum::middleware::from_fn_with_state(
             Arc::clone(&admin_auth_state),
             middleware::admin_auth_middleware,
@@ -541,6 +546,9 @@ pub fn create_router_with_tx_and_tenant_map(
         // #587: Feature flag management
         .route("/admin/feature-flags", axum::routing::get(handlers::list_feature_flags))
         .route("/admin/feature-flags/audit", axum::routing::get(handlers::get_feature_flag_audit))
+        // #694: Index fragmentation monitoring
+        .route("/admin/indexes/fragmentation", axum::routing::get(handlers::get_index_fragmentation))
+        .route("/admin/indexes/{index_name}/reindex", axum::routing::post(handlers::reindex_index))
         // Issue #609: Multi-chain networks
         .route("/networks", axum::routing::get(handlers::list_networks))
         // Issue #608: Ledger hash endpoints

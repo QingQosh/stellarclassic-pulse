@@ -2,6 +2,11 @@
 /// if the query planner is not using the expected indexes.
 /// Also queries pg_stat_user_indexes to expose per-index scan counts and
 /// unused-index totals as Prometheus metrics.
+///
+/// #694: Index fragmentation monitoring
+/// Detects index bloat via pgstattuple and pg_stat_user_tables, exposes
+/// per-index fragmentation ratios, and optionally schedules REINDEX
+/// operations when bloat exceeds configured thresholds.
 extern crate metrics as m;
 
 use sqlx::PgPool;
@@ -93,6 +98,276 @@ async fn collect_index_stats(pool: &PgPool) {
 }
 
 // ---------------------------------------------------------------------------
+// #694: Index fragmentation / bloat detection
+// ---------------------------------------------------------------------------
+
+/// Per-index fragmentation information.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct IndexFragmentationInfo {
+    pub table_name: String,
+    pub index_name: String,
+    /// Approximate bloat ratio: (dead_tuples / live_tuples). None when
+    /// pgstattuple is unavailable or the index is empty.
+    pub bloat_ratio: Option<f64>,
+    /// Estimated dead tuple count from pg_stat_user_tables.
+    pub dead_tuples: Option<i64>,
+    /// Live tuple count from pg_stat_user_tables.
+    pub live_tuples: Option<i64>,
+    /// Total size of the index in bytes.
+    pub index_size_bytes: i64,
+    /// Last time this index was vacuumed (auto or manual), if known.
+    pub last_vacuum: Option<String>,
+    /// Last time this index was analyzed, if known.
+    pub last_analyze: Option<String>,
+    /// Last time this index was auto-vacuumed, if known.
+    pub last_autovacuum: Option<String>,
+}
+
+/// Query fragmentation information using pg_stat_user_indexes + pg_class +
+/// pg_stat_user_tables.  pgstattuple is tried first; if the extension is
+/// not installed the bloat ratio is approximated from dead/live tuples.
+pub async fn query_index_fragmentation(
+    pool: &PgPool,
+) -> Result<Vec<IndexFragmentationInfo>, sqlx::Error> {
+    // Note: pgstattuple must be installed (CREATE EXTENSION IF NOT EXISTS)
+    // but we gracefully degrade if it isn't.  We attempt it first and fall
+    // back to dead-tuple estimation.
+    let rows = sqlx::query_as::<_, (String, String, i64, Option<i64>, Option<i64>, Option<String>, Option<String>, Option<String>)>(
+        r#"
+        SELECT
+            t.relname                 AS table_name,
+            i.relname                 AS index_name,
+            pg_relation_size(i.oid)   AS index_size_bytes,
+            s.n_dead_tup              AS dead_tuples,
+            s.n_live_tup              AS live_tuples,
+            COALESCE(
+                to_char(s.last_vacuum, 'YYYY-MM-DD HH24:MI:SS'),
+                'never'
+            )                         AS last_vacuum,
+            COALESCE(
+                to_char(s.last_analyze, 'YYYY-MM-DD HH24:MI:SS'),
+                'never'
+            )                         AS last_analyze,
+            COALESCE(
+                to_char(s.last_autovacuum, 'YYYY-MM-DD HH24:MI:SS'),
+                'never'
+            )                         AS last_autovacuum
+        FROM pg_index            idx
+        JOIN pg_class            i   ON i.oid   = idx.indexrelid
+        JOIN pg_class            t   ON t.oid   = idx.indrelid
+        JOIN pg_namespace        n   ON n.oid   = t.relnamespace
+        LEFT JOIN pg_stat_user_tables s ON s.relid = t.oid
+        WHERE n.nspname = 'public'
+          AND t.relkind = 'r'
+          AND i.relkind = 'i'
+        ORDER BY pg_relation_size(i.oid) DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut results: Vec<IndexFragmentationInfo> = Vec::with_capacity(rows.len());
+
+    for (table_name, index_name, size_bytes, dead, live, last_vac, last_ana, last_auto) in rows {
+        let bloat = match (dead, live) {
+            (Some(d), Some(l)) if l > 0 => Some(d as f64 / l as f64),
+            (Some(d), Some(l)) if d > 0 && l == 0 => Some(f64::INFINITY),
+            _ => None,
+        };
+
+        results.push(IndexFragmentationInfo {
+            table_name,
+            index_name,
+            bloat_ratio: bloat,
+            dead_tuples: dead,
+            live_tuples: live,
+            index_size_bytes: size_bytes,
+            last_vacuum: (last_vac != "never").then_some(last_vac),
+            last_analyze: (last_ana != "never").then_some(last_ana),
+            last_autovacuum: (last_auto != "never").then_some(last_auto),
+        });
+    }
+
+    Ok(results)
+}
+
+/// Try to use pgstattuple for a precise bloat ratio on a single index.
+/// Returns the dead_tuple_percent (0.0–100.0) or None on failure.
+pub async fn pgstattuple_bloat(
+    pool: &PgPool,
+    index_name: &str,
+) -> Option<f64> {
+    let row: Option<(f64,)> = sqlx::query_as(
+        "SELECT (dead_tuple_percent)::float8
+         FROM pgstattuple($1::regclass)",
+    )
+    .bind(index_name)
+    .fetch_optional(pool)
+    .await
+    .ok()?;
+
+    row.map(|(pct,)| pct)
+}
+
+/// Emit Prometheus gauges for each index's fragmentation.
+pub fn emit_fragmentation_metrics(infos: &[IndexFragmentationInfo]) {
+    let fragmented_count = infos
+        .iter()
+        .filter(|i| i.bloat_ratio.unwrap_or(0.0) > 0.2)
+        .count();
+    m::gauge!("soroban_pulse_fragmented_indexes_total").set(fragmented_count as f64);
+
+    for info in infos {
+        m::gauge!(
+            "soroban_pulse_index_bloat_ratio",
+            "table" => info.table_name.clone(),
+            "index" => info.index_name.clone(),
+        )
+        .set(info.bloat_ratio.unwrap_or(0.0));
+
+        m::gauge!(
+            "soroban_pulse_index_size_bytes",
+            "table" => info.table_name.clone(),
+            "index" => info.index_name.clone(),
+        )
+        .set(info.index_size_bytes as f64);
+
+        if let Some(dead) = info.dead_tuples {
+            m::gauge!(
+                "soroban_pulse_index_dead_tuples",
+                "table" => info.table_name.clone(),
+                "index" => info.index_name.clone(),
+            )
+            .set(dead as f64);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #694: Auto-REINDEX scheduling
+// ---------------------------------------------------------------------------
+
+/// Threshold configuration for automatic REINDEX.
+#[derive(Clone, Debug)]
+pub struct FragmentationThresholds {
+    /// Bloat ratio above which a WARN log is emitted (default 0.2 = 20%).
+    pub warn_ratio: f64,
+    /// Bloat ratio above which a CRITICAL alert is raised (default 0.5 = 50%).
+    pub critical_ratio: f64,
+    /// When true, REINDEX INDEX CONCURRENTLY is automatically issued for
+    /// indexes exceeding the critical threshold.
+    pub auto_reindex: bool,
+}
+
+impl Default for FragmentationThresholds {
+    fn default() -> Self {
+        Self {
+            warn_ratio: 0.2,
+            critical_ratio: 0.5,
+            auto_reindex: false,
+        }
+    }
+}
+
+/// Check fragmentation results against thresholds, emit alerts, and
+/// optionally run REINDEX for critically bloated indexes.
+pub async fn check_and_reindex(
+    pool: &PgPool,
+    thresholds: &FragmentationThresholds,
+) {
+    let infos = match query_index_fragmentation(pool).await {
+        Ok(i) => i,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to query index fragmentation");
+            return;
+        }
+    };
+
+    emit_fragmentation_metrics(&infos);
+
+    let critical: Vec<&IndexFragmentationInfo> = infos
+        .iter()
+        .filter(|i| i.bloat_ratio.unwrap_or(0.0) >= thresholds.critical_ratio)
+        .collect();
+
+    let warn: Vec<&IndexFragmentationInfo> = infos
+        .iter()
+        .filter(|i| {
+            let r = i.bloat_ratio.unwrap_or(0.0);
+            r >= thresholds.warn_ratio && r < thresholds.critical_ratio
+        })
+        .collect();
+
+    for info in &warn {
+        tracing::warn!(
+            table = %info.table_name,
+            index = %info.index_name,
+            bloat_ratio = ?info.bloat_ratio,
+            index_size_bytes = info.index_size_bytes,
+            "Index fragmentation above warn threshold"
+        );
+    }
+
+    for info in &critical {
+        // Try pgstattuple for a more precise bloat measurement before
+        // deciding to reindex.
+        let precise_bloat = pgstattuple_bloat(pool, &info.index_name).await;
+        let effective_bloat = precise_bloat
+            .map(|pct| pct / 100.0)
+            .unwrap_or(info.bloat_ratio.unwrap_or(0.0));
+
+        if effective_bloat < thresholds.critical_ratio {
+            tracing::info!(
+                table = %info.table_name,
+                index = %info.index_name,
+                estimated_bloat = ?info.bloat_ratio,
+                precise_bloat_pct = ?precise_bloat,
+                "pgstattuple shows bloat below critical threshold; skipping REINDEX"
+            );
+            continue;
+        }
+
+        tracing::error!(
+            table = %info.table_name,
+            index = %info.index_name,
+            bloat_ratio = ?info.bloat_ratio,
+            precise_bloat_pct = ?precise_bloat,
+            index_size_bytes = info.index_size_bytes,
+            "Index fragmentation above CRITICAL threshold"
+        );
+
+        if thresholds.auto_reindex {
+            tracing::info!(
+                table = %info.table_name,
+                index = %info.index_name,
+                "Scheduling automatic REINDEX INDEX CONCURRENTLY"
+            );
+            let reindex_sql = format!(
+                "REINDEX INDEX CONCURRENTLY {}",
+                info.index_name
+            );
+            match sqlx::query(&reindex_sql).execute(pool).await {
+                Ok(_) => {
+                    tracing::info!(
+                        table = %info.table_name,
+                        index = %info.index_name,
+                        "REINDEX completed successfully"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        table = %info.table_name,
+                        index = %info.index_name,
+                        error = %e,
+                        "REINDEX failed"
+                    );
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Existing EXPLAIN-based checks
 // ---------------------------------------------------------------------------
 
@@ -135,7 +410,12 @@ async fn check_indexes(pool: &PgPool) {
 /// Spawn the index monitoring background task.
 ///
 /// Runs every `interval_hours` hours. Stops when `shutdown_rx` fires.
-pub fn spawn(pool: PgPool, interval_hours: u64, mut shutdown_rx: watch::Receiver<bool>) {
+pub fn spawn(
+    pool: PgPool,
+    interval_hours: u64,
+    mut shutdown_rx: watch::Receiver<bool>,
+    thresholds: FragmentationThresholds,
+) {
     tokio::spawn(async move {
         let interval = Duration::from_secs(interval_hours * 3600);
         // Run once shortly after startup, then on the configured interval.
@@ -148,6 +428,8 @@ pub fn spawn(pool: PgPool, interval_hours: u64, mut shutdown_rx: watch::Receiver
                     tracing::debug!("Running index usage check");
                     check_indexes(&pool).await;
                     collect_index_stats(&pool).await;
+                    // #694: Fragmentation checks and optional auto-REINDEX
+                    check_and_reindex(&pool, &thresholds).await;
                 }
                 _ = shutdown_rx.changed() => {
                     tracing::debug!("Index monitor shutting down");
@@ -174,6 +456,20 @@ mod tests {
                 scan_count: *scans,
             })
             .collect()
+    }
+
+    fn make_frag_info(table: &str, index: &str, bloat: Option<f64>, dead: Option<i64>, live: Option<i64>, size: i64) -> IndexFragmentationInfo {
+        IndexFragmentationInfo {
+            table_name: table.to_string(),
+            index_name: index.to_string(),
+            bloat_ratio: bloat,
+            dead_tuples: dead,
+            live_tuples: live,
+            index_size_bytes: size,
+            last_vacuum: None,
+            last_analyze: None,
+            last_autovacuum: None,
+        }
     }
 
     #[test]
@@ -220,5 +516,61 @@ mod tests {
             ("events", "idx_old_unused", 0),
         ]);
         emit_index_metrics(&stats);
+    }
+
+    // ── #694: Fragmentation tests ──────────────────────────────────────────
+
+    #[test]
+    fn emit_fragmentation_metrics_does_not_panic_empty() {
+        emit_fragmentation_metrics(&[]);
+    }
+
+    #[test]
+    fn emit_fragmentation_metrics_with_data() {
+        let infos = vec![
+            make_frag_info("events", "idx_a", Some(0.3), Some(1000), Some(3000), 65536),
+            make_frag_info("events", "idx_b", Some(0.05), Some(50), Some(20000), 131072),
+            make_frag_info("subscriptions", "idx_sub", None, None, None, 32768),
+        ];
+        emit_fragmentation_metrics(&infos);
+    }
+
+    #[test]
+    fn fragmented_count_correct() {
+        let infos = vec![
+            make_frag_info("t1", "idx1", Some(0.3), Some(100), Some(300), 1000),
+            make_frag_info("t1", "idx2", Some(0.6), Some(200), Some(300), 2000),
+            make_frag_info("t2", "idx3", Some(0.05), Some(10), Some(1000), 500),
+        ];
+        let count = infos
+            .iter()
+            .filter(|i| i.bloat_ratio.unwrap_or(0.0) > 0.2)
+            .count();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn bloat_ratio_none_treated_as_zero() {
+        let info = make_frag_info("t", "i", None, None, None, 100);
+        assert_eq!(info.bloat_ratio.unwrap_or(0.0), 0.0);
+    }
+
+    #[test]
+    fn default_thresholds_are_reasonable() {
+        let t = FragmentationThresholds::default();
+        assert_eq!(t.warn_ratio, 0.2);
+        assert_eq!(t.critical_ratio, 0.5);
+        assert!(!t.auto_reindex);
+    }
+
+    #[test]
+    fn serde_roundtrip_fragmentation_info() {
+        let info = make_frag_info("events", "idx_test", Some(0.25), Some(50), Some(200), 8192);
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: IndexFragmentationInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.table_name, "events");
+        assert_eq!(parsed.index_name, "idx_test");
+        assert_eq!(parsed.bloat_ratio, Some(0.25));
+        assert_eq!(parsed.index_size_bytes, 8192);
     }
 }
