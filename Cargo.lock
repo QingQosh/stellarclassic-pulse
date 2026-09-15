@@ -1196,14 +1196,14 @@ dependencies = [
 
 [[package]]
 name = "curve25519-dalek"
-version = "4.1.3"
+version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97fb8b7c4503de7d6ae7b42ab72a5a59857b4c937ec27a3d4539dba95b5ab2be"
+checksum = "b5eed333089e2e1c1ac8c6c0398e5e2497b4c9926ca6d0365ed1e099afa5bc23"
 dependencies = [
  "cfg-if",
- "cpufeatures 0.2.17",
+ "cpufeatures 0.3.0",
  "curve25519-dalek-derive",
- "digest 0.10.7",
+ "digest 0.11.2",
  "fiat-crypto",
  "rustc_version",
  "subtle",
@@ -1556,24 +1556,22 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "ed25519"
-version = "2.2.3"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
+checksum = "29fcf32e6c73d1079f83ab4d782de2d81620346a5f38c6237a86a22f8368980a"
 dependencies = [
- "pkcs8",
- "signature",
+ "signature 3.0.0",
 ]
 
 [[package]]
 name = "ed25519-dalek"
-version = "2.2.0"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
+checksum = "6ebaa1a2bf1290ab3bfe5a7b771d050ebffab2711c19a81691c683a5144a25de"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
- "serde",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "subtle",
  "zeroize",
 ]
@@ -1667,9 +1665,9 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "fiat-crypto"
-version = "0.2.9"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
+checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
 
 [[package]]
 name = "find-msvc-tools"
@@ -4340,7 +4338,7 @@ dependencies = [
  "pkcs1",
  "pkcs8",
  "rand_core 0.6.4",
- "signature",
+ "signature 2.2.0",
  "spki",
  "subtle",
  "zeroize",
@@ -4755,6 +4753,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "signature"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28d567dcbaf0049cb8ac2608a76cd95ff9e4412e1899d389ee400918ca7537f5"
+
+[[package]]
 name = "simd-adler32"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4806,69 +4810,6 @@ checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "stellarclassic-pulse"
-version = "1.0.0"
-dependencies = [
- "actix-cors",
- "actix-rt",
- "actix-web",
- "aes-gcm",
- "anyhow",
- "async-graphql",
- "async-graphql-actix-web",
- "async-trait",
- "base64 0.21.7",
- "blake3",
- "bytes",
- "chrono",
- "config",
- "criterion",
- "diesel",
- "dotenv",
- "ed25519-dalek",
- "futures",
- "google-cloud-googleapis",
- "google-cloud-pubsub",
- "hex",
- "hmac 0.12.1",
- "metrics",
- "mockall",
- "opentelemetry 0.21.0",
- "opentelemetry-jaeger",
- "opentelemetry-otlp",
- "pqcrypto-dilithium",
- "pqcrypto-falcon",
- "pqcrypto-kyber",
- "pqcrypto-sphincsplus",
- "pqcrypto-traits",
- "prometheus",
- "proptest",
- "prost 0.12.6",
- "rand 0.8.5",
- "rdkafka",
- "regex",
- "reqwest 0.11.27",
- "secrecy",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "subtle",
- "thiserror 1.0.69",
- "time",
- "tokio",
- "tokio-tungstenite",
- "toml 0.8.23",
- "tonic 0.10.2",
- "tracing",
- "tracing-opentelemetry 0.22.0",
- "tracing-subscriber",
- "url",
- "uuid",
- "wiremock",
 ]
 
 [[package]]
@@ -5114,6 +5055,69 @@ name = "static_assertions_next"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7beae5182595e9a8b683fa98c4317f956c9a2dec3b9716990d20023cc60c766"
+
+[[package]]
+name = "stellarclassic-pulse"
+version = "1.0.0"
+dependencies = [
+ "actix-cors",
+ "actix-rt",
+ "actix-web",
+ "aes-gcm",
+ "anyhow",
+ "async-graphql",
+ "async-graphql-actix-web",
+ "async-trait",
+ "base64 0.21.7",
+ "blake3",
+ "bytes",
+ "chrono",
+ "config",
+ "criterion",
+ "diesel",
+ "dotenv",
+ "ed25519-dalek",
+ "futures",
+ "google-cloud-googleapis",
+ "google-cloud-pubsub",
+ "hex",
+ "hmac 0.12.1",
+ "metrics",
+ "mockall",
+ "opentelemetry 0.21.0",
+ "opentelemetry-jaeger",
+ "opentelemetry-otlp",
+ "pqcrypto-dilithium",
+ "pqcrypto-falcon",
+ "pqcrypto-kyber",
+ "pqcrypto-sphincsplus",
+ "pqcrypto-traits",
+ "prometheus",
+ "proptest",
+ "prost 0.12.6",
+ "rand 0.8.5",
+ "rdkafka",
+ "regex",
+ "reqwest 0.11.27",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "subtle",
+ "thiserror 1.0.69",
+ "time",
+ "tokio",
+ "tokio-tungstenite",
+ "toml 0.8.23",
+ "tonic 0.10.2",
+ "tracing",
+ "tracing-opentelemetry 0.22.0",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "wiremock",
+]
 
 [[package]]
 name = "stringprep"
