@@ -194,3 +194,12 @@ load-test: ## Run all load test scenarios sequentially and print summary (requir
 	@echo "================================================================"
 	@echo "  All scenarios complete. Results in tests/load/results/"
 	@echo "================================================================"
+
+# stellarclassic-pulse targets
+wave-issues: ## List open Wave issues
+	@echo "Visit https://drips.network/wave to manage Wave issues"
+
+setup: ## One-command dev setup
+	cp -n .env.example .env || true
+	docker compose up -d
+	@echo "StellarClassic Pulse is running at http://localhost:3000"
