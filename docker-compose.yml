@@ -85,3 +85,6 @@ volumes:
   promdata:
   grafanadata:
   redisdata:
+# Health check: GET http://localhost:3000/healthz/ready
+# Metrics:      GET http://localhost:3000/metrics
+# API docs:     GET http://localhost:3000/docs
