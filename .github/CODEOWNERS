@@ -1,0 +1,23 @@
+# StellarClassic Pulse code owners
+# These users are automatically requested for review on PRs
+
+* @QingQosh
+
+# Rust core
+/src/ @QingQosh
+
+# Infrastructure
+/k8s/ @QingQosh
+/helm/ @QingQosh
+/terraform/ @QingQosh
+/docker-compose*.yml @QingQosh
+/Dockerfile @QingQosh
+
+# Database migrations (require extra care)
+/migrations/ @QingQosh
+
+# Security-sensitive files
+/src/middleware/auth.rs @QingQosh
+/src/encryption.rs @QingQosh
+/src/webhook_signing.rs @QingQosh
+SECURITY.md @QingQosh
