@@ -3830,7 +3830,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "deb1435c188b76130da55f17a466d252ff7b1418b2ad3e037d127b94e3411f29"
 dependencies = [
  "bytes",
- "prost-derive 0.12.6",
 ]
 
 [[package]]
@@ -3864,19 +3863,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
-]
-
-[[package]]
-name = "prost-derive"
-version = "0.12.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81bddcdb20abf9501610992b6759a4c888aef7d1a7247ef75e2404275ac24af1"
-dependencies = [
- "anyhow",
- "itertools",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -4809,68 +4795,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "soroban-pulse"
-version = "1.0.0"
-dependencies = [
- "actix-cors",
- "actix-rt",
- "actix-web",
- "aes-gcm",
- "anyhow",
- "async-graphql",
- "async-graphql-actix-web",
- "async-trait",
- "base64 0.21.7",
- "blake3",
- "bytes",
- "chrono",
- "config",
- "criterion",
- "diesel",
- "dotenv",
- "ed25519-dalek",
- "futures",
- "google-cloud-googleapis",
- "google-cloud-pubsub",
- "hex",
- "hmac 0.12.1",
- "metrics",
- "mockall",
- "opentelemetry 0.21.0",
- "opentelemetry-jaeger",
- "opentelemetry-otlp",
- "pqcrypto-dilithium",
- "pqcrypto-falcon",
- "pqcrypto-kyber",
- "pqcrypto-sphincsplus",
- "pqcrypto-traits",
- "prometheus",
- "proptest",
- "prost 0.12.6",
- "rand 0.8.5",
- "rdkafka",
- "regex",
- "reqwest 0.11.27",
- "secrecy",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "thiserror 1.0.69",
- "time",
- "tokio",
- "tokio-tungstenite",
- "toml 0.8.23",
- "tonic 0.10.2",
- "tracing",
- "tracing-opentelemetry 0.22.0",
- "tracing-subscriber",
- "url",
- "uuid",
- "wiremock",
-]
-
-[[package]]
 name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5113,6 +5037,69 @@ name = "static_assertions_next"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7beae5182595e9a8b683fa98c4317f956c9a2dec3b9716990d20023cc60c766"
+
+[[package]]
+name = "stellarclassic-pulse"
+version = "1.0.0"
+dependencies = [
+ "actix-cors",
+ "actix-rt",
+ "actix-web",
+ "aes-gcm",
+ "anyhow",
+ "async-graphql",
+ "async-graphql-actix-web",
+ "async-trait",
+ "base64 0.21.7",
+ "blake3",
+ "bytes",
+ "chrono",
+ "config",
+ "criterion",
+ "diesel",
+ "dotenv",
+ "ed25519-dalek",
+ "futures",
+ "google-cloud-googleapis",
+ "google-cloud-pubsub",
+ "hex",
+ "hmac 0.12.1",
+ "metrics",
+ "mockall",
+ "opentelemetry 0.21.0",
+ "opentelemetry-jaeger",
+ "opentelemetry-otlp",
+ "pqcrypto-dilithium",
+ "pqcrypto-falcon",
+ "pqcrypto-kyber",
+ "pqcrypto-sphincsplus",
+ "pqcrypto-traits",
+ "prometheus",
+ "proptest",
+ "prost 0.14.3",
+ "rand 0.8.5",
+ "rdkafka",
+ "regex",
+ "reqwest 0.11.27",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "subtle",
+ "thiserror 1.0.69",
+ "time",
+ "tokio",
+ "tokio-tungstenite",
+ "toml 0.8.23",
+ "tonic 0.10.2",
+ "tracing",
+ "tracing-opentelemetry 0.22.0",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "wiremock",
+]
 
 [[package]]
 name = "stringprep"
