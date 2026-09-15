@@ -3260,6 +3260,20 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b69a91d4893e713e06f724597ad630f1fa76057a5e1026c0ca67054a9032a76"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+ "js-sys",
+ "once_cell",
+ "pin-project-lite",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "opentelemetry"
 version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b84bcd6ae87133e903af7ef497404dda70c60d0ea14895fc8a5e6722754fc2a0"
@@ -3274,16 +3288,16 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry-jaeger"
-version = "0.20.0"
+version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e617c66fd588e40e0dbbd66932fdc87393095b125d4459b1a3a10feb1712f8a1"
+checksum = "501b471b67b746d9a07d4c29f8be00f952d1a2eca356922ede0098cbaddff19f"
 dependencies = [
  "async-trait",
  "futures-core",
  "futures-util",
- "opentelemetry 0.21.0",
- "opentelemetry-semantic-conventions 0.13.0",
- "opentelemetry_sdk 0.21.2",
+ "opentelemetry 0.23.0",
+ "opentelemetry-semantic-conventions 0.15.0",
+ "opentelemetry_sdk 0.23.0",
  "thrift",
 ]
 
@@ -3329,6 +3343,12 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry-semantic-conventions"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1869fb4bb9b35c5ba8a1e40c9b128a7b4c010d07091e864a29da19e4fe2ca4d7"
+
+[[package]]
+name = "opentelemetry-semantic-conventions"
 version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e62e29dfe041afb8ed2a6c9737ab57db4907285d999ef8ad3a59092a36bdc846"
@@ -3347,6 +3367,25 @@ dependencies = [
  "glob",
  "once_cell",
  "opentelemetry 0.21.0",
+ "ordered-float 4.6.0",
+ "percent-encoding",
+ "rand 0.8.5",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "opentelemetry_sdk"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae312d58eaa90a82d2e627fd86e075cf5230b3f11794e2ed74199ebbe572d4fd"
+dependencies = [
+ "async-trait",
+ "futures-channel",
+ "futures-executor",
+ "futures-util",
+ "lazy_static",
+ "once_cell",
+ "opentelemetry 0.23.0",
  "ordered-float 4.6.0",
  "percent-encoding",
  "rand 0.8.5",
@@ -4809,69 +4848,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "stellarclassic-pulse"
-version = "1.0.0"
-dependencies = [
- "actix-cors",
- "actix-rt",
- "actix-web",
- "aes-gcm",
- "anyhow",
- "async-graphql",
- "async-graphql-actix-web",
- "async-trait",
- "base64 0.21.7",
- "blake3",
- "bytes",
- "chrono",
- "config",
- "criterion",
- "diesel",
- "dotenv",
- "ed25519-dalek",
- "futures",
- "google-cloud-googleapis",
- "google-cloud-pubsub",
- "hex",
- "hmac 0.12.1",
- "metrics",
- "mockall",
- "opentelemetry 0.21.0",
- "opentelemetry-jaeger",
- "opentelemetry-otlp",
- "pqcrypto-dilithium",
- "pqcrypto-falcon",
- "pqcrypto-kyber",
- "pqcrypto-sphincsplus",
- "pqcrypto-traits",
- "prometheus",
- "proptest",
- "prost 0.12.6",
- "rand 0.8.5",
- "rdkafka",
- "regex",
- "reqwest 0.11.27",
- "secrecy",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "subtle",
- "thiserror 1.0.69",
- "time",
- "tokio",
- "tokio-tungstenite",
- "toml 0.8.23",
- "tonic 0.10.2",
- "tracing",
- "tracing-opentelemetry 0.22.0",
- "tracing-subscriber",
- "url",
- "uuid",
- "wiremock",
-]
-
-[[package]]
 name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5114,6 +5090,69 @@ name = "static_assertions_next"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7beae5182595e9a8b683fa98c4317f956c9a2dec3b9716990d20023cc60c766"
+
+[[package]]
+name = "stellarclassic-pulse"
+version = "1.0.0"
+dependencies = [
+ "actix-cors",
+ "actix-rt",
+ "actix-web",
+ "aes-gcm",
+ "anyhow",
+ "async-graphql",
+ "async-graphql-actix-web",
+ "async-trait",
+ "base64 0.21.7",
+ "blake3",
+ "bytes",
+ "chrono",
+ "config",
+ "criterion",
+ "diesel",
+ "dotenv",
+ "ed25519-dalek",
+ "futures",
+ "google-cloud-googleapis",
+ "google-cloud-pubsub",
+ "hex",
+ "hmac 0.12.1",
+ "metrics",
+ "mockall",
+ "opentelemetry 0.21.0",
+ "opentelemetry-jaeger",
+ "opentelemetry-otlp",
+ "pqcrypto-dilithium",
+ "pqcrypto-falcon",
+ "pqcrypto-kyber",
+ "pqcrypto-sphincsplus",
+ "pqcrypto-traits",
+ "prometheus",
+ "proptest",
+ "prost 0.12.6",
+ "rand 0.8.5",
+ "rdkafka",
+ "regex",
+ "reqwest 0.11.27",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "subtle",
+ "thiserror 1.0.69",
+ "time",
+ "tokio",
+ "tokio-tungstenite",
+ "toml 0.8.23",
+ "tonic 0.10.2",
+ "tracing",
+ "tracing-opentelemetry 0.22.0",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "wiremock",
+]
 
 [[package]]
 name = "stringprep"
