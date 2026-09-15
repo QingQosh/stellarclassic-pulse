@@ -98,7 +98,7 @@ google-cloud-googleapis = { version = "0.16", optional = true }
 url = { version = "2.5", optional = true }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 proptest = "1.4"
 mockall = "0.12"
 wiremock = "0.6"
