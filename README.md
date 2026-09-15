@@ -84,3 +84,14 @@ Metrics endpoint: `GET /metrics` (Prometheus format)
 ## Environment variables
 
 See `.env.example`, `.env.staging.example`, and `.env.production.example` for the full list of supported configuration variables.
+
+## Contributing via Drips Wave
+
+This project participates in the [Stellar Wave Program](https://drips.network/wave).
+Contributors can earn rewards by fixing issues tagged with `drips-wave`.
+
+1. Browse open Wave issues on the [issues page](https://github.com/QingQosh/stellarclassic-pulse/issues?q=label%3Adrips-wave)
+2. Apply via [drips.network/wave](https://drips.network/wave)
+3. Once accepted, open a PR referencing the issue
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for full contribution guidelines.
