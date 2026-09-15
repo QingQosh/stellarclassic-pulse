@@ -18,3 +18,10 @@ lto = true
 [env.MUTANTS_TIMEOUT]
 # Default timeout for mutation tests (in seconds)
 value = "30"
+
+[alias]
+# StellarClassic Pulse convenience aliases
+sp-run = "run --release"
+sp-test = "test --workspace"
+sp-lint = "clippy --all-targets --all-features -- -D warnings"
+sp-fmt = "fmt --all"
