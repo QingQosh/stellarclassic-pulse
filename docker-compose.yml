@@ -1,3 +1,4 @@
+# StellarClassic Pulse — local development stack
 services:
   db:
     image: postgres:16-alpine
