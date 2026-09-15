@@ -1,4 +1,4 @@
-//! Push-preload support for Soroban Pulse.
+//! Push-preload support for StellarClassic Pulse.
 //!
 //! This module provides two related features that let the server proactively
 //! deliver contract schema and ABI data to clients, reducing round trips:

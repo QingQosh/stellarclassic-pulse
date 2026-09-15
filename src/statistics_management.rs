@@ -1,4 +1,4 @@
-//! Advanced statistics management for SorobanPulse.
+//! Advanced statistics management for StellarClassicPulse.
 //!
 //! Provides automated ANALYZE scheduling, extended statistics for correlation
 //! tracking, histogram collection, query plan tracking, regression detection,
@@ -389,7 +389,7 @@ pub async fn track_query_plan(
 
     // Emit metric
     m::gauge!(
-        "soroban_pulse_query_plan_estimated_rows",
+        "stellarclassic_pulse_query_plan_estimated_rows",
         "query" => query_label.to_string()
     )
     .set(estimated_rows);
@@ -582,7 +582,7 @@ pub fn spawn_auto_analyze(
                     }
                     match get_statistics_health_score(&pool).await {
                         Ok(score) => {
-                            m::gauge!("soroban_pulse_statistics_health_score")
+                            m::gauge!("stellarclassic_pulse_statistics_health_score")
                                 .set(score as f64);
                             if score < 80 {
                                 warn!(score, "Statistics health score below 80%");
@@ -593,7 +593,7 @@ pub fn spawn_auto_analyze(
                     // Count stale tables metric
                     if let Ok(stale) = detect_stale_statistics(&pool).await {
                         let n = stale.iter().filter(|s| s.is_stale).count();
-                        m::gauge!("soroban_pulse_stale_tables_total").set(n as f64);
+                        m::gauge!("stellarclassic_pulse_stale_tables_total").set(n as f64);
                     }
                 }
                 _ = shutdown.changed() => {
@@ -632,8 +632,8 @@ async fn build_health_metrics(pool: &PgPool) -> Result<StatisticsHealthMetrics, 
     let pct_stale = tables_stale as f64 / stale.len() as f64;
     let overall_score = (100.0 * (1.0 - pct_stale)).max(0.0);
 
-    m::gauge!("soroban_pulse_statistics_health_score").set(overall_score);
-    m::gauge!("soroban_pulse_stale_tables_total").set(tables_stale as f64);
+    m::gauge!("stellarclassic_pulse_statistics_health_score").set(overall_score);
+    m::gauge!("stellarclassic_pulse_stale_tables_total").set(tables_stale as f64);
 
     Ok(StatisticsHealthMetrics {
         overall_score,

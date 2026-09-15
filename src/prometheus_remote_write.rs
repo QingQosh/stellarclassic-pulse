@@ -307,14 +307,14 @@ mod tests {
     fn test_metric_filtering_include() {
         let config = PrometheusRemoteWriteConfig {
             metric_filter: Some(MetricFilterConfig {
-                include_patterns: vec!["soroban_pulse".to_string()],
+                include_patterns: vec!["stellarclassic_pulse".to_string()],
                 exclude_patterns: vec![],
             }),
             ..Default::default()
         };
 
         let publisher = PrometheusRemoteWritePublisher::new(config);
-        assert!(publisher.should_include_metric("soroban_pulse_events"));
+        assert!(publisher.should_include_metric("stellarclassic_pulse_events"));
         assert!(!publisher.should_include_metric("other_metric"));
     }
 
@@ -329,7 +329,7 @@ mod tests {
         };
 
         let publisher = PrometheusRemoteWritePublisher::new(config);
-        assert!(publisher.should_include_metric("soroban_pulse_events"));
+        assert!(publisher.should_include_metric("stellarclassic_pulse_events"));
         assert!(!publisher.should_include_metric("internal_metric"));
     }
 

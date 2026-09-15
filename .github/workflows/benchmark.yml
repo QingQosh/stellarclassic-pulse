@@ -7,7 +7,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  DATABASE_URL: postgres://postgres:postgres@localhost/soroban_pulse_test
+  DATABASE_URL: postgres://postgres:postgres@localhost/stellarclassic_pulse_test
 
 jobs:
   benchmark:
@@ -18,7 +18,7 @@ jobs:
         image: postgres:15
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: soroban_pulse_test
+          POSTGRES_DB: stellarclassic_pulse_test
         options: >-
           --health-cmd pg_isready
           --health-interval 10s

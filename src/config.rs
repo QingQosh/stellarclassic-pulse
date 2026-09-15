@@ -491,7 +491,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            database_url: "postgres://localhost/soroban_pulse".to_string(),
+            database_url: "postgres://localhost/stellarclassic_pulse".to_string(),
             database_replica_url: None,
             stellar_rpc_url: "https://soroban-testnet.stellar.org".to_string(),
             stellar_rpc_fallback_urls: Vec::new(),
@@ -596,7 +596,7 @@ impl Default for Config {
             webhook_notification_format: "raw".to_string(),
             webhook_message_template: None,
             pagerduty_routing_key: None,
-            pagerduty_service_name: "Soroban Pulse".to_string(),
+            pagerduty_service_name: "StellarClassic Pulse".to_string(),
             pagerduty_contract_filter: Vec::new(),
             pagerduty_event_type_filter: Vec::new(),
             pagerduty_severity_mapping: {
@@ -777,7 +777,7 @@ fn resolve_database_url_checked(errors: &mut Vec<String>) -> String {
             errors.push(
                 "  DATABASE_URL is not set. \
                  Expected a PostgreSQL connection string \
-                 (e.g., postgres://user:pass@localhost/soroban_pulse)."
+                 (e.g., postgres://user:pass@localhost/stellarclassic_pulse)."
                     .to_string(),
             );
             String::new()
@@ -1590,7 +1590,7 @@ impl Config {
             webhook_message_template: env_or_file("WEBHOOK_MESSAGE_TEMPLATE", &file),
             pagerduty_routing_key: env_or_file("PAGERDUTY_ROUTING_KEY", &file),
             pagerduty_service_name: env_or_file("PAGERDUTY_SERVICE_NAME", &file)
-                .unwrap_or_else(|| "Soroban Pulse".to_string()),
+                .unwrap_or_else(|| "StellarClassic Pulse".to_string()),
             pagerduty_contract_filter: env_or_file("PAGERDUTY_CONTRACT_FILTER", &file)
                 .map(|v| {
                     v.split(',')
@@ -1843,7 +1843,7 @@ mod tests {
     #[test]
     fn test_config_default() {
         let config = Config::default();
-        assert_eq!(config.database_url, "postgres://localhost/soroban_pulse");
+        assert_eq!(config.database_url, "postgres://localhost/stellarclassic_pulse");
         assert_eq!(
             config.stellar_rpc_url,
             "https://soroban-testnet.stellar.org"

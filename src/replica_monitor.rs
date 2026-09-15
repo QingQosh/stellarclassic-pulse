@@ -328,7 +328,7 @@ impl ReplicaMonitor {
         }
 
         warn!("Initiating automatic failover");
-        m::counter!("soroban_pulse_failover_events_total").increment(1);
+        m::counter!("stellarclassic_pulse_failover_events_total").increment(1);
 
         if self.config.failover.consistency_check_enabled {
             match self.check_data_consistency().await {
@@ -549,24 +549,24 @@ async fn collect_replica_stats_from_pool(pool: &PgPool) -> Vec<ReplicaStatus> {
 
 /// Emit Prometheus metrics for all replicas.
 pub fn emit_replica_metrics(replicas: &[ReplicaStatus]) {
-    m::gauge!("soroban_pulse_replica_count").set(replicas.len() as f64);
+    m::gauge!("stellarclassic_pulse_replica_count").set(replicas.len() as f64);
 
     let mut total_lag: i64 = 0;
     for r in replicas {
         let addr = r.client_addr.clone();
-        m::gauge!("soroban_pulse_replica_lag_bytes", "client_addr" => addr.clone())
+        m::gauge!("stellarclassic_pulse_replica_lag_bytes", "client_addr" => addr.clone())
             .set(r.sent_lag_bytes as f64);
-        m::gauge!("soroban_pulse_replica_write_lag_seconds", "client_addr" => addr.clone())
+        m::gauge!("stellarclassic_pulse_replica_write_lag_seconds", "client_addr" => addr.clone())
             .set(r.write_lag_secs);
-        m::gauge!("soroban_pulse_replica_flush_lag_seconds", "client_addr" => addr.clone())
+        m::gauge!("stellarclassic_pulse_replica_flush_lag_seconds", "client_addr" => addr.clone())
             .set(r.flush_lag_secs);
-        m::gauge!("soroban_pulse_replica_replay_lag_seconds", "client_addr" => addr.clone())
+        m::gauge!("stellarclassic_pulse_replica_replay_lag_seconds", "client_addr" => addr.clone())
             .set(r.replay_lag_secs);
         if let Some(slot_lag) = r.slot_lag_bytes {
-            m::gauge!("soroban_pulse_replica_slot_lag_bytes", "client_addr" => addr.clone())
+            m::gauge!("stellarclassic_pulse_replica_slot_lag_bytes", "client_addr" => addr.clone())
                 .set(slot_lag as f64);
         }
-        m::gauge!("soroban_pulse_cascade_replica_depth", "client_addr" => addr.clone())
+        m::gauge!("stellarclassic_pulse_cascade_replica_depth", "client_addr" => addr.clone())
             .set(r.cascade_depth as f64);
 
         total_lag += r.sent_lag_bytes;
@@ -598,14 +598,14 @@ pub fn emit_replica_metrics(replicas: &[ReplicaStatus]) {
             .fold(0.0_f64, f64::max);
         (100.0 - (worst_lag / LAG_CRITICAL_SECS * 100.0).min(100.0)).max(0.0)
     };
-    m::gauge!("soroban_pulse_replica_health_score").set(health_score);
+    m::gauge!("stellarclassic_pulse_replica_health_score").set(health_score);
 }
 
 fn emit_health_metrics(health: &ReplicaHealthCheck) {
-    m::gauge!("soroban_pulse_replica_health_score").set(if health.is_healthy { 100.0 } else { 0.0 });
-    m::gauge!("soroban_pulse_replica_lag_bytes", "client_addr" => "aggregate")
+    m::gauge!("stellarclassic_pulse_replica_health_score").set(if health.is_healthy { 100.0 } else { 0.0 });
+    m::gauge!("stellarclassic_pulse_replica_lag_bytes", "client_addr" => "aggregate")
         .set(health.lag_bytes as f64);
-    m::gauge!("soroban_pulse_replica_replay_lag_seconds", "client_addr" => "aggregate")
+    m::gauge!("stellarclassic_pulse_replica_replay_lag_seconds", "client_addr" => "aggregate")
         .set(health.replay_lag_secs);
 }
 

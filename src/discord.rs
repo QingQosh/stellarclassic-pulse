@@ -109,7 +109,7 @@ impl DiscordClient {
                 }
             ],
             "footer": {
-                "text": "Soroban Pulse"
+                "text": "StellarClassic Pulse"
             }
         });
 

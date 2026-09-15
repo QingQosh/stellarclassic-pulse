@@ -1,4 +1,4 @@
-use soroban_pulse::routes::ApiDoc;
+use stellarclassic_pulse::routes::ApiDoc;
 use utoipa::OpenApi;
 
 fn main() {

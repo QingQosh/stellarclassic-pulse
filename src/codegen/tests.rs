@@ -21,9 +21,9 @@ mod {{SNAKE}}_subscription_tests {
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
 
-    use soroban_pulse::content_filter::{ContentFilter, FilterOp};
-    use soroban_pulse::subscriptions::validate_callback_url;
-    use soroban_pulse::config::Environment;
+    use stellarclassic_pulse::content_filter::{ContentFilter, FilterOp};
+    use stellarclassic_pulse::subscriptions::validate_callback_url;
+    use stellarclassic_pulse::config::Environment;
 
     // -----------------------------------------------------------------------
     // SSRF validation

@@ -195,18 +195,18 @@ impl Http3Metrics {
     /// Renders metrics in Prometheus exposition format.
     pub fn to_prometheus(&self) -> String {
         format!(
-            "# HELP sorobanpulse_http3_requests_total Requests served over HTTP/3\n\
-             # TYPE sorobanpulse_http3_requests_total counter\n\
-             sorobanpulse_http3_requests_total {}\n\
-             # HELP sorobanpulse_http2_requests_total Requests served over HTTP/2\n\
-             # TYPE sorobanpulse_http2_requests_total counter\n\
-             sorobanpulse_http2_requests_total {}\n\
-             # HELP sorobanpulse_http1_requests_total Requests served over HTTP/1.1\n\
-             # TYPE sorobanpulse_http1_requests_total counter\n\
-             sorobanpulse_http1_requests_total {}\n\
-             # HELP sorobanpulse_protocol_downgrades_total Times negotiation fell back from HTTP/3\n\
-             # TYPE sorobanpulse_protocol_downgrades_total counter\n\
-             sorobanpulse_protocol_downgrades_total {}\n",
+            "# HELP stellarclassicpulse_http3_requests_total Requests served over HTTP/3\n\
+             # TYPE stellarclassicpulse_http3_requests_total counter\n\
+             stellarclassicpulse_http3_requests_total {}\n\
+             # HELP stellarclassicpulse_http2_requests_total Requests served over HTTP/2\n\
+             # TYPE stellarclassicpulse_http2_requests_total counter\n\
+             stellarclassicpulse_http2_requests_total {}\n\
+             # HELP stellarclassicpulse_http1_requests_total Requests served over HTTP/1.1\n\
+             # TYPE stellarclassicpulse_http1_requests_total counter\n\
+             stellarclassicpulse_http1_requests_total {}\n\
+             # HELP stellarclassicpulse_protocol_downgrades_total Times negotiation fell back from HTTP/3\n\
+             # TYPE stellarclassicpulse_protocol_downgrades_total counter\n\
+             stellarclassicpulse_protocol_downgrades_total {}\n",
             self.http3_requests.load(Ordering::Relaxed),
             self.http2_requests.load(Ordering::Relaxed),
             self.http1_requests.load(Ordering::Relaxed),

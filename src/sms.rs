@@ -110,7 +110,7 @@ impl SmsNotifier {
         };
 
         // Add link to full event (customize URL as needed)
-        format!("{} View: https://soroban-pulse.com/events/{}", truncated, event.id)
+        format!("{} View: https://stellarclassic-pulse.com/events/{}", truncated, event.id)
     }
 
     async fn send_sms(&self, phone_number: String, message: String, event: &SorobanEvent) {
@@ -162,7 +162,7 @@ impl SmsNotifier {
                     error!(error = %e, "Failed to update SMS notification status");
                 }
 
-                metrics::increment_counter("soroban_pulse_sms_notifications_total", &[("status", "success")]);
+                metrics::increment_counter("stellarclassic_pulse_sms_notifications_total", &[("status", "success")]);
             }
             Err(error_msg) => {
                 error!(
@@ -184,7 +184,7 @@ impl SmsNotifier {
                     error!(error = %e, "Failed to update SMS notification error status");
                 }
 
-                metrics::increment_counter("soroban_pulse_sms_notifications_total", &[("status", "failure")]);
+                metrics::increment_counter("stellarclassic_pulse_sms_notifications_total", &[("status", "failure")]);
             }
         }
     }
@@ -316,7 +316,7 @@ mod tests {
         assert!(message.len() <= 160);
         assert!(message.contains("CABCDEFG")); // Truncated contract ID
         assert!(message.contains("12345")); // Ledger number
-        assert!(message.contains("https://soroban-pulse.com/events/"));
+        assert!(message.contains("https://stellarclassic-pulse.com/events/"));
     }
 
     #[test]

@@ -498,7 +498,7 @@ impl EmailNotifier {
         }
 
         let mut body = format!(
-            "Soroban Pulse indexed {} new event{} in the last minute.\n\n",
+            "StellarClassic Pulse indexed {} new event{} in the last minute.\n\n",
             events.len(),
             if events.len() == 1 { "" } else { "s" }
         );
@@ -548,7 +548,7 @@ impl EmailNotifier {
             "<!DOCTYPE html><html><body style=\"font-family:sans-serif;\">"
         );
         html.push_str(&format!(
-            "<p>Soroban Pulse indexed <strong>{}</strong> new event{} in the last minute.</p>",
+            "<p>StellarClassic Pulse indexed <strong>{}</strong> new event{} in the last minute.</p>",
             events.len(),
             if events.len() == 1 { "" } else { "s" }
         ));
@@ -735,7 +735,7 @@ mod tests {
             Some("example.com")
         );
         assert_eq!(
-            sender_domain("Soroban Pulse <pulse@mail.example.com>").as_deref(),
+            sender_domain("StellarClassic Pulse <pulse@mail.example.com>").as_deref(),
             Some("mail.example.com")
         );
         assert_eq!(sender_domain("trailing@").as_deref(), None);

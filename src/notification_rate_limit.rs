@@ -87,7 +87,7 @@ impl ChannelRateLimiter {
     ///
     /// Returns `true` if the call had to wait (i.e. the notification was
     /// rate-limited and batched), in which case the
-    /// `soroban_pulse_notification_rate_limited_total` counter is incremented.
+    /// `stellarclassic_pulse_notification_rate_limited_total` counter is incremented.
     pub async fn acquire(&self) -> bool {
         let mut rate_limited = false;
 

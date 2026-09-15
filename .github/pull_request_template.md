@@ -20,6 +20,12 @@ Closes #<!-- issue number -->
 - [ ] `cargo clippy` reports no warnings
 - [ ] Manually tested locally
 
+## Wave Program Checklist (if applicable)
+
+- [ ] This PR resolves the issue I was accepted for on Drips Wave
+- [ ] All acceptance criteria from the issue are met
+- [ ] No unrelated changes included
+
 ## Notes
 
 <!-- Anything reviewers should pay special attention to, or N/A. -->

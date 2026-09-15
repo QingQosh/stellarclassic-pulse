@@ -167,7 +167,7 @@ pub struct TracingConfig {
     pub enabled: bool,
     /// Sampling rate: `0.0` = no sampling, `1.0` = sample everything.
     pub sample_rate: f64,
-    /// Service name reported in spans (default: `soroban-pulse`).
+    /// Service name reported in spans (default: `stellarclassic-pulse`).
     pub service_name: String,
 }
 
@@ -188,7 +188,7 @@ impl TracingConfig {
             .clamp(0.0, 1.0);
 
         let service_name = std::env::var("TRACE_SERVICE_NAME")
-            .unwrap_or_else(|_| "soroban-pulse".to_string());
+            .unwrap_or_else(|_| "stellarclassic-pulse".to_string());
 
         Self {
             enabled,
@@ -553,7 +553,7 @@ pub fn get_current_trace_context() -> Option<TraceContext> {
 /// Record trace-related metrics for monitoring.
 pub fn record_trace_sampling(sample_rate: f64) {
     extern crate metrics as m;
-    m::gauge!("soroban_pulse_trace_sample_rate").set(sample_rate);
+    m::gauge!("stellarclassic_pulse_trace_sample_rate").set(sample_rate);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -640,7 +640,7 @@ pub fn record_correlation_log(service: &str, message: impl Into<String>) {
     buf.push_back(entry);
 
     extern crate metrics as m;
-    m::counter!("soroban_pulse_correlation_log_entries_total", "service" => service.to_string())
+    m::counter!("stellarclassic_pulse_correlation_log_entries_total", "service" => service.to_string())
         .increment(1);
 }
 
@@ -686,7 +686,7 @@ pub fn filter_correlation_logs(
 pub fn record_correlation_metrics(had_incoming_id: bool) {
     extern crate metrics as m;
     m::counter!(
-        "soroban_pulse_correlation_ids_total",
+        "stellarclassic_pulse_correlation_ids_total",
         "source" => if had_incoming_id { "propagated" } else { "generated" }
     )
     .increment(1);
@@ -786,7 +786,7 @@ mod tests {
         std::env::remove_var("TRACE_SERVICE_NAME");
         let cfg = TracingConfig::from_env();
         assert_eq!(cfg.sample_rate, 1.0);
-        assert_eq!(cfg.service_name, "soroban-pulse");
+        assert_eq!(cfg.service_name, "stellarclassic-pulse");
     }
 
     #[test]

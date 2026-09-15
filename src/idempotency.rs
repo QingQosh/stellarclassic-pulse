@@ -112,14 +112,14 @@ impl IdempotencyStore for InMemoryStore {
         let removed = before - guard.len();
         if removed > 0 {
             extern crate metrics as m;
-            m::counter!("soroban_pulse_idempotency_keys_expired_total").increment(removed as u64);
+            m::counter!("stellarclassic_pulse_idempotency_keys_expired_total").increment(removed as u64);
         }
     }
 }
 
 fn record_dedup_metric(outcome: &str) {
     extern crate metrics as m;
-    m::counter!("soroban_pulse_idempotency_requests_total", "outcome" => outcome.to_string())
+    m::counter!("stellarclassic_pulse_idempotency_requests_total", "outcome" => outcome.to_string())
         .increment(1);
 }
 

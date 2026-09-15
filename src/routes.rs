@@ -148,7 +148,7 @@ pub struct AppState {
 #[derive(OpenApi)]
 #[openapi(
     info(
-        title = "Soroban Pulse API",
+        title = "StellarClassic Pulse API",
         version = "1.0.0",
         description = "Indexes Soroban smart contract events on the Stellar network."
     ),
@@ -435,7 +435,7 @@ pub fn create_router_with_tx_and_tenant_map(
     );
 
     let bulk_export_manager = crate::bulk_export::BulkExportManager::new(
-        std::path::PathBuf::from("/tmp/soroban-pulse-exports"),
+        std::path::PathBuf::from("/tmp/stellarclassic-pulse-exports"),
         24, // 24 hour retention
     );
 

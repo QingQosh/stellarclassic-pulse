@@ -47,7 +47,7 @@ pub async fn ip_access_control_middleware(
     let ctx = RequestContext::new(ip, String::new(), req.uri().path(), req.method().as_str());
 
     if let Some(AccessDecision::Deny(reason)) = rule.evaluate(&ctx) {
-        m::counter!("soroban_pulse_ip_access_blocked_total").increment(1);
+        m::counter!("stellarclassic_pulse_ip_access_blocked_total").increment(1);
         let mut response = StatusCode::FORBIDDEN.into_response();
         let _ = response
             .headers_mut()

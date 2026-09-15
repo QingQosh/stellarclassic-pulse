@@ -46,7 +46,7 @@ impl Default for WarehouseExportConfig {
     fn default() -> Self {
         Self {
             kind: WarehouseKind::BigQuery,
-            dataset_or_schema: "soroban_pulse".to_string(),
+            dataset_or_schema: "stellarclassic_pulse".to_string(),
             table: "events".to_string(),
             incremental: true,
             watermark_column: "ingested_at".to_string(),

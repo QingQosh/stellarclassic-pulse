@@ -105,7 +105,7 @@ mod slo_tracker;
 
 // These modules were already part of the library target (see src/lib.rs) but
 // missing here, leaving `crate::pool_management` and friends unresolved in
-// handlers.rs when compiling the `soroban-pulse` binary. `clippy::pedantic`
+// handlers.rs when compiling the `stellarclassic-pulse` binary. `clippy::pedantic`
 // is scoped off since these files were never linted against it before.
 #[allow(clippy::pedantic)]
 mod anonymization;
@@ -631,7 +631,7 @@ async fn main() -> anyhow::Result<()> {
     // Initialize Lua transformer if configured
     #[cfg(feature = "lua")]
     if let Some(ref script_path) = config.event_transform_script {
-        match soroban_pulse::lua_transform::LuaTransformer::new(
+        match stellarclassic_pulse::lua_transform::LuaTransformer::new(
             std::path::Path::new(script_path),
             config.event_transform_timeout_ms,
         ) {
@@ -827,7 +827,7 @@ async fn main() -> anyhow::Result<()> {
         sse_ring_buf,
     );
 
-    info!(addr = %addr, "Soroban Pulse listening");
+    info!(addr = %addr, "StellarClassic Pulse listening");
 
     let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
         error!(addr = %addr, "Address already in use");

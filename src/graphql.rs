@@ -1,4 +1,4 @@
-/// GraphQL API layer for Soroban Pulse events
+/// GraphQL API layer for StellarClassic Pulse events
 /// Issue #683: Add GraphQL API layer for more flexible event querying
 
 use async_graphql::{

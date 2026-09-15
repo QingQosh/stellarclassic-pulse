@@ -321,12 +321,12 @@ fn record_degradation_metric(dependency: &str, level: DegradationLevel) {
         DegradationLevel::Unavailable => "unavailable",
     };
     m::counter!(
-        "soroban_pulse_degradation_transitions_total",
+        "stellarclassic_pulse_degradation_transitions_total",
         "dependency" => dependency.to_string(),
         "level" => level_label
     )
     .increment(1);
-    m::gauge!("soroban_pulse_degradation_level").set(match level {
+    m::gauge!("stellarclassic_pulse_degradation_level").set(match level {
         DegradationLevel::Normal => 0.0,
         DegradationLevel::Degraded => 1.0,
         DegradationLevel::ReadOnly => 2.0,

@@ -1,11 +1,11 @@
 /// Webhook Signature Verification Module (Issue #565)
 ///
 /// This module provides utilities for webhook subscribers to verify the authenticity
-/// of webhook requests signed by Soroban Pulse.
+/// of webhook requests signed by StellarClassic Pulse.
 ///
 /// # Algorithm: HMAC-SHA256
 ///
-/// Soroban Pulse signs all webhook requests (when a webhook secret is configured) using HMAC-SHA256.
+/// StellarClassic Pulse signs all webhook requests (when a webhook secret is configured) using HMAC-SHA256.
 ///
 /// ## Signature Format
 ///
@@ -144,7 +144,7 @@ type HmacSha256 = Hmac<Sha256>;
 /// # Arguments
 ///
 /// * `header_value` - The value of the `X-Signature-256` header (e.g., "sha256=<hex_digest>")
-/// * `secret` - The webhook secret configured in Soroban Pulse
+/// * `secret` - The webhook secret configured in StellarClassic Pulse
 /// * `body` - The raw request body bytes
 ///
 /// # Returns
@@ -189,7 +189,7 @@ pub fn verify_signature(
 ///
 /// 1. **Generate a new secret** — use a cryptographically random 32-byte value
 ///    (e.g. `openssl rand -hex 32`).
-/// 2. **Set the new secret** on the Soroban Pulse side via `WEBHOOK_SECRET`.
+/// 2. **Set the new secret** on the StellarClassic Pulse side via `WEBHOOK_SECRET`.
 ///    Keep the old secret in `WEBHOOK_SECRET_OLD` (or pass it as a fallback
 ///    here).
 /// 3. **Update your receiver** to call `verify_signature_with_rotation` with

@@ -147,7 +147,7 @@ fn format_discord_message(
                 }
             ],
             "footer": {
-                "text": "Soroban Pulse"
+                "text": "StellarClassic Pulse"
             }
         }]
     }))
@@ -219,10 +219,10 @@ fn format_pagerduty_message(
     Ok(json!({
         "routing_key": "PLACEHOLDER_ROUTING_KEY", // Will be replaced by actual routing key
         "event_action": "trigger",
-        "dedup_key": format!("soroban-pulse-{}-{}", event.contract_id, event.event_type),
+        "dedup_key": format!("stellarclassic-pulse-{}-{}", event.contract_id, event.event_type),
         "payload": {
             "summary": format!("Soroban contract event: {} on {}", event.event_type, event.contract_id),
-            "source": "Soroban Pulse",
+            "source": "StellarClassic Pulse",
             "severity": severity,
             "component": "soroban-contract",
             "group": event.contract_id,

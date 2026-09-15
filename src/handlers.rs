@@ -620,7 +620,7 @@ pub async fn unsubscribe(
         Ok(true) => html_page(
             StatusCode::OK,
             "Unsubscribed",
-            "You have been unsubscribed from Soroban Pulse notifications.",
+            "You have been unsubscribed from StellarClassic Pulse notifications.",
         ),
         Ok(false) => html_page(
             StatusCode::NOT_FOUND,
@@ -1089,7 +1089,7 @@ pub async fn openapi_json() -> impl IntoResponse {
 /// Serve a minimal Swagger UI HTML page.
 pub async fn swagger_ui() -> impl IntoResponse {
     axum::response::Html(
-        "<!DOCTYPE html><html><head><title>Soroban Pulse API</title>\
+        "<!DOCTYPE html><html><head><title>StellarClassic Pulse API</title>\
         <meta charset=\"utf-8\"/>\
         <link rel=\"stylesheet\" href=\"https://unpkg.com/swagger-ui-dist@5/swagger-ui.css\"></head>\
         <body><div id=\"swagger-ui\"></div>\
@@ -3082,8 +3082,8 @@ fn render_atom_feed(rows: &[sqlx::postgres::PgRow]) -> Result<String, AppError> 
     let mut feed = format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\
          <feed xmlns=\"http://www.w3.org/2005/Atom\">\
-         <title>Soroban Pulse Events</title>\
-         <id>urn:soroban-pulse:events</id><updated>{}</updated>",
+         <title>StellarClassic Pulse Events</title>\
+         <id>urn:stellarclassic-pulse:events</id><updated>{}</updated>",
         escape_xml(&updated)
     );
     for row in rows {
@@ -3103,7 +3103,7 @@ fn render_feed_entry(row: &sqlx::postgres::PgRow) -> Result<String, AppError> {
     let event_data: Value = row.try_get("event_data")?;
     Ok(format!(
         "<entry><title>{} event for {}</title>\
-         <id>urn:soroban-pulse:event:{}</id><updated>{}</updated>\
+         <id>urn:stellarclassic-pulse:event:{}</id><updated>{}</updated>\
          <summary type=\"html\">ledger {} tx {}</summary>\
          <content type=\"application/json\">{}</content></entry>",
         escape_xml(&event_type),
@@ -6060,9 +6060,9 @@ pub async fn test_notification_channel(
     let channel_type: String = channel.try_get("channel_type").unwrap_or_default();
     let config: serde_json::Value = channel.try_get("config").unwrap_or(serde_json::json!({}));
 
-    let test_subject = format!("[TEST] Soroban Pulse notification test – channel '{channel_name}'");
+    let test_subject = format!("[TEST] StellarClassic Pulse notification test – channel '{channel_name}'");
     let test_body = format!(
-        "[TEST] This is a test notification from Soroban Pulse.\nChannel: {channel_name}\nType: {channel_type}\nSent at: {}",
+        "[TEST] This is a test notification from StellarClassic Pulse.\nChannel: {channel_name}\nType: {channel_type}\nSent at: {}",
         chrono::Utc::now().to_rfc3339(),
     );
 
@@ -14948,8 +14948,8 @@ mod ops_tests {
 ///
 /// The report is generated in-memory by `crate::slo_tracker` from the rolling
 /// sample buffers. It is the JSON counterpart of the Prometheus gauges
-/// `soroban_pulse_slo_completion_ratio`, `soroban_pulse_slo_error_budget_remaining`,
-/// and `soroban_pulse_slo_burn_rate` published by the background evaluator.
+/// `stellarclassic_pulse_slo_completion_ratio`, `stellarclassic_pulse_slo_error_budget_remaining`,
+/// and `stellarclassic_pulse_slo_burn_rate` published by the background evaluator.
 #[utoipa::path(
     get,
     path = "/v1/admin/slo/report",
