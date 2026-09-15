@@ -302,3 +302,15 @@ See [RELEASE.md](RELEASE.md) for the complete release process, including:
 - Docker image publishing
 
 Only maintainers can cut releases. If you'd like to propose a release, open an issue or contact the maintainers.
+
+## Community & Discussions
+
+- **Drips Wave**: Join active contribution sprints at [drips.network/wave](https://drips.network/wave)
+- **Issues**: Browse open issues at [github.com/QingQosh/stellarclassic-pulse/issues](https://github.com/QingQosh/stellarclassic-pulse/issues)
+
+## Recognition
+
+Contributors who have their PRs merged will be:
+- Listed in the release notes for that version
+- Credited in the CHANGELOG.md
+- Eligible for Drips Wave reward points if the issue is part of a Wave sprint
