@@ -1,5 +1,10 @@
 # StellarClassicPulse Backend
 
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Rust](https://img.shields.io/badge/rust-1.98%2B-orange.svg)
+![Build](https://img.shields.io/github/actions/workflow/status/QingQosh/stellarclassic-pulse/ci.yml?branch=main)
+![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)
+
 The Rust core of StellarClassicPulse — a real-time event streaming and observability platform for Soroban smart contracts on the Stellar blockchain.
 
 ## What's in here
