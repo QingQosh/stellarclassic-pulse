@@ -88,7 +88,7 @@ secrecy = "0.5"
 rand = "0.8"
 
 # Service mesh integration
-tonic = { version = "0.10", optional = true }
+tonic = { version = "0.14", optional = true }
 prost = { version = "0.12", optional = true }
 
 # Messaging integrations (optional, enabled per-deployment)

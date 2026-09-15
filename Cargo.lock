@@ -529,28 +529,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-stream"
-version = "0.3.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b5a71a6f37880a80d1d7f19efd781e4b5de42c88f0722cc13bcb6cc2cfe8476"
-dependencies = [
- "async-stream-impl",
- "futures-core",
- "pin-project-lite",
-]
-
-[[package]]
-name = "async-stream-impl"
-version = "0.3.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7c24de15d275a1ecfd47a380fb4d5ec9bfe0933f309ed5e705b775596a3574d"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -621,7 +599,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b829e4e32b91e643de6eafe82b1d90675f5874230191a4ffbc1b336dec4d6bf"
 dependencies = [
  "async-trait",
- "axum-core",
+ "axum-core 0.3.4",
  "bitflags 1.3.2",
  "bytes",
  "futures-util",
@@ -629,7 +607,7 @@ dependencies = [
  "http-body 0.4.6",
  "hyper 0.14.32",
  "itoa",
- "matchit",
+ "matchit 0.7.3",
  "memchr",
  "mime",
  "percent-encoding",
@@ -638,6 +616,31 @@ dependencies = [
  "serde",
  "sync_wrapper 0.1.2",
  "tower 0.4.13",
+ "tower-layer",
+ "tower-service",
+]
+
+[[package]]
+name = "axum"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
+dependencies = [
+ "axum-core 0.5.6",
+ "bytes",
+ "futures-util",
+ "http 1.4.0",
+ "http-body 1.0.1",
+ "http-body-util",
+ "itoa",
+ "matchit 0.8.4",
+ "memchr",
+ "mime",
+ "percent-encoding",
+ "pin-project-lite",
+ "serde_core",
+ "sync_wrapper 1.0.2",
+ "tower 0.5.3",
  "tower-layer",
  "tower-service",
 ]
@@ -655,6 +658,24 @@ dependencies = [
  "http-body 0.4.6",
  "mime",
  "rustversion",
+ "tower-layer",
+ "tower-service",
+]
+
+[[package]]
+name = "axum-core"
+version = "0.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08c78f31d7b1291f7ee735c1c6780ccde7785daae9a9206026862dab7d8792d1"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "http 1.4.0",
+ "http-body 1.0.1",
+ "http-body-util",
+ "mime",
+ "pin-project-lite",
+ "sync_wrapper 1.0.2",
  "tower-layer",
  "tower-service",
 ]
@@ -2930,6 +2951,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 
 [[package]]
+name = "matchit"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
+
+[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4809,69 +4836,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "stellarclassic-pulse"
-version = "1.0.0"
-dependencies = [
- "actix-cors",
- "actix-rt",
- "actix-web",
- "aes-gcm",
- "anyhow",
- "async-graphql",
- "async-graphql-actix-web",
- "async-trait",
- "base64 0.21.7",
- "blake3",
- "bytes",
- "chrono",
- "config",
- "criterion",
- "diesel",
- "dotenv",
- "ed25519-dalek",
- "futures",
- "google-cloud-googleapis",
- "google-cloud-pubsub",
- "hex",
- "hmac 0.12.1",
- "metrics",
- "mockall",
- "opentelemetry 0.21.0",
- "opentelemetry-jaeger",
- "opentelemetry-otlp",
- "pqcrypto-dilithium",
- "pqcrypto-falcon",
- "pqcrypto-kyber",
- "pqcrypto-sphincsplus",
- "pqcrypto-traits",
- "prometheus",
- "proptest",
- "prost 0.12.6",
- "rand 0.8.5",
- "rdkafka",
- "regex",
- "reqwest 0.11.27",
- "secrecy",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "subtle",
- "thiserror 1.0.69",
- "time",
- "tokio",
- "tokio-tungstenite",
- "toml 0.8.23",
- "tonic 0.10.2",
- "tracing",
- "tracing-opentelemetry 0.22.0",
- "tracing-subscriber",
- "url",
- "uuid",
- "wiremock",
-]
-
-[[package]]
 name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5114,6 +5078,69 @@ name = "static_assertions_next"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7beae5182595e9a8b683fa98c4317f956c9a2dec3b9716990d20023cc60c766"
+
+[[package]]
+name = "stellarclassic-pulse"
+version = "1.0.0"
+dependencies = [
+ "actix-cors",
+ "actix-rt",
+ "actix-web",
+ "aes-gcm",
+ "anyhow",
+ "async-graphql",
+ "async-graphql-actix-web",
+ "async-trait",
+ "base64 0.21.7",
+ "blake3",
+ "bytes",
+ "chrono",
+ "config",
+ "criterion",
+ "diesel",
+ "dotenv",
+ "ed25519-dalek",
+ "futures",
+ "google-cloud-googleapis",
+ "google-cloud-pubsub",
+ "hex",
+ "hmac 0.12.1",
+ "metrics",
+ "mockall",
+ "opentelemetry 0.21.0",
+ "opentelemetry-jaeger",
+ "opentelemetry-otlp",
+ "pqcrypto-dilithium",
+ "pqcrypto-falcon",
+ "pqcrypto-kyber",
+ "pqcrypto-sphincsplus",
+ "pqcrypto-traits",
+ "prometheus",
+ "proptest",
+ "prost 0.12.6",
+ "rand 0.8.5",
+ "rdkafka",
+ "regex",
+ "reqwest 0.11.27",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "subtle",
+ "thiserror 1.0.69",
+ "time",
+ "tokio",
+ "tokio-tungstenite",
+ "toml 0.8.23",
+ "tonic 0.14.5",
+ "tracing",
+ "tracing-opentelemetry 0.22.0",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "wiremock",
+]
 
 [[package]]
 name = "stringprep"
@@ -5578,7 +5605,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3082666a3a6433f7f511c7192923fa1fe07c69332d3c6a2e6bb040b569199d5a"
 dependencies = [
  "async-trait",
- "axum",
+ "axum 0.6.20",
  "base64 0.21.7",
  "bytes",
  "futures-core",
@@ -5591,33 +5618,6 @@ dependencies = [
  "percent-encoding",
  "pin-project",
  "prost 0.11.9",
- "tokio",
- "tokio-stream",
- "tower 0.4.13",
- "tower-layer",
- "tower-service",
- "tracing",
-]
-
-[[package]]
-name = "tonic"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d560933a0de61cf715926b9cac824d4c883c2c43142f787595e48280c40a1d0e"
-dependencies = [
- "async-stream",
- "async-trait",
- "axum",
- "base64 0.21.7",
- "bytes",
- "h2 0.3.27",
- "http 0.2.12",
- "http-body 0.4.6",
- "hyper 0.14.32",
- "hyper-timeout 0.4.1",
- "percent-encoding",
- "pin-project",
- "prost 0.12.6",
  "tokio",
  "tokio-stream",
  "tower 0.4.13",
@@ -5659,8 +5659,11 @@ version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fec7c61a0695dc1887c1b53952990f3ad2e3a31453e1f49f10e75424943a93ec"
 dependencies = [
+ "async-trait",
+ "axum 0.8.9",
  "base64 0.22.1",
  "bytes",
+ "h2 0.4.13",
  "http 1.4.0",
  "http-body 1.0.1",
  "http-body-util",
@@ -5670,6 +5673,7 @@ dependencies = [
  "percent-encoding",
  "pin-project",
  "rustls-native-certs",
+ "socket2 0.6.3",
  "sync_wrapper 1.0.2",
  "tokio",
  "tokio-rustls",
@@ -6237,7 +6241,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
