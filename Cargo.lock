@@ -3781,9 +3781,9 @@ dependencies = [
 
 [[package]]
 name = "prometheus"
-version = "0.13.4"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d33c28a30771f7f96db69893f78b857f7450d7e0237e9c8fc6427a81bae7ed1"
+checksum = "3ca5326d8d0b950a9acd87e6a3f94745394f62e4dae1b1ee22b2bc0c394af43a"
 dependencies = [
  "cfg-if",
  "fnv",
@@ -3791,7 +3791,7 @@ dependencies = [
  "memchr",
  "parking_lot",
  "protobuf",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3925,9 +3925,23 @@ dependencies = [
 
 [[package]]
 name = "protobuf"
-version = "2.28.0"
+version = "3.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "106dd99e98437432fed6519dedecfade6a06a73bb7b2a1e019fdd2bee5778d94"
+checksum = "d65a1d4ddae7d8b5de68153b48f6aa3bba8cb002b243dbdbc55a5afbc98f99f4"
+dependencies = [
+ "once_cell",
+ "protobuf-support",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "protobuf-support"
+version = "3.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e36c2f31e0a47f9280fb347ef5e461ffcd2c52dd520d8e216b52f93b0b0d7d6"
+dependencies = [
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "quick-error"
@@ -4809,69 +4823,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "stellarclassic-pulse"
-version = "1.0.0"
-dependencies = [
- "actix-cors",
- "actix-rt",
- "actix-web",
- "aes-gcm",
- "anyhow",
- "async-graphql",
- "async-graphql-actix-web",
- "async-trait",
- "base64 0.21.7",
- "blake3",
- "bytes",
- "chrono",
- "config",
- "criterion",
- "diesel",
- "dotenv",
- "ed25519-dalek",
- "futures",
- "google-cloud-googleapis",
- "google-cloud-pubsub",
- "hex",
- "hmac 0.12.1",
- "metrics",
- "mockall",
- "opentelemetry 0.21.0",
- "opentelemetry-jaeger",
- "opentelemetry-otlp",
- "pqcrypto-dilithium",
- "pqcrypto-falcon",
- "pqcrypto-kyber",
- "pqcrypto-sphincsplus",
- "pqcrypto-traits",
- "prometheus",
- "proptest",
- "prost 0.12.6",
- "rand 0.8.5",
- "rdkafka",
- "regex",
- "reqwest 0.11.27",
- "secrecy",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "subtle",
- "thiserror 1.0.69",
- "time",
- "tokio",
- "tokio-tungstenite",
- "toml 0.8.23",
- "tonic 0.10.2",
- "tracing",
- "tracing-opentelemetry 0.22.0",
- "tracing-subscriber",
- "url",
- "uuid",
- "wiremock",
-]
-
-[[package]]
 name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5114,6 +5065,69 @@ name = "static_assertions_next"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7beae5182595e9a8b683fa98c4317f956c9a2dec3b9716990d20023cc60c766"
+
+[[package]]
+name = "stellarclassic-pulse"
+version = "1.0.0"
+dependencies = [
+ "actix-cors",
+ "actix-rt",
+ "actix-web",
+ "aes-gcm",
+ "anyhow",
+ "async-graphql",
+ "async-graphql-actix-web",
+ "async-trait",
+ "base64 0.21.7",
+ "blake3",
+ "bytes",
+ "chrono",
+ "config",
+ "criterion",
+ "diesel",
+ "dotenv",
+ "ed25519-dalek",
+ "futures",
+ "google-cloud-googleapis",
+ "google-cloud-pubsub",
+ "hex",
+ "hmac 0.12.1",
+ "metrics",
+ "mockall",
+ "opentelemetry 0.21.0",
+ "opentelemetry-jaeger",
+ "opentelemetry-otlp",
+ "pqcrypto-dilithium",
+ "pqcrypto-falcon",
+ "pqcrypto-kyber",
+ "pqcrypto-sphincsplus",
+ "pqcrypto-traits",
+ "prometheus",
+ "proptest",
+ "prost 0.12.6",
+ "rand 0.8.5",
+ "rdkafka",
+ "regex",
+ "reqwest 0.11.27",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "subtle",
+ "thiserror 1.0.69",
+ "time",
+ "tokio",
+ "tokio-tungstenite",
+ "toml 0.8.23",
+ "tonic 0.10.2",
+ "tracing",
+ "tracing-opentelemetry 0.22.0",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "wiremock",
+]
 
 [[package]]
 name = "stringprep"
