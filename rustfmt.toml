@@ -3,3 +3,6 @@ max_width = 100
 use_small_heuristics = "Default"
 imports_granularity = "Crate"
 group_imports = "StdExternalCrate"
+# StellarClassic Pulse formatting preferences
+group_imports = "StdExternalCrate"
+imports_granularity = "Crate"
