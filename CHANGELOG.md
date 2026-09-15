@@ -57,3 +57,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Unreleased]: https://github.com/Soroban-Pulse/SorobanPulse/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/Soroban-Pulse/SorobanPulse/releases/tag/v0.1.0
+
+## [Unreleased]
+
+### Added
+- Drips Wave maintainer standards (LICENSE, CODE_OF_CONDUCT, SECURITY, FUNDING.json)
+- Wave task issue template for structured contributor onboarding
+- Improved pull request template with Wave program checklist
+
+### Changed
+- Renamed project from SorobanPulse to StellarClassicPulse
+- Split monorepo into backend and clients repositories
+
+### Fixed
+- Contributor identity standardised across all commits
