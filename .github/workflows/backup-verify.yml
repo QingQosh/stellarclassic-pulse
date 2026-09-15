@@ -1,0 +1,114 @@
+name: Backup Verification
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'  # Weekly on Sunday at 02:00 UTC
+  workflow_dispatch:
+
+jobs:
+  verify-backup:
+    name: Verify backup and restore integrity
+    runs-on: ubuntu-latest
+
+    services:
+      source_db:
+        image: postgres:14
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: soroban_pulse_source
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      restore_db:
+        image: postgres:14
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: soroban_pulse_restore
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      SOURCE_URL: postgres://postgres:postgres@localhost:5432/soroban_pulse_source
+      RESTORE_URL: postgres://postgres:postgres@localhost:5433/soroban_pulse_restore
+      BACKUP_DEST: /tmp/backups
+      BACKUP_ENCRYPTION_KEY: test-encryption-key-12345
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GPG
+        run: sudo apt-get update && sudo apt-get install -y gnupg
+
+      - name: Apply migrations to source DB
+        run: |
+          for f in migrations/*.sql; do
+            psql "$SOURCE_URL" -f "$f" || true
+          done
+
+      - name: Seed source DB with test data
+        run: |
+          psql "$SOURCE_URL" <<'SQL'
+            INSERT INTO events (contract_id, event_type, tx_hash, ledger, timestamp, event_data)
+            SELECT
+              'C' || lpad(i::text, 55, '0'),
+              'contract',
+              lpad(i::text, 64, '0'),
+              i,
+              now(),
+              '{}'::jsonb
+            FROM generate_series(1, 50) AS i;
+          SQL
+
+      - name: Run encrypted backup
+        run: |
+          DATABASE_URL="$SOURCE_URL" \
+          BACKUP_ENCRYPTION_KEY="$BACKUP_ENCRYPTION_KEY" \
+          BACKUP_DEST="$BACKUP_DEST" \
+          bash scripts/backup.sh
+
+      - name: Verify backup file is encrypted
+        run: |
+          BACKUP_FILE=$(ls "$BACKUP_DEST"/*.dump.gpg | head -1)
+          if [ ! -f "$BACKUP_FILE" ]; then
+            echo "ERROR: Encrypted backup file not found"
+            exit 1
+          fi
+          echo "Encrypted backup created: $BACKUP_FILE"
+          file "$BACKUP_FILE" | grep -q "GPG" && echo "✓ File is GPG encrypted"
+
+      - name: Apply migrations to restore DB
+        run: |
+          for f in migrations/*.sql; do
+            psql "$RESTORE_URL" -f "$f" || true
+          done
+
+      - name: Restore encrypted backup to target DB
+        run: |
+          BACKUP_FILE=$(ls "$BACKUP_DEST"/*.dump.gpg | head -1)
+          DATABASE_URL="$RESTORE_URL" \
+          BACKUP_ENCRYPTION_KEY="$BACKUP_ENCRYPTION_KEY" \
+          bash scripts/restore.sh "$BACKUP_FILE" <<< "yes"
+
+      - name: Verify row counts match
+        run: |
+          SOURCE_COUNT=$(psql "$SOURCE_URL" -t -c "SELECT COUNT(*) FROM events;" | tr -d ' ')
+          RESTORE_COUNT=$(psql "$RESTORE_URL" -t -c "SELECT COUNT(*) FROM events;" | tr -d ' ')
+          echo "Source count:  $SOURCE_COUNT"
+          echo "Restore count: $RESTORE_COUNT"
+          if [ "$SOURCE_COUNT" != "$RESTORE_COUNT" ]; then
+            echo "ERROR: Row count mismatch — backup verification failed"
+            exit 1
+          fi
+          echo "✓ Backup verification passed: $SOURCE_COUNT rows match"

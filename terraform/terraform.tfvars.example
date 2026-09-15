@@ -1,0 +1,71 @@
+# =============================================================================
+# Example Terraform Variables — SorobanPulse (Issue #650)
+#
+# Copy this file to terraform.tfvars (never commit that copy — it may contain
+# sensitive values) and fill in the values for your environment.
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# For CI/CD pipelines, set variables via TF_VAR_* environment variables or
+# a secrets manager instead of a file.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Global
+# ---------------------------------------------------------------------------
+aws_region   = "us-east-1"
+environment  = "staging"      # Change to "production" for prod
+project_name = "soroban-pulse"
+
+# ---------------------------------------------------------------------------
+# Networking
+# ---------------------------------------------------------------------------
+vpc_cidr             = "10.0.0.0/16"
+availability_zones   = ["us-east-1a", "us-east-1b", "us-east-1c"]
+public_subnet_cidrs  = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+private_subnet_cidrs = ["10.0.11.0/24", "10.0.12.0/24", "10.0.13.0/24"]
+enable_nat_gateway   = true
+single_nat_gateway   = true   # Set to false in production for HA
+
+# ---------------------------------------------------------------------------
+# RDS PostgreSQL
+# ---------------------------------------------------------------------------
+db_instance_class              = "db.t3.medium"   # db.r6g.large for production
+db_engine_version              = "16.3"
+db_name                        = "soroban_pulse"
+db_username                    = "soroban_admin"
+db_allocated_storage           = 20               # GiB — autoscales up to db_max_allocated_storage
+db_max_allocated_storage       = 100              # GiB
+db_backup_retention_period     = 7                # days
+db_multi_az                    = false            # true in production
+db_deletion_protection         = false            # true in production
+db_apply_immediately           = true             # false in production
+db_skip_final_snapshot         = true             # false in production
+db_performance_insights_enabled = true
+db_monitoring_interval         = 60
+
+# ---------------------------------------------------------------------------
+# Application Load Balancer
+# ---------------------------------------------------------------------------
+alb_internal            = false
+alb_access_logs_enabled = false        # true in production (requires S3 bucket)
+alb_idle_timeout        = 60
+health_check_path       = "/healthz/ready"
+health_check_interval   = 30
+health_check_threshold  = 2
+app_port                = 3000
+
+# TLS certificate — obtain from ACM before applying
+# certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# ---------------------------------------------------------------------------
+# Monitoring & Alerting
+# ---------------------------------------------------------------------------
+# alarm_actions_arn = ["arn:aws:sns:us-east-1:123456789012:soroban-pulse-staging-alerts"]
+# ok_actions_arn    = ["arn:aws:sns:us-east-1:123456789012:soroban-pulse-staging-alerts"]
+
+rds_cpu_alarm_threshold     = 80       # percent
+rds_storage_alarm_threshold = 5368709120 # 5 GiB in bytes
+alb_5xx_alarm_threshold     = 10       # per minute
+alb_latency_alarm_threshold = 1.0      # seconds (p99)
+log_retention_days          = 30

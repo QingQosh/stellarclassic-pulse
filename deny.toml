@@ -1,0 +1,129 @@
+# cargo-deny configuration for SorobanPulse
+# https://embarkstudios.github.io/cargo-deny/
+
+# =====================================================================
+# Advisories - Check for known security vulnerabilities
+# =====================================================================
+[advisories]
+# Treat advisory database as the source of truth
+version = 2
+# Ignore advisories for specific crates (if any)
+ignore = []
+# Yanked crate versions are treated as vulnerabilities
+yanked = "warn"
+# Ignore individual advisories by RUSTSEC ID
+# ignore = [
+#     { id = "RUSTSEC-0000-0000", reason = "not applicable" }
+# ]
+
+# =====================================================================
+# Bans - Check for banned dependencies
+# =====================================================================
+[bans]
+# Multiple versions of the same crate are allowed (set to "deny" to enforce single version)
+multiple-versions = "warn"
+# List of crates that are not allowed to be used
+deny = [
+    # Security-sensitive crates that should not be used directly
+    # { name = "openssl", wrappers = ["openssl-sys"] },
+    # { name = "reqwest", wrappers = [] },
+]
+
+# List of crates that are allowed to have multiple versions
+skip = [
+    # Add crates here if they need to have multiple versions
+    # { name = "some-crate", version = ">=1.0, <2.0" },
+]
+
+# List of crates that are allowed to be skipped from checking
+allow-wildcard-dependencies = false
+
+# Allow specific crates to have wildcard version requirements
+# allow-wildcard-dependencies = [
+#     { name = "some-crate", allow = ["*"] },
+# ]
+
+# =====================================================================
+# Licenses - Check for allowed licenses
+# =====================================================================
+[licenses]
+# How to handle unlicensed crates
+unlicensed = "deny"
+# List of allowed licenses
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+    "0BSD",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Zlib",
+]
+# Confidence threshold for license detection
+confidence-threshold = 0.8
+# Allow crates with specific licenses
+# allow = [
+#     { name = "some-crate", license = "MIT" },
+# ]
+# Deny crates with specific licenses
+# deny = [
+#     { name = "some-crate", license = "GPL-3.0" },
+# ]
+
+# =====================================================================
+# Sources - Check for crate sources
+# =====================================================================
+[sources]
+# How to handle crates with unknown sources
+unknown-registry = "warn"
+unknown-git = "warn"
+# List of allowed sources
+allow-registry = [
+    "https://github.com/rust-lang/crates.io-index",
+    "https://github.com/rust-lang/crates.io",
+]
+allow-git = [
+    # Add allowed git sources here
+    # "https://github.com/some-org/some-repo",
+]
+
+# =====================================================================
+# Targets - Check for specific targets
+# =====================================================================
+[targets]
+# List of targets to check
+# targets = [
+#     { triple = "x86_64-unknown-linux-gnu", features = [] },
+#     { triple = "aarch64-unknown-linux-gnu", features = [] },
+# ]
+
+# =====================================================================
+# Yanked - Check for yanked crates
+# =====================================================================
+[yanked]
+# How to handle yanked crate versions
+warn = ["*"]
+
+# =====================================================================
+# All - Global settings
+# =====================================================================
+[all]
+# Maximum number of advisories to report (0 = unlimited)
+# max-advisories = 0
+# Maximum number of bans to report (0 = unlimited)
+# max-bans = 0
+
+# =====================================================================
+# Features - Feature configuration
+# =====================================================================
+[features]
+# List of features to enable for all crates
+# enable = ["some-feature"]
+# List of features to disable for all crates
+# disable = ["some-feature"]

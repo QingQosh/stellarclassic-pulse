@@ -1,0 +1,110 @@
+# docker-compose.e2e.yml
+#
+# Full-stack E2E test environment for SorobanPulse.
+#
+# Brings up:
+#   - PostgreSQL (test database)
+#   - A WireMock instance that simulates the Stellar Soroban RPC
+#   - The SorobanPulse application (built from source)
+#   - A lightweight webhook receiver used by the E2E test suite
+#
+# Usage:
+#   docker compose -f docker-compose.e2e.yml up --build --wait
+#   cargo test --test e2e_tests
+#   docker compose -f docker-compose.e2e.yml down -v
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — isolated test database, no persistent volume
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: e2e
+      POSTGRES_PASSWORD: e2e
+      POSTGRES_DB: soroban_pulse_e2e
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U e2e -d soroban_pulse_e2e"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    tmpfs:
+      # Use tmpfs so the DB starts fast and leaves no disk artefacts
+      - /var/lib/postgresql/data
+
+  # ---------------------------------------------------------------------------
+  # WireMock — Stellar Soroban RPC stub
+  #
+  # Mapping files live in tests/e2e/wiremock/mappings/.
+  # The E2E test suite can POST to /__admin/mappings to inject dynamic responses.
+  # ---------------------------------------------------------------------------
+  rpc-stub:
+    image: wiremock/wiremock:3.6.0
+    command:
+      - "--port=8080"
+      - "--verbose"
+    volumes:
+      - ./tests/e2e/wiremock:/home/wiremock
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/__admin/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  # SorobanPulse application
+  # ---------------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      rpc-stub:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://e2e:e2e@db:5432/soroban_pulse_e2e
+      STELLAR_RPC_URL: http://rpc-stub:8080
+      START_LEDGER: "1000"
+      PORT: "3000"
+      RUST_LOG: "info"
+      RUST_LOG_FORMAT: "json"
+      RATE_LIMIT_PER_MINUTE: "0"
+      SSE_KEEPALIVE_SECS: "5"
+      INDEXER_LOCK_RETRY_SECS: "5"
+      HEALTH_CHECK_TIMEOUT_MS: "2000"
+    ports:
+      - "3001:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/healthz/ready | grep -q '\"status\":\"ok\"' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Webhook receiver — tiny HTTP server that records webhook deliveries.
+  # The E2E tests query GET /received to assert delivery.
+  # ---------------------------------------------------------------------------
+  webhook-receiver:
+    image: python:3.12-alpine
+    command: >
+      sh -c "pip install --quiet flask &&
+             python /app/webhook_receiver.py"
+    volumes:
+      - ./tests/e2e:/app
+    ports:
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9001/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s

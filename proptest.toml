@@ -1,0 +1,20 @@
+# Proptest configuration for property-based testing
+
+# Number of test cases to generate per property test
+# - Local: use 256 for quick feedback
+# - CI: use 10000 for comprehensive coverage
+cases = 256
+
+# Maximum length for generated strings and collections
+max_shrink_iters = 10000
+
+# RNG seed for reproducible test failures
+# Set via PROPTEST_RNG_SEED environment variable
+# seed = "your-seed-here"
+
+# Whether to preserve regression test cases in proptest-regressions/ directory
+# This is useful for failing test cases to prevent regressions
+persistence = true
+
+# Timeout per test case (in milliseconds)
+timeout = 5000
