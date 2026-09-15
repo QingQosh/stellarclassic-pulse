@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // tests/load/lib/baseline.js
-// Baseline management library for Soroban Pulse load tests — issue #811
+// Baseline management library for StellarClassic Pulse load tests — issue #811
 //
 // Provides programmatic access to baselines.json:
 //   - Load / validate / save the baseline file
@@ -454,7 +454,7 @@ if (require.main === module) {
 
       default: {
         console.log(`
-Soroban Pulse — baseline management tool (issue #811)
+StellarClassic Pulse — baseline management tool (issue #811)
 
 Usage:
   node tests/load/lib/baseline.js <subcommand> [args]

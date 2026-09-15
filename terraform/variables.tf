@@ -1,5 +1,5 @@
 # =============================================================================
-# Input Variables — SorobanPulse Terraform (Issue #650, #833)
+# Input Variables — StellarClassicPulse Terraform (Issue #650, #833)
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -24,7 +24,7 @@ variable "environment" {
 variable "project_name" {
   description = "Short name used as a prefix on all resource names."
   type        = string
-  default     = "soroban-pulse"
+  default     = "stellarclassic-pulse"
 }
 
 # ---------------------------------------------------------------------------
@@ -86,7 +86,7 @@ variable "db_engine_version" {
 variable "db_name" {
   description = "Name of the PostgreSQL database to create."
   type        = string
-  default     = "soroban_pulse"
+  default     = "stellarclassic_pulse"
 }
 
 variable "db_username" {
@@ -200,7 +200,7 @@ variable "certificate_arn" {
 # ---------------------------------------------------------------------------
 
 variable "app_port" {
-  description = "Port the SorobanPulse container listens on."
+  description = "Port the StellarClassicPulse container listens on."
   type        = number
   default     = 3000
 }
@@ -230,7 +230,7 @@ variable "ecs_task_memory" {
 variable "ecs_container_image" {
   description = "Docker image URI for the application container."
   type        = string
-  default     = "ghcr.io/soroban-pulse/sorobanpulse:latest"
+  default     = "ghcr.io/stellarclassic-pulse/stellarclassicpulse:latest"
 }
 
 # ---------------------------------------------------------------------------

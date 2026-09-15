@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-SorobanPulse's webhook delivery system lacks comprehensive monitoring and operator visibility, creating blind spots for production incident response. Critical gaps include:
+StellarClassicPulse's webhook delivery system lacks comprehensive monitoring and operator visibility, creating blind spots for production incident response. Critical gaps include:
 
 1. **No real-time observability** — Operators cannot see webhook endpoint health or delivery latency
 2. **DLQ chaos** — Dead-letter queue grows without analysis or easy recovery mechanisms

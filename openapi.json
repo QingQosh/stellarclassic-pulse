@@ -1,7 +1,7 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "Soroban Pulse API",
+    "title": "StellarClassic Pulse API",
     "description": "Indexes Soroban smart contract events on the Stellar network.",
     "license": {
       "name": ""

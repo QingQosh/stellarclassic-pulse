@@ -1,14 +1,14 @@
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: soroban-pulse-hpa
+  name: stellarclassic-pulse-hpa
   labels:
-    app: soroban-pulse
+    app: stellarclassic-pulse
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: soroban-pulse
+    name: stellarclassic-pulse
   minReplicas: 2
   maxReplicas: 10
   behavior:
@@ -59,7 +59,7 @@ spec:
         describedObject:
           apiVersion: networking.k8s.io/v1
           kind: Ingress
-          name: soroban-pulse-ingress
+          name: stellarclassic-pulse-ingress
         target:
           type: Value
           value: "1k"

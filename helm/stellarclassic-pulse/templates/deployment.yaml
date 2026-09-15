@@ -1,20 +1,20 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "soroban-pulse.fullname" . }}
+  name: {{ include "stellarclassic-pulse.fullname" . }}
   labels:
-    {{- include "soroban-pulse.labels" . | nindent 4 }}
+    {{- include "stellarclassic-pulse.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
   strategy:
     {{- toYaml .Values.strategy | nindent 4 }}
   selector:
     matchLabels:
-      {{- include "soroban-pulse.selectorLabels" . | nindent 6 }}
+      {{- include "stellarclassic-pulse.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "soroban-pulse.selectorLabels" . | nindent 8 }}
+        {{- include "stellarclassic-pulse.selectorLabels" . | nindent 8 }}
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -23,7 +23,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
-      serviceAccountName: {{ include "soroban-pulse.serviceAccountName" . }}
+      serviceAccountName: {{ include "stellarclassic-pulse.serviceAccountName" . }}
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:
@@ -60,9 +60,9 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           envFrom:
             - configMapRef:
-                name: {{ include "soroban-pulse.fullname" . }}-config
+                name: {{ include "stellarclassic-pulse.fullname" . }}-config
             - secretRef:
-                name: {{ .Values.existingSecret | default (printf "%s-secrets" (include "soroban-pulse.fullname" .)) }}
+                name: {{ .Values.existingSecret | default (printf "%s-secrets" (include "stellarclassic-pulse.fullname" .)) }}
           {{- with .Values.extraEnv }}
           env:
             {{- toYaml . | nindent 12 }}

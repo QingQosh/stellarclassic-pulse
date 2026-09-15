@@ -1,13 +1,13 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "soroban-pulse.fullname" . }}
+  name: {{ include "stellarclassic-pulse.fullname" . }}
   labels:
-    {{- include "soroban-pulse.labels" . | nindent 4 }}
+    {{- include "stellarclassic-pulse.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
   selector:
-    {{- include "soroban-pulse.selectorLabels" . | nindent 4 }}
+    {{- include "stellarclassic-pulse.selectorLabels" . | nindent 4 }}
   ports:
     - port: {{ .Values.service.port }}
       targetPort: {{ .Values.service.targetPort }}

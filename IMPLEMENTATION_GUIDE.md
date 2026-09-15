@@ -11,7 +11,7 @@ Add these functions to track delivery latency, queue depth, and endpoint health:
 // Record delivery latency per endpoint
 pub fn record_webhook_delivery_latency(endpoint: &str, duration_ms: u64) {
     m::histogram!(
-        "soroban_pulse_webhook_delivery_latency_ms",
+        "stellarclassic_pulse_webhook_delivery_latency_ms",
         "endpoint" => endpoint.to_string(),
     ).record(duration_ms as f64);
 }
@@ -19,7 +19,7 @@ pub fn record_webhook_delivery_latency(endpoint: &str, duration_ms: u64) {
 // Track pending deliveries per subscription
 pub fn record_delivery_queue_depth(subscription_id: &str, count: i64) {
     m::gauge!(
-        "soroban_pulse_delivery_queue_depth",
+        "stellarclassic_pulse_delivery_queue_depth",
         "subscription_id" => subscription_id.to_string(),
     ).set(count as f64);
 }
@@ -27,7 +27,7 @@ pub fn record_delivery_queue_depth(subscription_id: &str, count: i64) {
 // Track endpoint health: healthy | degraded | unhealthy
 pub fn record_endpoint_health_status(endpoint: &str, status: &str) {
     m::gauge!(
-        "soroban_pulse_endpoint_health_status",
+        "stellarclassic_pulse_endpoint_health_status",
         "endpoint" => endpoint.to_string(),
         "status" => status.to_string(),
     ).set(1.0);
@@ -36,7 +36,7 @@ pub fn record_endpoint_health_status(endpoint: &str, status: &str) {
 // Record DLQ backlog per endpoint
 pub fn record_dlq_backlog(endpoint: &str, count: i64) {
     m::gauge!(
-        "soroban_pulse_dlq_backlog",
+        "stellarclassic_pulse_dlq_backlog",
         "endpoint" => endpoint.to_string(),
     ).set(count as f64);
 }

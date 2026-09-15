@@ -1,17 +1,17 @@
-name = "soroban-pulse-edge"
+name = "stellarclassic-pulse-edge"
 type = "javascript"
 account_id = "YOUR_CLOUDFLARE_ACCOUNT_ID"
 workers_dev = true
-route = "api.soroban-pulse.example.com/*"
+route = "api.stellarclassic-pulse.example.com/*"
 zone_id = "YOUR_CLOUDFLARE_ZONE_ID"
 
 [env.production]
-name = "soroban-pulse-edge-prod"
-route = "api.soroban-pulse.example.com/*"
+name = "stellarclassic-pulse-edge-prod"
+route = "api.stellarclassic-pulse.example.com/*"
 
 [env.staging]
-name = "soroban-pulse-edge-staging"
-route = "staging-api.soroban-pulse.example.com/*"
+name = "stellarclassic-pulse-edge-staging"
+route = "staging-api.stellarclassic-pulse.example.com/*"
 
 [[kv_namespaces]]
 binding = "CACHE"

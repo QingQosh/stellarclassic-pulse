@@ -2,7 +2,7 @@
 //!
 //! A PGTune-style advisor that turns host resource inputs (memory, CPU count,
 //! expected connection count, storage type) into recommended `postgresql.conf`
-//! values for an OLTP-style workload like Soroban Pulse's event indexing and
+//! values for an OLTP-style workload like StellarClassic Pulse's event indexing and
 //! query API.
 //!
 //! These are starting points, not a substitute for workload-specific

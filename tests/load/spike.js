@@ -1,4 +1,4 @@
-// k6 spike test for Soroban Pulse — issue #811
+// k6 spike test for StellarClassic Pulse — issue #811
 //
 // Simulates a sudden 10× traffic burst (1 000 req/s) from a stable 100 req/s
 // baseline, then returns to baseline.  Tests elasticity and recovery speed.

@@ -4809,7 +4809,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "soroban-pulse"
+name = "stellarclassic-pulse"
 version = "1.0.0"
 dependencies = [
  "actix-cors",
@@ -4856,6 +4856,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
+ "subtle",
  "thiserror 1.0.69",
  "time",
  "tokio",

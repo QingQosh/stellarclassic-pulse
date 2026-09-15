@@ -1,4 +1,4 @@
-# Contributing to Soroban Pulse
+# Contributing to StellarClassic Pulse
 
 New to the project? See [docs/onboarding.md](docs/onboarding.md) for a day-1
 setup checklist and fixes for the most common first-build issues before
@@ -16,7 +16,7 @@ Under the hood this runs:
 
 ```bash
 docker compose -f docker-compose.test.yml up -d --wait
-DATABASE_URL=postgres://postgres:postgres@localhost/soroban_pulse_test cargo test
+DATABASE_URL=postgres://postgres:postgres@localhost/stellarclassic_pulse_test cargo test
 docker compose -f docker-compose.test.yml down
 ```
 

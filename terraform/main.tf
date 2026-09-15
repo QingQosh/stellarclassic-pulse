@@ -1,5 +1,5 @@
 # =============================================================================
-# Root Module — SorobanPulse Infrastructure (Issue #650, #833)
+# Root Module — StellarClassicPulse Infrastructure (Issue #650, #833)
 #
 # Wires together:
 #   - VPC + subnets + NAT gateway

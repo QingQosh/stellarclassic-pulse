@@ -1,7 +1,7 @@
 {
   "_meta": {
     "version": "1.0.0",
-    "description": "Performance baseline library for Soroban Pulse load test scenarios (issue #811). Update this file after each intentional performance improvement and after capacity changes.",
+    "description": "Performance baseline library for StellarClassic Pulse load test scenarios (issue #811). Update this file after each intentional performance improvement and after capacity changes.",
     "units": {
       "latency": "milliseconds",
       "throughput": "requests/second",

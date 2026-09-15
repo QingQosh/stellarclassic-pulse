@@ -11,7 +11,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  DATABASE_URL: postgres://postgres:postgres@localhost/soroban_pulse_test
+  DATABASE_URL: postgres://postgres:postgres@localhost/stellarclassic_pulse_test
 
 jobs:
   fmt:
@@ -105,7 +105,7 @@ jobs:
         image: postgres:${{ matrix.postgres }}
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: soroban_pulse_test
+          POSTGRES_DB: stellarclassic_pulse_test
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -139,7 +139,7 @@ jobs:
         image: postgres:15
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: soroban_pulse_test
+          POSTGRES_DB: stellarclassic_pulse_test
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -196,7 +196,7 @@ jobs:
         image: postgres:15
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: soroban_pulse_test
+          POSTGRES_DB: stellarclassic_pulse_test
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -226,7 +226,7 @@ jobs:
         image: postgres:15
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: soroban_pulse_test
+          POSTGRES_DB: stellarclassic_pulse_test
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -256,7 +256,7 @@ jobs:
         image: postgres:15
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: soroban_pulse_test
+          POSTGRES_DB: stellarclassic_pulse_test
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -389,11 +389,11 @@ jobs:
         with:
           version: "3.14.0"
       - name: Lint Helm chart
-        run: helm lint helm/soroban-pulse
+        run: helm lint helm/stellarclassic-pulse
       - name: Render template (default values)
-        run: helm template soroban-pulse helm/soroban-pulse | grep -v "DATABASE_URL\|API_KEY\|SMTP_PASSWORD"
+        run: helm template stellarclassic-pulse helm/stellarclassic-pulse | grep -v "DATABASE_URL\|API_KEY\|SMTP_PASSWORD"
       - name: Render template (existingSecret)
-        run: helm template soroban-pulse helm/soroban-pulse --set existingSecret=my-secret
+        run: helm template stellarclassic-pulse helm/stellarclassic-pulse --set existingSecret=my-secret
 
   openapi:
     name: OpenAPI Spec Validation

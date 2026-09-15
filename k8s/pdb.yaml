@@ -1,12 +1,12 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: soroban-pulse-pdb
+  name: stellarclassic-pulse-pdb
   labels:
-    app: soroban-pulse
+    app: stellarclassic-pulse
 spec:
   minAvailable: 1
   selector:
     matchLabels:
-      app: soroban-pulse
+      app: stellarclassic-pulse
   unhealthyPodEvictionPolicy: AlwaysAllow

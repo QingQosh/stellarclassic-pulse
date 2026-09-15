@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use chrono::Utc;
 use uuid::Uuid;
-use soroban_pulse::conditional_get;
+use stellarclassic_pulse::conditional_get;
 
 // Benchmark ETag computation performance
 pub fn bench_etag_computation(c: &mut Criterion) {

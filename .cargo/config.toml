@@ -1,4 +1,4 @@
-# Cargo configuration for Soroban Pulse
+# Cargo configuration for StellarClassic Pulse
 
 [build]
 # Enable incremental compilation for faster builds during mutation testing

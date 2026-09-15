@@ -21,7 +21,7 @@ CREATE INDEX IF NOT EXISTS idx_webhook_configs_format ON webhook_configs(notific
 CREATE TABLE IF NOT EXISTS pagerduty_configs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     routing_key TEXT NOT NULL,
-    service_name TEXT NOT NULL DEFAULT 'Soroban Pulse',
+    service_name TEXT NOT NULL DEFAULT 'StellarClassic Pulse',
     contract_filter TEXT[], -- Array of contract IDs to monitor
     event_type_filter TEXT[], -- Array of event types to monitor
     severity_mapping JSONB NOT NULL DEFAULT '{"contract": "error", "diagnostic": "warning", "system": "info"}',

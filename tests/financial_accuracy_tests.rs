@@ -5,7 +5,7 @@
 
 use chrono::Utc;
 use serde_json::json;
-use soroban_pulse::financial_accuracy::{
+use stellarclassic_pulse::financial_accuracy::{
     AccuracyReport, DataValidationFramework, EventCountReconciler, EventCountSnapshot,
     EventValidator, ReconciliationResult, SumVerificationConfig, SumVerifier,
     ValidationSeverity, run_accuracy_check,

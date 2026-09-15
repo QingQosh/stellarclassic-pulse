@@ -218,10 +218,10 @@ metadata:
 spec:
   tls:
   - hosts:
-    - jaeger.soroban-pulse.example.com
+    - jaeger.stellarclassic-pulse.example.com
     secretName: jaeger-tls
   rules:
-  - host: jaeger.soroban-pulse.example.com
+  - host: jaeger.stellarclassic-pulse.example.com
     http:
       paths:
       - path: /

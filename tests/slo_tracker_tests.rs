@@ -4,7 +4,7 @@
 // that the metric helpers and aggregate-report helpers behave as documented
 // in `docs/sli-slo.md`.
 
-use soroban_pulse::slo_tracker::{
+use stellarclassic_pulse::slo_tracker::{
     default_slo_definitions, record_sli_sample, shared_tracker, SliType, SloDefinition,
     SloReport, SloStatus, SloTracker,
 };

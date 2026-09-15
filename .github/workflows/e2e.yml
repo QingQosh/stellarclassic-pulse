@@ -47,7 +47,7 @@ jobs:
       - name: Seed E2E database
         run: |
           docker compose -f docker-compose.e2e.yml exec -T db \
-            psql -U e2e -d soroban_pulse_e2e \
+            psql -U e2e -d stellarclassic_pulse_e2e \
             -f /dev/stdin < tests/e2e/seed.sql
         # Allow failure — seed data is optional if the indexer has already run
         continue-on-error: true

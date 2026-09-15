@@ -1,5 +1,5 @@
 // tests/load/lib/helpers.js
-// Shared k6 utility library for Soroban Pulse load tests — issue #811
+// Shared k6 utility library for StellarClassic Pulse load tests — issue #811
 //
 // Import individual helpers into any k6 script:
 //

@@ -1,6 +1,6 @@
 //! End-to-end test suite — issue #654
 //!
-//! These tests target a **live** SorobanPulse stack started by
+//! These tests target a **live** StellarClassicPulse stack started by
 //! `docker compose -f docker-compose.e2e.yml up --build --wait`.
 //!
 //! They are intentionally separated from the unit/integration suite so they
@@ -388,7 +388,7 @@ async fn e2e_sse_stream_connects_and_pings() {
 /// Creates a subscription, then injects an event via the RPC stub and verifies
 /// that the subscription mechanism records the notification.
 ///
-/// Note: SorobanPulse delivers subscriptions in-process (not via an external
+/// Note: StellarClassicPulse delivers subscriptions in-process (not via an external
 /// queue in this config), so we validate that the indexed event is visible via
 /// the REST API and that subscription metadata is returned correctly.
 #[tokio::test]
@@ -543,12 +543,12 @@ async fn e2e_metrics_endpoint_returns_prometheus_format() {
     assert_eq!(resp.status(), 200, "/metrics should return 200");
     let body = resp.text().await.expect("failed to read metrics body");
     assert!(
-        body.contains("soroban_pulse_events_indexed_total"),
-        "metrics body should contain soroban_pulse_events_indexed_total"
+        body.contains("stellarclassic_pulse_events_indexed_total"),
+        "metrics body should contain stellarclassic_pulse_events_indexed_total"
     );
     assert!(
-        body.contains("soroban_pulse_indexer_current_ledger"),
-        "metrics body should contain soroban_pulse_indexer_current_ledger"
+        body.contains("stellarclassic_pulse_indexer_current_ledger"),
+        "metrics body should contain stellarclassic_pulse_indexer_current_ledger"
     );
 }
 
@@ -2868,10 +2868,10 @@ async fn e2e_health_during_rpc_errors() {
 
     // The metric line may not appear if value is 0, so we check both presence
     // and value.  If the metric exists its value should be > 0.
-    if metrics.contains("soroban_pulse_rpc_errors_total") {
+    if metrics.contains("stellarclassic_pulse_rpc_errors_total") {
         // Extract the value and verify it's a positive number.
         for line in metrics.lines() {
-            if line.starts_with("soroban_pulse_rpc_errors_total")
+            if line.starts_with("stellarclassic_pulse_rpc_errors_total")
                 && !line.starts_with('#')
             {
                 let parts: Vec<&str> = line.split_whitespace().collect();
@@ -2879,7 +2879,7 @@ async fn e2e_health_during_rpc_errors() {
                     let val: f64 = val_str.parse().unwrap_or(0.0);
                     assert!(
                         val > 0.0,
-                        "soroban_pulse_rpc_errors_total should be > 0 after RPC errors; got {val}"
+                        "stellarclassic_pulse_rpc_errors_total should be > 0 after RPC errors; got {val}"
                     );
                 }
             }

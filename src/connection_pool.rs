@@ -9,25 +9,25 @@
 //!
 //! # Issue #995 enhancements
 //! - **Connection wait time tracking**: `acquire_tracked_with_wait` records how
-//!   long callers queue for a pool slot (`soroban_pulse_db_pool_wait_seconds`).
+//!   long callers queue for a pool slot (`stellarclassic_pulse_db_pool_wait_seconds`).
 //! - **Queue depth gauge**: sampled every monitor tick so operators can see
-//!   queueing pressure in real time (`soroban_pulse_db_pool_queue_depth`).
+//!   queueing pressure in real time (`stellarclassic_pulse_db_pool_queue_depth`).
 //! - **Wait-timeout counter**: requests that wait >1 s are counted separately
-//!   (`soroban_pulse_db_pool_wait_timeout_total`).
+//!   (`stellarclassic_pulse_db_pool_wait_timeout_total`).
 //! - **Dynamic sizing guidance**: `suggest_pool_size` computes p99-based min/max
 //!   recommendations that appear in the `/v1/admin/pool` response.
 //!
 //! # Metrics emitted
 //! | Name | Kind | Description |
 //! |------|------|-------------|
-//! | `soroban_pulse_db_pool_utilization` | Gauge | Active / max (0.0–1.0) |
-//! | `soroban_pulse_db_pool_active_connections` | Gauge | In-use connections |
-//! | `soroban_pulse_db_pool_max_connections` | Gauge | Configured maximum |
-//! | `soroban_pulse_db_pool_acquire_latency_seconds` | Histogram | Time to get a connection |
-//! | `soroban_pulse_db_pool_exhaustion_alerts_total` | Counter | Times util ≥ 90 % |
-//! | `soroban_pulse_db_pool_wait_seconds` | Histogram | Wait time for a pool slot |
-//! | `soroban_pulse_db_pool_wait_timeout_total` | Counter | Waits exceeding 1 s |
-//! | `soroban_pulse_db_pool_queue_depth` | Gauge | Pending acquisition requests |
+//! | `stellarclassic_pulse_db_pool_utilization` | Gauge | Active / max (0.0–1.0) |
+//! | `stellarclassic_pulse_db_pool_active_connections` | Gauge | In-use connections |
+//! | `stellarclassic_pulse_db_pool_max_connections` | Gauge | Configured maximum |
+//! | `stellarclassic_pulse_db_pool_acquire_latency_seconds` | Histogram | Time to get a connection |
+//! | `stellarclassic_pulse_db_pool_exhaustion_alerts_total` | Counter | Times util ≥ 90 % |
+//! | `stellarclassic_pulse_db_pool_wait_seconds` | Histogram | Wait time for a pool slot |
+//! | `stellarclassic_pulse_db_pool_wait_timeout_total` | Counter | Waits exceeding 1 s |
+//! | `stellarclassic_pulse_db_pool_queue_depth` | Gauge | Pending acquisition requests |
 
 use sqlx::PgPool;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};

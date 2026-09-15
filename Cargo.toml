@@ -1,11 +1,11 @@
 [package]
-name = "soroban-pulse"
+name = "stellarclassic-pulse"
 version = "1.0.0"
 edition = "2021"
-authors = ["SorobanPulse Team"]
+authors = ["StellarClassicPulse Team"]
 description = "Real-time event streaming and observability platform for Soroban/Stellar blockchain"
 license = "MIT"
-repository = "https://github.com/Soroban-Pulse/SorobanPulse"
+repository = "https://github.com/Soroban-Pulse/StellarClassicPulse"
 
 [dependencies]
 # Web framework
@@ -139,9 +139,9 @@ strip = true
 inherits = "release"
 
 [lib]
-name = "soroban_pulse"
+name = "stellarclassic_pulse"
 path = "src/lib.rs"
 
 [[bin]]
-name = "soroban-pulse"
+name = "stellarclassic-pulse"
 path = "src/main.rs"

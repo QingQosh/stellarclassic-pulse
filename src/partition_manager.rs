@@ -240,7 +240,7 @@ pub async fn create_partition(
     }
 
     info!(partition = partition_name, "Partition created successfully");
-    m::counter!("soroban_pulse_partition_created_total").increment(1);
+    m::counter!("stellarclassic_pulse_partition_created_total").increment(1);
 
     Ok(partition_name)
 }
@@ -297,7 +297,7 @@ pub async fn analyze_partition_pruning(
         1.0
     };
 
-    m::gauge!("soroban_pulse_partition_pruning_effectiveness")
+    m::gauge!("stellarclassic_pulse_partition_pruning_effectiveness")
         .set(effectiveness * 100.0);
 
     Ok(PartitionPruningReport {
@@ -383,7 +383,7 @@ pub async fn archive_partition(
     let sql = format!("ALTER TABLE {} RENAME TO {}", partition_name, archive_name);
     sqlx::query(&sql).execute(pool).await?;
 
-    m::counter!("soroban_pulse_archived_partitions_total").increment(1);
+    m::counter!("stellarclassic_pulse_archived_partitions_total").increment(1);
     info!(partition = partition_name, archive_name, "Partition archived");
     Ok(format!("Archived {} → {}", partition_name, archive_name))
 }
@@ -413,7 +413,7 @@ pub async fn calculate_partition_skew(
         })
         .fold(0.0_f64, f64::max);
 
-    m::gauge!("soroban_pulse_partition_skew_max").set(max_skew);
+    m::gauge!("stellarclassic_pulse_partition_skew_max").set(max_skew);
 
     Ok(partitions
         .iter()
@@ -452,7 +452,7 @@ pub async fn create_ledger_partition(
     }
 
     info!(partition = partition_name, start_ledger, end_ledger, "Ledger partition created");
-    m::counter!("soroban_pulse_ledger_partition_created_total").increment(1);
+    m::counter!("stellarclassic_pulse_ledger_partition_created_total").increment(1);
 
     Ok(partition_name)
 }
@@ -570,10 +570,10 @@ pub async fn get_ledger_partition_stats(
     let total_rows: i64 = partitions.iter().map(|p| p.row_count).sum();
     let total_size: i64 = partitions.iter().map(|p| p.size_bytes).sum();
 
-    m::gauge!("soroban_pulse_ledger_partitions_total").set(partitions.len() as f64);
-    m::gauge!("soroban_pulse_ledger_partitions_active").set(active as f64);
-    m::gauge!("soroban_pulse_ledger_partitions_archived").set(archived as f64);
-    m::gauge!("soroban_pulse_ledger_partition_total_size_bytes").set(total_size as f64);
+    m::gauge!("stellarclassic_pulse_ledger_partitions_total").set(partitions.len() as f64);
+    m::gauge!("stellarclassic_pulse_ledger_partitions_active").set(active as f64);
+    m::gauge!("stellarclassic_pulse_ledger_partitions_archived").set(archived as f64);
+    m::gauge!("stellarclassic_pulse_ledger_partition_total_size_bytes").set(total_size as f64);
 
     Ok(LedgerPartitionStats {
         total_partitions: partitions.len(),
@@ -593,7 +593,7 @@ pub async fn forecast_capacity(
     let partitions = list_partitions(pool).await?;
 
     let total_size: i64 = partitions.iter().map(|p| p.size_bytes).sum();
-    m::gauge!("soroban_pulse_partition_total_size_bytes").set(total_size as f64);
+    m::gauge!("stellarclassic_pulse_partition_total_size_bytes").set(total_size as f64);
 
     // Use the most recent 3 partitions to estimate growth rate
     let recent: Vec<&PartitionInfo> = {
@@ -677,8 +677,8 @@ pub async fn get_partition_dashboard(pool: &PgPool) -> Result<serde_json::Value,
     let total_size: i64 = partitions.iter().map(|p| p.size_bytes).sum();
     let total_rows: i64 = partitions.iter().map(|p| p.row_count).sum();
 
-    m::gauge!("soroban_pulse_partition_count").set(partitions.len() as f64);
-    m::gauge!("soroban_pulse_hot_partitions_count")
+    m::gauge!("stellarclassic_pulse_partition_count").set(partitions.len() as f64);
+    m::gauge!("stellarclassic_pulse_hot_partitions_count")
         .set(hot.iter().filter(|h| h.seq_scan + h.idx_scan > 0).count() as f64);
 
     Ok(serde_json::json!({

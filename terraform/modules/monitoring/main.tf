@@ -13,7 +13,7 @@
 # ---------------------------------------------------------------------------
 
 resource "aws_cloudwatch_log_group" "app" {
-  name              = "/soroban-pulse/${var.name_prefix}"
+  name              = "/stellarclassic-pulse/${var.name_prefix}"
   retention_in_days = var.log_retention_days
 
   tags = {

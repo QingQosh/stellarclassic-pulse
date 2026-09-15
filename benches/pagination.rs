@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use soroban_pulse::models::PaginationParams;
+use stellarclassic_pulse::models::PaginationParams;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------

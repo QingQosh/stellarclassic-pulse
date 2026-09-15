@@ -1,8 +1,8 @@
 # .gitleaks.toml
-# Gitleaks configuration for SorobanPulse secrets scanning (Issue #943)
+# Gitleaks configuration for StellarClassicPulse secrets scanning (Issue #943)
 # https://github.com/gitleaks/gitleaks
 
-title = "SorobanPulse Gitleaks Configuration"
+title = "StellarClassicPulse Gitleaks Configuration"
 
 [extend]
 # Extend the default gitleaks ruleset
@@ -44,8 +44,8 @@ regexes = [
 # ─── Custom rules ─────────────────────────────────────────────────────────────
 
 [[rules]]
-id = "soroban-pulse-api-key"
-description = "SorobanPulse API key pattern"
+id = "stellarclassic-pulse-api-key"
+description = "StellarClassicPulse API key pattern"
 regex = '''(?i)(api_key|admin_api_key)\s*=\s*[\"']([a-zA-Z0-9_\-]{20,})[\"']'''
 secretGroup = 2
 
@@ -62,7 +62,7 @@ secretGroup = 2
   ]
 
 [[rules]]
-id = "soroban-pulse-db-url"
+id = "stellarclassic-pulse-db-url"
 description = "PostgreSQL connection string with credentials"
 regex = '''postgres(?:ql)?://[^:]+:[^@]+@[^/\s]+'''
 
@@ -81,7 +81,7 @@ regex = '''postgres(?:ql)?://[^:]+:[^@]+@[^/\s]+'''
   ]
 
 [[rules]]
-id = "soroban-pulse-hmac-key"
+id = "stellarclassic-pulse-hmac-key"
 description = "HMAC/webhook signing key"
 regex = '''(?i)(hmac_key|webhook_secret|signing_key)\s*=\s*[\"']([a-zA-Z0-9+/=_\-]{16,})[\"']'''
 secretGroup = 2
@@ -93,7 +93,7 @@ secretGroup = 2
   ]
 
 [[rules]]
-id = "soroban-pulse-encryption-key"
+id = "stellarclassic-pulse-encryption-key"
 description = "Encryption key material"
 regex = '''(?i)(encryption_key|kek_|dek_)\s*=\s*[\"']([a-zA-Z0-9+/=]{32,})[\"']'''
 secretGroup = 2

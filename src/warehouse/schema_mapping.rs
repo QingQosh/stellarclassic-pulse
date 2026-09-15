@@ -1,4 +1,4 @@
-//! Maps SorobanPulse event fields to warehouse-native column types.
+//! Maps StellarClassicPulse event fields to warehouse-native column types.
 
 #[derive(Debug, Clone)]
 pub struct WarehouseColumn {

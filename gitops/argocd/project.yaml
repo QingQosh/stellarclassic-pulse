@@ -1,4 +1,4 @@
-# ArgoCD AppProject scoping what the soroban-pulse Applications are allowed
+# ArgoCD AppProject scoping what the stellarclassic-pulse Applications are allowed
 # to deploy. Applied once, before the Application manifests in this
 # directory. See docs/gitops.md for the full setup runbook.
 #
@@ -6,13 +6,13 @@
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
-  name: soroban-pulse
+  name: stellarclassic-pulse
   namespace: argocd
 spec:
   description: >-
-    SorobanPulse application deployments (staging and production). Restricts
+    StellarClassicPulse application deployments (staging and production). Restricts
     sync sources to this repository and sync destinations to the
-    soroban-pulse namespaces, so a compromised or misconfigured Application
+    stellarclassic-pulse namespaces, so a compromised or misconfigured Application
     in this project cannot deploy arbitrary manifests elsewhere in the
     cluster.
 
@@ -20,16 +20,16 @@ spec:
   # project. Update if the config-repo pattern (see docs/gitops.md, "Create
   # application manifests repository") is adopted later.
   sourceRepos:
-    - "https://github.com/Soroban-Pulse/SorobanPulse.git"
+    - "https://github.com/Soroban-Pulse/StellarClassicPulse.git"
 
   # Applications in this project may only deploy into these namespace(s), on
   # the cluster ArgoCD itself runs in (https://kubernetes.default.svc).
-  # Add additional destination entries here if soroban-pulse is ever deployed
+  # Add additional destination entries here if stellarclassic-pulse is ever deployed
   # to a separate cluster per environment.
   destinations:
-    - namespace: soroban-pulse-production
+    - namespace: stellarclassic-pulse-production
       server: https://kubernetes.default.svc
-    - namespace: soroban-pulse-staging
+    - namespace: stellarclassic-pulse-staging
       server: https://kubernetes.default.svc
 
   # Cluster-scoped resources this project's Applications may create.
@@ -41,8 +41,8 @@ spec:
       kind: Namespace
 
   # Namespaced resource kinds this project's Applications may create. This
-  # mirrors what the soroban-pulse Helm chart actually renders
-  # (helm/soroban-pulse/templates/) — extend it if the chart grows new
+  # mirrors what the stellarclassic-pulse Helm chart actually renders
+  # (helm/stellarclassic-pulse/templates/) — extend it if the chart grows new
   # resource kinds.
   namespaceResourceWhitelist:
     - group: ""
@@ -66,13 +66,13 @@ spec:
   # Wire actual group/SSO mappings before relying on this in a real cluster.
   roles:
     - name: readonly
-      description: Read-only access to soroban-pulse Applications
+      description: Read-only access to stellarclassic-pulse Applications
       policies:
-        - p, proj:soroban-pulse:readonly, applications, get, soroban-pulse/*, allow
+        - p, proj:stellarclassic-pulse:readonly, applications, get, stellarclassic-pulse/*, allow
       groups: []
     - name: deployer
-      description: Sync and manage soroban-pulse Applications, no project edits
+      description: Sync and manage stellarclassic-pulse Applications, no project edits
       policies:
-        - p, proj:soroban-pulse:deployer, applications, get, soroban-pulse/*, allow
-        - p, proj:soroban-pulse:deployer, applications, sync, soroban-pulse/*, allow
+        - p, proj:stellarclassic-pulse:deployer, applications, get, stellarclassic-pulse/*, allow
+        - p, proj:stellarclassic-pulse:deployer, applications, sync, stellarclassic-pulse/*, allow
       groups: []

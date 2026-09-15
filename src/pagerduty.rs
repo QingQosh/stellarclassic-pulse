@@ -66,7 +66,7 @@ impl Default for PagerDutyConfig {
 
         Self {
             routing_key: String::new(),
-            service_name: "Soroban Pulse".to_string(),
+            service_name: "StellarClassic Pulse".to_string(),
             api_key: None,
             escalation_policy_id: None,
             contract_filter: Vec::new(),
@@ -533,7 +533,7 @@ impl PagerDutyClient {
 
     /// Canonical deduplication key for a (contract_id, event_type) pair.
     pub fn make_dedup_key(contract_id: &str, event_type: &str) -> String {
-        format!("soroban-pulse-{}-{}", contract_id, event_type)
+        format!("stellarclassic-pulse-{}-{}", contract_id, event_type)
     }
 
     /// POST to the PagerDuty Events API with exponential back-off.
@@ -698,7 +698,7 @@ mod tests {
     #[test]
     fn test_make_dedup_key() {
         let key = PagerDutyClient::make_dedup_key("CABC", "contract");
-        assert_eq!(key, "soroban-pulse-CABC-contract");
+        assert_eq!(key, "stellarclassic-pulse-CABC-contract");
     }
 
     #[test]

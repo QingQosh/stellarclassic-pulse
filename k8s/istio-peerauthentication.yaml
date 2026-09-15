@@ -2,15 +2,15 @@
 apiVersion: security.istio.io/v1beta1
 kind: PeerAuthentication
 metadata:
-  name: soroban-pulse-mtls
+  name: stellarclassic-pulse-mtls
   namespace: default
   labels:
-    app: soroban-pulse
+    app: stellarclassic-pulse
     component: service-mesh
 spec:
   selector:
     matchLabels:
-      app: soroban-pulse
+      app: stellarclassic-pulse
   mtls:
     mode: STRICT  # Enforce mTLS for all traffic
   portLevelMtls:
@@ -23,15 +23,15 @@ spec:
 apiVersion: security.istio.io/v1beta1
 kind: AuthorizationPolicy
 metadata:
-  name: soroban-pulse-authz
+  name: stellarclassic-pulse-authz
   namespace: default
   labels:
-    app: soroban-pulse
+    app: stellarclassic-pulse
     component: service-mesh
 spec:
   selector:
     matchLabels:
-      app: soroban-pulse
+      app: stellarclassic-pulse
   action: ALLOW
   rules:
   # Allow health checks from anywhere
@@ -51,13 +51,13 @@ spec:
     when:
     - key: request.auth.claims[iss]
       values:
-      - "https://auth.soroban-pulse.example.com"
+      - "https://auth.stellarclassic-pulse.example.com"
   
   # Allow internal service-to-service communication
   - from:
     - source:
         principals:
-        - "cluster.local/ns/default/sa/soroban-pulse"
+        - "cluster.local/ns/default/sa/stellarclassic-pulse"
         - "cluster.local/ns/monitoring/sa/prometheus"
     to:
     - operation:

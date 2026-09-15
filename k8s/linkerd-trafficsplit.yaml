@@ -2,34 +2,34 @@
 apiVersion: split.smi-spec.io/v1alpha1
 kind: TrafficSplit
 metadata:
-  name: soroban-pulse-canary
+  name: stellarclassic-pulse-canary
   namespace: default
   labels:
-    app: soroban-pulse
+    app: stellarclassic-pulse
     component: service-mesh
 spec:
   # Main service that receives traffic
-  service: soroban-pulse-service
+  service: stellarclassic-pulse-service
   
   # Traffic split between stable and canary
   backends:
-  - service: soroban-pulse-stable
+  - service: stellarclassic-pulse-stable
     weight: 90  # 90% to stable version
-  - service: soroban-pulse-canary
+  - service: stellarclassic-pulse-canary
     weight: 10  # 10% to canary version
 
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: soroban-pulse-stable
+  name: stellarclassic-pulse-stable
   namespace: default
   labels:
-    app: soroban-pulse
+    app: stellarclassic-pulse
     track: stable
 spec:
   selector:
-    app: soroban-pulse
+    app: stellarclassic-pulse
     track: stable
   ports:
   - name: http
@@ -43,14 +43,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: soroban-pulse-canary
+  name: stellarclassic-pulse-canary
   namespace: default
   labels:
-    app: soroban-pulse
+    app: stellarclassic-pulse
     track: canary
 spec:
   selector:
-    app: soroban-pulse
+    app: stellarclassic-pulse
     track: canary
   ports:
   - name: http
@@ -65,32 +65,32 @@ spec:
 apiVersion: split.smi-spec.io/v1alpha1
 kind: TrafficSplit
 metadata:
-  name: soroban-pulse-blue-green
+  name: stellarclassic-pulse-blue-green
   namespace: default
   labels:
-    app: soroban-pulse
+    app: stellarclassic-pulse
     component: service-mesh
     deployment-strategy: blue-green
 spec:
-  service: soroban-pulse-service
+  service: stellarclassic-pulse-service
   backends:
-  - service: soroban-pulse-blue
+  - service: stellarclassic-pulse-blue
     weight: 100  # Switch to 0 when promoting green
-  - service: soroban-pulse-green
+  - service: stellarclassic-pulse-green
     weight: 0    # Switch to 100 when promoting
 
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: soroban-pulse-blue
+  name: stellarclassic-pulse-blue
   namespace: default
   labels:
-    app: soroban-pulse
+    app: stellarclassic-pulse
     deployment: blue
 spec:
   selector:
-    app: soroban-pulse
+    app: stellarclassic-pulse
     deployment: blue
   ports:
   - name: http
@@ -101,14 +101,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: soroban-pulse-green
+  name: stellarclassic-pulse-green
   namespace: default
   labels:
-    app: soroban-pulse
+    app: stellarclassic-pulse
     deployment: green
 spec:
   selector:
-    app: soroban-pulse
+    app: stellarclassic-pulse
     deployment: green
   ports:
   - name: http

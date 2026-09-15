@@ -6,7 +6,7 @@ rule_files:
   - /etc/prometheus/alerts.yml
 
 scrape_configs:
-  - job_name: soroban-pulse
+  - job_name: stellarclassic-pulse
     metrics_path: /metrics
     static_configs:
       - targets:

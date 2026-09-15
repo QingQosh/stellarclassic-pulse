@@ -13,10 +13,10 @@
 
 use std::collections::HashMap;
 
-use soroban_pulse::pagerduty::{
+use stellarclassic_pulse::pagerduty::{
     EscalationPolicy, EscalationRule, EscalationTarget, PagerDutyClient, PagerDutyConfig,
 };
-use soroban_pulse::models::SorobanEvent;
+use stellarclassic_pulse::models::SorobanEvent;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@ fn default_config_has_sensible_values() {
 #[test]
 fn dedup_key_format() {
     let key = PagerDutyClient::make_dedup_key("CABC1234", "contract");
-    assert_eq!(key, "soroban-pulse-CABC1234-contract");
+    assert_eq!(key, "stellarclassic-pulse-CABC1234-contract");
 }
 
 #[test]
@@ -315,7 +315,7 @@ fn auto_resolve_can_be_disabled() {
 
 #[test]
 fn from_app_config_returns_none_when_routing_key_absent() {
-    let config = soroban_pulse::config::Config::default();
+    let config = stellarclassic_pulse::config::Config::default();
     // Default config has no pagerduty_routing_key
     let client = PagerDutyClient::from_app_config(&config);
     assert!(client.is_none());

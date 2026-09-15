@@ -233,7 +233,7 @@ pub struct SloTracker {
 }
 
 impl SloTracker {
-    /// Create a tracker pre-populated with the Soroban Pulse default SLOs.
+    /// Create a tracker pre-populated with the StellarClassic Pulse default SLOs.
     #[must_use]
     pub fn with_defaults() -> Self {
         let mut tracker = Self {
@@ -523,7 +523,7 @@ impl Default for SloTracker {
 
 // ── Built-in SLO definitions ────────────────────────────────────────────────
 
-/// Built-in SLO definitions for the Soroban Pulse managed service. Numbers are
+/// Built-in SLO definitions for the StellarClassic Pulse managed service. Numbers are
 /// aligned with [`docs/api-sla.md`] and the targets in
 /// [`docs/alerts.yml`].
 ///
@@ -672,36 +672,36 @@ fn unix_now_secs() -> u64 {
 
 /// Publish every report as Prometheus gauges and counters.
 ///
-/// Naming follows the `soroban_pulse_slo_*` convention used throughout the
+/// Naming follows the `stellarclassic_pulse_slo_*` convention used throughout the
 /// codebase so the existing Grafana dashboards automatically pick the new
 /// panels up (see [`docs/sli-slo.md`]).
 fn emit_report(report: &SloAggregateReport) {
-    m::gauge!("soroban_pulse_slo_tracked_count").set(report.slos.len() as f64);
-    m::gauge!("soroban_pulse_slo_met_count").set(report.counts.met as f64);
-    m::gauge!("soroban_pulse_slo_at_risk_count").set(report.counts.at_risk as f64);
-    m::gauge!("soroban_pulse_slo_breached_count").set(report.counts.breached as f64);
+    m::gauge!("stellarclassic_pulse_slo_tracked_count").set(report.slos.len() as f64);
+    m::gauge!("stellarclassic_pulse_slo_met_count").set(report.counts.met as f64);
+    m::gauge!("stellarclassic_pulse_slo_at_risk_count").set(report.counts.at_risk as f64);
+    m::gauge!("stellarclassic_pulse_slo_breached_count").set(report.counts.breached as f64);
 
     for r in &report.slos {
         m::gauge!(
-            "soroban_pulse_slo_completion_ratio",
+            "stellarclassic_pulse_slo_completion_ratio",
             "slo" => r.name.clone(),
             "component" => r.component.clone()
         )
         .set(r.completion_ratio);
         m::gauge!(
-            "soroban_pulse_slo_error_budget_remaining",
+            "stellarclassic_pulse_slo_error_budget_remaining",
             "slo" => r.name.clone(),
             "component" => r.component.clone()
         )
         .set(r.error_budget_remaining);
         m::gauge!(
-            "soroban_pulse_slo_error_budget_consumed",
+            "stellarclassic_pulse_slo_error_budget_consumed",
             "slo" => r.name.clone(),
             "component" => r.component.clone()
         )
         .set(r.error_budget_consumed);
         m::gauge!(
-            "soroban_pulse_slo_burn_rate",
+            "stellarclassic_pulse_slo_burn_rate",
             "slo" => r.name.clone(),
             "component" => r.component.clone()
         )
@@ -712,7 +712,7 @@ fn emit_report(report: &SloAggregateReport) {
             100.0
         });
         m::gauge!(
-            "soroban_pulse_sli_current_value",
+            "stellarclassic_pulse_sli_current_value",
             "slo" => r.name.clone(),
             "component" => r.component.clone()
         )
@@ -723,7 +723,7 @@ fn emit_report(report: &SloAggregateReport) {
         });
         if r.status != SloStatus::Met {
             m::counter!(
-                "soroban_pulse_slo_evaluation_total",
+                "stellarclassic_pulse_slo_evaluation_total",
                 "slo" => r.name.clone(),
                 "status" => r.status.as_str().to_string()
             )

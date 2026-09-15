@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: soroban-pulse-config
+  name: stellarclassic-pulse-config
   labels:
-    app: soroban-pulse
+    app: stellarclassic-pulse
 data:
   PORT: "3000"
   STELLAR_RPC_URL: "https://soroban-testnet.stellar.org"
@@ -34,9 +34,9 @@ data:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: soroban-pulse-config-files
+  name: stellarclassic-pulse-config-files
   labels:
-    app: soroban-pulse
+    app: stellarclassic-pulse
 data:
   nginx.conf: |
     server {

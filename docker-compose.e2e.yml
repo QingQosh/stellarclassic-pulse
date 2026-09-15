@@ -1,11 +1,11 @@
 # docker-compose.e2e.yml
 #
-# Full-stack E2E test environment for SorobanPulse.
+# Full-stack E2E test environment for StellarClassicPulse.
 #
 # Brings up:
 #   - PostgreSQL (test database)
 #   - A WireMock instance that simulates the Stellar Soroban RPC
-#   - The SorobanPulse application (built from source)
+#   - The StellarClassicPulse application (built from source)
 #   - A lightweight webhook receiver used by the E2E test suite
 #
 # Usage:
@@ -22,11 +22,11 @@ services:
     environment:
       POSTGRES_USER: e2e
       POSTGRES_PASSWORD: e2e
-      POSTGRES_DB: soroban_pulse_e2e
+      POSTGRES_DB: stellarclassic_pulse_e2e
     ports:
       - "5433:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U e2e -d soroban_pulse_e2e"]
+      test: ["CMD-SHELL", "pg_isready -U e2e -d stellarclassic_pulse_e2e"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -58,7 +58,7 @@ services:
       start_period: 5s
 
   # ---------------------------------------------------------------------------
-  # SorobanPulse application
+  # StellarClassicPulse application
   # ---------------------------------------------------------------------------
   app:
     build:
@@ -70,7 +70,7 @@ services:
       rpc-stub:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://e2e:e2e@db:5432/soroban_pulse_e2e
+      DATABASE_URL: postgres://e2e:e2e@db:5432/stellarclassic_pulse_e2e
       STELLAR_RPC_URL: http://rpc-stub:8080
       START_LEDGER: "1000"
       PORT: "3000"

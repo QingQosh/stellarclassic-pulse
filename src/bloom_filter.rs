@@ -209,7 +209,7 @@ impl EventBloomFilter {
     }
 
     /// Returns `true` if the event was probably already seen (bloom filter hit).
-    /// Increments `soroban_pulse_bloom_filter_hits_total` on a hit.
+    /// Increments `stellarclassic_pulse_bloom_filter_hits_total` on a hit.
     pub fn check(&self, tx_hash: &str, contract_id: &str, event_type: &str) -> bool {
         let k = Self::key(tx_hash, contract_id, event_type);
 

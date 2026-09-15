@@ -330,7 +330,7 @@ pub async fn send_{{SNAKE}}_sms(
     provider_api_key: &str,
 ) -> Result<(), AppError> {
     let message = format!(
-        "SorobanPulse: {{PASCAL}} event on contract {} at ledger {}. Type: {}.",
+        "StellarClassicPulse: {{PASCAL}} event on contract {} at ledger {}. Type: {}.",
         event.contract_id, event.ledger, event.event_type,
     );
     send_sms(phone_number, &message, provider_api_key).await

@@ -18,8 +18,8 @@
 //! - **Bloom filter pre-filter**: fast in-memory check before any DB work (Issue #266).
 //!
 //! Deduplication priority (first match wins):
-//! 1. Bloom filter hit → skip, increment `soroban_pulse_bloom_filter_hits_total`
-//! 2. Content fingerprint hit (if enabled) → skip, increment `soroban_pulse_content_dedup_hits_total`
+//! 1. Bloom filter hit → skip, increment `stellarclassic_pulse_bloom_filter_hits_total`
+//! 2. Content fingerprint hit (if enabled) → skip, increment `stellarclassic_pulse_content_dedup_hits_total`
 //! 3. DB unique constraint violation → skip via ON CONFLICT DO NOTHING
 
 use serde_json::Value;

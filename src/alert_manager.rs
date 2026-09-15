@@ -152,7 +152,7 @@ impl AlertManager {
 
         // Record metrics
         m::counter!(
-            "soroban_pulse_alerts_total",
+            "stellarclassic_pulse_alerts_total",
             "severity" => alert.severity.as_str(),
             "component" => alert.component.clone()
         )

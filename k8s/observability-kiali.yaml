@@ -139,11 +139,11 @@ data:
         enabled: true
         in_cluster_url: http://jaeger-query.observability.svc.cluster.local:16686
         use_grpc: true
-        url: https://jaeger.soroban-pulse.example.com
+        url: https://jaeger.stellarclassic-pulse.example.com
       grafana:
         enabled: true
         in_cluster_url: http://grafana.monitoring.svc.cluster.local:3000
-        url: https://grafana.soroban-pulse.example.com
+        url: https://grafana.stellarclassic-pulse.example.com
     server:
       web_root: /kiali
       port: 20001
@@ -251,10 +251,10 @@ metadata:
 spec:
   tls:
   - hosts:
-    - kiali.soroban-pulse.example.com
+    - kiali.stellarclassic-pulse.example.com
     secretName: kiali-tls
   rules:
-  - host: kiali.soroban-pulse.example.com
+  - host: kiali.stellarclassic-pulse.example.com
     http:
       paths:
       - path: /

@@ -2,17 +2,17 @@
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
-  name: soroban-pulse-vs
+  name: stellarclassic-pulse-vs
   namespace: default
   labels:
-    app: soroban-pulse
+    app: stellarclassic-pulse
     component: service-mesh
 spec:
   hosts:
-  - "soroban-pulse.example.com"
-  - "api.soroban-pulse.example.com"
+  - "stellarclassic-pulse.example.com"
+  - "api.stellarclassic-pulse.example.com"
   gateways:
-  - soroban-pulse-gateway
+  - stellarclassic-pulse-gateway
   - mesh  # Allow internal mesh traffic
   http:
   # API v1 routing
@@ -21,7 +21,7 @@ spec:
         prefix: /api/v1/
     route:
     - destination:
-        host: soroban-pulse-service
+        host: stellarclassic-pulse-service
         port:
           number: 8080
         subset: v1
@@ -52,7 +52,7 @@ spec:
         prefix: /graphql
     route:
     - destination:
-        host: soroban-pulse-service
+        host: stellarclassic-pulse-service
         port:
           number: 8080
     timeout: 60s
@@ -66,7 +66,7 @@ spec:
         prefix: /api/v1/events/stream
     route:
     - destination:
-        host: soroban-pulse-service
+        host: stellarclassic-pulse-service
         port:
           number: 8080
     timeout: 0s  # No timeout for streaming
@@ -79,7 +79,7 @@ spec:
         exact: /ready
     route:
     - destination:
-        host: soroban-pulse-service
+        host: stellarclassic-pulse-service
         port:
           number: 8080
     timeout: 5s
@@ -90,7 +90,7 @@ spec:
         prefix: /ws
     route:
     - destination:
-        host: soroban-pulse-service
+        host: stellarclassic-pulse-service
         port:
           number: 8080
     timeout: 0s

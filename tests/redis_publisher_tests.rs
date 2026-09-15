@@ -1,8 +1,8 @@
 #[cfg(feature = "redis-queue")]
 mod redis_tests {
     use serde_json::json;
-    use soroban_pulse::models::SorobanEvent;
-    use soroban_pulse::queue_publisher::spawn_redis_publisher;
+    use stellarclassic_pulse::models::SorobanEvent;
+    use stellarclassic_pulse::queue_publisher::spawn_redis_publisher;
     use tokio::sync::broadcast;
 
     fn make_test_event() -> SorobanEvent {
@@ -22,7 +22,7 @@ mod redis_tests {
     async fn test_redis_publisher_publishes_event() {
         let redis_url =
             std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
-        let stream_key = "test_soroban_pulse_events".to_string();
+        let stream_key = "test_stellarclassic_pulse_events".to_string();
 
         let (event_tx, event_rx) = broadcast::channel(10);
 

@@ -2,17 +2,17 @@
 //!
 //! All tests use mock publishers — no real cloud credentials are required.
 
-use soroban_pulse::cloud_provider::{
+use stellarclassic_pulse::cloud_provider::{
     CloudEventPublisher, CloudProvider, CloudProviderConfig, CloudProviderRegistry,
     CloudPublishError, MockCloudPublisher,
 };
-use soroban_pulse::cloud_replication::{
+use stellarclassic_pulse::cloud_replication::{
     ConsistencyMode, ReplicationConfig, ReplicationManagerBuilder,
 };
-use soroban_pulse::deployment_orchestrator::{
+use stellarclassic_pulse::deployment_orchestrator::{
     estimate_cost, DeploymentOrchestrator, DeploymentStatus, DeploymentTarget, ResourceUsage,
 };
-use soroban_pulse::models::SorobanEvent;
+use stellarclassic_pulse::models::SorobanEvent;
 
 use serde_json::Value;
 use std::collections::HashMap;

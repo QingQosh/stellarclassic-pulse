@@ -1,4 +1,4 @@
-// k6 stress test for Soroban Pulse — issue #811
+// k6 stress test for StellarClassic Pulse — issue #811
 //
 // Progressively ramps load from 2× baseline (200 req/s) up to 10× (1 000 req/s)
 // to find the breaking point and measure degradation behaviour.

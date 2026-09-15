@@ -18,7 +18,7 @@
 //!   cargo run --bin gen_subscription_scaffold -- payment --channel-type email --with-tests
 //!   cargo run --bin gen_subscription_scaffold -- nft-sale --with-filter --with-tests --dry-run
 
-use soroban_pulse::codegen::{self, ChannelType, GeneratedFile, ScaffoldConfig};
+use stellarclassic_pulse::codegen::{self, ChannelType, GeneratedFile, ScaffoldConfig};
 use std::{path::PathBuf, process};
 
 fn main() {

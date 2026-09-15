@@ -14,9 +14,9 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use tower::ServiceExt;
 
-use soroban_pulse::config::{HealthState, IndexerState};
-use soroban_pulse::metrics::init_metrics;
-use soroban_pulse::routes::create_router;
+use stellarclassic_pulse::config::{HealthState, IndexerState};
+use stellarclassic_pulse::metrics::init_metrics;
+use stellarclassic_pulse::routes::create_router;
 
 const CONTRACT_A: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
 const CONTRACT_B: &str = "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
@@ -26,7 +26,7 @@ fn make_router(pool: PgPool) -> axum::Router {
     health_state.update_last_poll();
     let indexer_state = Arc::new(IndexerState::new());
     let prometheus_handle = init_metrics();
-    let config = soroban_pulse::config::Config::default();
+    let config = stellarclassic_pulse::config::Config::default();
     create_router(
         pool,
         Vec::new(),

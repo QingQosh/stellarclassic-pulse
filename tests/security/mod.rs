@@ -1,4 +1,4 @@
-//! Security test suite for SorobanPulse.
+//! Security test suite for StellarClassicPulse.
 //!
 //! This module organises all security tests into focused sub-modules:
 //! - [`owasp_tests`]      — OWASP Top 10 coverage

@@ -2,10 +2,10 @@
 apiVersion: linkerd.io/v1alpha2
 kind: ServiceProfile
 metadata:
-  name: soroban-pulse-service.default.svc.cluster.local
+  name: stellarclassic-pulse-service.default.svc.cluster.local
   namespace: default
   labels:
-    app: soroban-pulse
+    app: stellarclassic-pulse
     component: service-mesh
 spec:
   # Route definitions for better observability and traffic management

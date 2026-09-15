@@ -623,7 +623,7 @@ pub async fn setup_pagerduty_integration(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let id = Uuid::new_v4();
 
-    let service_name = req.service_name.unwrap_or_else(|| "Soroban Pulse".to_string());
+    let service_name = req.service_name.unwrap_or_else(|| "StellarClassic Pulse".to_string());
     let contract_filter: Vec<String> = req.contract_filter.unwrap_or_default();
     let event_type_filter: Vec<String> = req.event_type_filter.unwrap_or_default();
     let severity_mapping = req.severity_mapping.unwrap_or_else(|| {

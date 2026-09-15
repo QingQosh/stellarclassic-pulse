@@ -1,10 +1,10 @@
-# Optional TOML configuration file for Soroban Pulse.
+# Optional TOML configuration file for StellarClassic Pulse.
 # Copy to config.toml and set CONFIG_FILE=config.toml in your environment.
 #
 # Environment variables always take precedence over values in this file.
 # Keys mirror the environment variable names exactly.
 
-# DATABASE_URL = "postgres://<USER>:<PASSWORD>@localhost:5432/soroban_pulse"
+# DATABASE_URL = "postgres://<USER>:<PASSWORD>@localhost:5432/stellarclassic_pulse"
 # STELLAR_RPC_URL = "https://soroban-testnet.stellar.org"
 # PORT = "3000"
 # RUST_LOG = "info"

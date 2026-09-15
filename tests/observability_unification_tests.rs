@@ -6,7 +6,7 @@
 //! - Structured log configuration
 //! - Trace-log bridge
 
-use soroban_pulse::observability::{
+use stellarclassic_pulse::observability::{
     LogCorrelation, StructuredLogConfig, TraceLogBridge, UnifiedHealthReport,
 };
 use std::time::Duration;

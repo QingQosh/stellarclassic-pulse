@@ -2,13 +2,13 @@
 apiVersion: networking.istio.io/v1beta1
 kind: DestinationRule
 metadata:
-  name: soroban-pulse-dr
+  name: stellarclassic-pulse-dr
   namespace: default
   labels:
-    app: soroban-pulse
+    app: stellarclassic-pulse
     component: service-mesh
 spec:
-  host: soroban-pulse-service
+  host: stellarclassic-pulse-service
   
   # Traffic policy for all subsets
   trafficPolicy:
@@ -46,7 +46,7 @@ spec:
     # TLS settings for secure communication
     tls:
       mode: ISTIO_MUTUAL  # mTLS between services
-      sni: soroban-pulse-service.default.svc.cluster.local
+      sni: stellarclassic-pulse-service.default.svc.cluster.local
   
   # Subsets for canary deployments and versioning
   subsets:

@@ -2,9 +2,9 @@
  * Issue #995: Connection pool load testing scenario.
  *
  * Tests the database connection pool under sustained load to profile:
- * - Connection wait time (soroban_pulse_db_pool_wait_seconds)
- * - Queue depth (soroban_pulse_db_pool_queue_depth)
- * - Wait timeouts (soroban_pulse_db_pool_wait_timeout_total)
+ * - Connection wait time (stellarclassic_pulse_db_pool_wait_seconds)
+ * - Queue depth (stellarclassic_pulse_db_pool_queue_depth)
+ * - Wait timeouts (stellarclassic_pulse_db_pool_wait_timeout_total)
  * - Pool exhaustion behaviour
  *
  * Usage:
@@ -111,10 +111,10 @@ function scrapePoolMetrics() {
   };
 
   return {
-    utilization: parse('soroban_pulse_db_pool_utilization'),
-    queueDepth: parse('soroban_pulse_db_pool_queue_depth'),
-    waitTimeouts: parse('soroban_pulse_db_pool_wait_timeout_total'),
-    exhaustionAlerts: parse('soroban_pulse_db_pool_exhaustion_alerts_total'),
+    utilization: parse('stellarclassic_pulse_db_pool_utilization'),
+    queueDepth: parse('stellarclassic_pulse_db_pool_queue_depth'),
+    waitTimeouts: parse('stellarclassic_pulse_db_pool_wait_timeout_total'),
+    exhaustionAlerts: parse('stellarclassic_pulse_db_pool_exhaustion_alerts_total'),
   };
 }
 

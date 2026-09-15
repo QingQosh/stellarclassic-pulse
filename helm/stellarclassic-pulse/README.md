@@ -1,4 +1,4 @@
-# soroban-pulse Helm Chart
+# stellarclassic-pulse Helm Chart
 
 ## Secret Management
 
@@ -32,7 +32,7 @@ Set `existingSecret` to the name of a pre-created Secret. The chart will skip
 Secret creation and reference your Secret instead:
 
 ```yaml
-existingSecret: "soroban-pulse-credentials"
+existingSecret: "stellarclassic-pulse-credentials"
 ```
 
 The referenced Secret must contain at minimum:
@@ -41,7 +41,7 @@ The referenced Secret must contain at minimum:
 apiVersion: v1
 kind: Secret
 metadata:
-  name: soroban-pulse-credentials
+  name: stellarclassic-pulse-credentials
 type: Opaque
 stringData:
   DATABASE_URL: "postgres://user:password@host:5432/db"
@@ -57,27 +57,27 @@ stringData:
 apiVersion: external-secrets.io/v1beta1
 kind: ExternalSecret
 metadata:
-  name: soroban-pulse-credentials
+  name: stellarclassic-pulse-credentials
 spec:
   refreshInterval: 1h
   secretStoreRef:
     name: aws-secretsmanager
     kind: ClusterSecretStore
   target:
-    name: soroban-pulse-credentials
+    name: stellarclassic-pulse-credentials
   data:
     - secretKey: DATABASE_URL
       remoteRef:
-        key: soroban-pulse/database-url
+        key: stellarclassic-pulse/database-url
     - secretKey: API_KEY
       remoteRef:
-        key: soroban-pulse/api-key
+        key: stellarclassic-pulse/api-key
 ```
 
 Then in `values.yaml`:
 
 ```yaml
-existingSecret: "soroban-pulse-credentials"
+existingSecret: "stellarclassic-pulse-credentials"
 ```
 
 #### HashiCorp Vault (Agent Injector)
@@ -112,7 +112,7 @@ topologySpreadConstraints:
     whenUnsatisfiable: ScheduleAnyway
     labelSelector:
       matchLabels:
-        app.kubernetes.io/name: soroban-pulse
+        app.kubernetes.io/name: stellarclassic-pulse
 extraEnv:
   - name: LOG_LEVEL
     value: info
@@ -124,11 +124,11 @@ The deployment uses a rolling-update strategy, a non-root runtime security conte
 
 ```bash
 # Development (chart-managed secret — not for production)
-helm install soroban-pulse ./helm/soroban-pulse \
+helm install stellarclassic-pulse ./helm/stellarclassic-pulse \
   --set secrets.databaseUrl="postgres://user:pass@host/db" \
   --set secrets.apiKey="dev-key"
 
 # Production (pre-created secret)
-helm install soroban-pulse ./helm/soroban-pulse \
-  --set existingSecret="soroban-pulse-credentials"
+helm install stellarclassic-pulse ./helm/stellarclassic-pulse \
+  --set existingSecret="stellarclassic-pulse-credentials"
 ```

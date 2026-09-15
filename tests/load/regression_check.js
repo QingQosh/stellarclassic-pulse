@@ -1,4 +1,4 @@
-// Soroban Pulse — automated performance regression detection — issue #811
+// StellarClassic Pulse — automated performance regression detection — issue #811
 //
 // Reads a k6 JSON summary (produced via `handleSummary`) and compares it
 // against the baseline library (tests/load/baselines.json).  Exits with a

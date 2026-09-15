@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "soroban-pulse.fullname" . }}-config
+  name: {{ include "stellarclassic-pulse.fullname" . }}-config
   labels:
-    {{- include "soroban-pulse.labels" . | nindent 4 }}
+    {{- include "stellarclassic-pulse.labels" . | nindent 4 }}
 data:
   {{- range $key, $value := .Values.env }}
   {{ $key }}: {{ $value | quote }}

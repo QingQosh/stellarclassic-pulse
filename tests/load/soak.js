@@ -1,4 +1,4 @@
-// k6 soak test for Soroban Pulse — issue #811
+// k6 soak test for StellarClassic Pulse — issue #811
 //
 // Runs a sustained baseline load for up to 24 hours to detect memory leaks,
 // connection pool exhaustion, and gradual performance degradation.

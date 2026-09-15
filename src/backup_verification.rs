@@ -85,27 +85,27 @@ impl BackupVerificationMetrics {
         // Record metrics to Prometheus
         match report.status {
             BackupStatus::Success => {
-                m::counter!("soroban_pulse_backup_verification_success_total").increment(1);
-                m::gauge!("soroban_pulse_backup_size_bytes")
+                m::counter!("stellarclassic_pulse_backup_verification_success_total").increment(1);
+                m::gauge!("stellarclassic_pulse_backup_size_bytes")
                     .set(report.backup_size_bytes.unwrap_or(0) as f64);
                 if let Some(duration) = report.backup_duration_secs {
-                    m::gauge!("soroban_pulse_backup_duration_seconds").set(duration);
+                    m::gauge!("stellarclassic_pulse_backup_duration_seconds").set(duration);
                 }
                 if let Some(duration) = report.restore_duration_secs {
-                    m::gauge!("soroban_pulse_restore_duration_seconds").set(duration);
+                    m::gauge!("stellarclassic_pulse_restore_duration_seconds").set(duration);
                 }
                 if let Some(true) = report.row_count_match {
-                    m::counter!("soroban_pulse_backup_row_count_verified_total").increment(1);
+                    m::counter!("stellarclassic_pulse_backup_row_count_verified_total").increment(1);
                 }
                 if let Some(true) = report.checksum_match {
-                    m::counter!("soroban_pulse_backup_integrity_verified_total").increment(1);
+                    m::counter!("stellarclassic_pulse_backup_integrity_verified_total").increment(1);
                 }
                 if let Some(true) = report.encryption_verified {
-                    m::counter!("soroban_pulse_backup_encryption_verified_total").increment(1);
+                    m::counter!("stellarclassic_pulse_backup_encryption_verified_total").increment(1);
                 }
             }
             BackupStatus::Failed | BackupStatus::IntegrityFailed => {
-                m::counter!("soroban_pulse_backup_verification_failure_total").increment(1);
+                m::counter!("stellarclassic_pulse_backup_verification_failure_total").increment(1);
             }
             _ => {}
         }

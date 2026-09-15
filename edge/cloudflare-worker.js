@@ -1,10 +1,10 @@
 /**
- * Cloudflare Worker for SorobanPulse Edge Computing
+ * Cloudflare Worker for StellarClassicPulse Edge Computing
  * Provides caching, request routing, and edge processing
  */
 
 const CONFIG = {
-  originUrl: 'https://api.soroban-pulse.example.com',
+  originUrl: 'https://api.stellarclassic-pulse.example.com',
   cacheControl: {
     ledgers: 300,
     transactions: 600,

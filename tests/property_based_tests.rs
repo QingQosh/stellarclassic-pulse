@@ -1,4 +1,4 @@
-// Property-based tests for SorobanPulse (Issue #554)
+// Property-based tests for StellarClassicPulse (Issue #554)
 //
 // This module uses proptest to verify invariants and edge cases in:
 // - Pagination logic

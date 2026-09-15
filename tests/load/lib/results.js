@@ -460,7 +460,7 @@ if (require.main === module) {
 
       default: {
         console.log(`
-Soroban Pulse — result storage & trend analysis (issue #811)
+StellarClassic Pulse — result storage & trend analysis (issue #811)
 
 Usage:
   node tests/load/lib/results.js <subcommand> [args]

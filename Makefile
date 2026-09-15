@@ -13,7 +13,7 @@ test: ## Run the full test suite (requires DATABASE_URL)
 
 test-db: ## Start a test Postgres container and run the full test suite
 	docker compose -f docker-compose.test.yml up -d --wait
-	DATABASE_URL=postgres://postgres:postgres@localhost/soroban_pulse_test cargo test; \
+	DATABASE_URL=postgres://postgres:postgres@localhost/stellarclassic_pulse_test cargo test; \
 	  EXIT=$$?; \
 	  docker compose -f docker-compose.test.yml down; \
 	  exit $$EXIT
@@ -169,7 +169,7 @@ load-test: ## Run all load test scenarios sequentially and print summary (requir
 	@command -v k6 >/dev/null 2>&1 || { echo "k6 not installed. See https://k6.io/docs/get-started/installation/"; exit 1; }
 	@mkdir -p tests/load/results
 	@echo "================================================================"
-	@echo "  SorobanPulse Load Test Suite — Issue #923"
+	@echo "  StellarClassicPulse Load Test Suite — Issue #923"
 	@echo "  BASE_URL = $${BASE_URL:-http://localhost:3000}"
 	@echo "================================================================"
 	@echo ""

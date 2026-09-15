@@ -1,4 +1,4 @@
--- Example Lua transformation script for Soroban Pulse
+-- Example Lua transformation script for StellarClassic Pulse
 -- This script demonstrates various event transformation patterns
 
 -- Main transformation function called for each event

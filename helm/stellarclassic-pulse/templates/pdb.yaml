@@ -2,12 +2,12 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "soroban-pulse.fullname" . }}-pdb
+  name: {{ include "stellarclassic-pulse.fullname" . }}-pdb
   labels:
-    {{- include "soroban-pulse.labels" . | nindent 4 }}
+    {{- include "stellarclassic-pulse.labels" . | nindent 4 }}
 spec:
   minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
   selector:
     matchLabels:
-      {{- include "soroban-pulse.selectorLabels" . | nindent 6 }}
+      {{- include "stellarclassic-pulse.selectorLabels" . | nindent 6 }}
 {{- end }}

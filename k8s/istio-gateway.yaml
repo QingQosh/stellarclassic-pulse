@@ -2,10 +2,10 @@
 apiVersion: networking.istio.io/v1beta1
 kind: Gateway
 metadata:
-  name: soroban-pulse-gateway
+  name: stellarclassic-pulse-gateway
   namespace: default
   labels:
-    app: soroban-pulse
+    app: stellarclassic-pulse
     component: service-mesh
 spec:
   selector:
@@ -16,8 +16,8 @@ spec:
       name: http
       protocol: HTTP
     hosts:
-    - "soroban-pulse.example.com"
-    - "*.soroban-pulse.example.com"
+    - "stellarclassic-pulse.example.com"
+    - "*.stellarclassic-pulse.example.com"
     tls:
       httpsRedirect: true
   - port:
@@ -25,11 +25,11 @@ spec:
       name: https
       protocol: HTTPS
     hosts:
-    - "soroban-pulse.example.com"
-    - "*.soroban-pulse.example.com"
+    - "stellarclassic-pulse.example.com"
+    - "*.stellarclassic-pulse.example.com"
     tls:
       mode: SIMPLE
-      credentialName: soroban-pulse-tls-cert
+      credentialName: stellarclassic-pulse-tls-cert
       minProtocolVersion: TLSV1_3
   # gRPC support for high-performance API calls
   - port:
@@ -37,7 +37,7 @@ spec:
       name: grpc
       protocol: GRPC
     hosts:
-    - "grpc.soroban-pulse.example.com"
+    - "grpc.stellarclassic-pulse.example.com"
     tls:
       mode: SIMPLE
-      credentialName: soroban-pulse-grpc-tls-cert
+      credentialName: stellarclassic-pulse-grpc-tls-cert

@@ -48,11 +48,11 @@ pub struct IndexScanStats {
 /// Extracted as a pure function so it can be unit-tested without a DB.
 pub fn emit_index_metrics(stats: &[IndexScanStats]) {
     let unused_count = stats.iter().filter(|s| s.scan_count == 0).count();
-    m::gauge!("soroban_pulse_unused_indexes_total").set(unused_count as f64);
+    m::gauge!("stellarclassic_pulse_unused_indexes_total").set(unused_count as f64);
 
     for stat in stats {
         m::gauge!(
-            "soroban_pulse_index_scan_count",
+            "stellarclassic_pulse_index_scan_count",
             "table" => stat.table.clone(),
             "index" => stat.index.clone()
         )
@@ -396,18 +396,18 @@ pub fn emit_fragmentation_metrics(infos: &[IndexFragmentationInfo]) {
         .iter()
         .filter(|i| i.bloat_ratio.unwrap_or(0.0) > 0.2)
         .count();
-    m::gauge!("soroban_pulse_fragmented_indexes_total").set(fragmented_count as f64);
+    m::gauge!("stellarclassic_pulse_fragmented_indexes_total").set(fragmented_count as f64);
 
     for info in infos {
         m::gauge!(
-            "soroban_pulse_index_bloat_ratio",
+            "stellarclassic_pulse_index_bloat_ratio",
             "table" => info.table_name.clone(),
             "index" => info.index_name.clone(),
         )
         .set(info.bloat_ratio.unwrap_or(0.0));
 
         m::gauge!(
-            "soroban_pulse_index_size_bytes",
+            "stellarclassic_pulse_index_size_bytes",
             "table" => info.table_name.clone(),
             "index" => info.index_name.clone(),
         )
@@ -415,7 +415,7 @@ pub fn emit_fragmentation_metrics(infos: &[IndexFragmentationInfo]) {
 
         if let Some(dead) = info.dead_tuples {
             m::gauge!(
-                "soroban_pulse_index_dead_tuples",
+                "stellarclassic_pulse_index_dead_tuples",
                 "table" => info.table_name.clone(),
                 "index" => info.index_name.clone(),
             )

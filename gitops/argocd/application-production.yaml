@@ -1,6 +1,6 @@
 # ArgoCD Application for the production environment. Deploys the
-# helm/soroban-pulse chart from this repository's `main` branch into the
-# soroban-pulse-production namespace, with automated sync and self-heal
+# helm/stellarclassic-pulse chart from this repository's `main` branch into the
+# stellarclassic-pulse-production namespace, with automated sync and self-heal
 # enabled (drift is detected AND auto-corrected — see docs/gitops.md,
 # "Add manual sync with drift detection", for the tradeoffs).
 #
@@ -9,7 +9,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: soroban-pulse-production
+  name: stellarclassic-pulse-production
   namespace: argocd
   # Prevents accidental deletion via `kubectl delete` without also removing
   # this finalizer's intent — ArgoCD will cascade-delete the deployed
@@ -18,15 +18,15 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
-  project: soroban-pulse
+  project: stellarclassic-pulse
 
   source:
     # Placeholder — replace with the actual repository URL used in your
     # ArgoCD instance (must match an entry in gitops/argocd/project.yaml's
     # sourceRepos).
-    repoURL: https://github.com/Soroban-Pulse/SorobanPulse.git
+    repoURL: https://github.com/Soroban-Pulse/StellarClassicPulse.git
     targetRevision: main
-    path: helm/soroban-pulse
+    path: helm/stellarclassic-pulse
     helm:
       # Production overrides the chart defaults in values.yaml (e.g.
       # replicaCount, resources, existingSecret) via an environment-specific
@@ -39,13 +39,13 @@ spec:
       # production-safe overrides inline instead of via a missing file.
       # parameters:
       #   - name: existingSecret
-      #     value: soroban-pulse-production-credentials
+      #     value: stellarclassic-pulse-production-credentials
       #   - name: replicaCount
       #     value: "3"
 
   destination:
     server: https://kubernetes.default.svc
-    namespace: soroban-pulse-production
+    namespace: stellarclassic-pulse-production
 
   syncPolicy:
     automated:

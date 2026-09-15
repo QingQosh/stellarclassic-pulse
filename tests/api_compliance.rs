@@ -1,6 +1,6 @@
 //! # API Compliance Test Suite
 //!
-//! Automated tests verifying that the SorobanPulse API conforms to its
+//! Automated tests verifying that the StellarClassicPulse API conforms to its
 //! OpenAPI specification, REST best practices, and internal standards.
 //!
 //! ## Organisation
@@ -34,7 +34,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use tower::ServiceExt;
 
-use soroban_pulse::{
+use stellarclassic_pulse::{
     config::{Config, HealthState, IndexerState},
     metrics::init_metrics,
     routes::create_router,
@@ -176,7 +176,7 @@ mod openapi_compliance {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn openapi_spec_title_is_soroban_pulse(pool: PgPool) {
+    async fn openapi_spec_title_is_stellarclassic_pulse(pool: PgPool) {
         let app = make_router(pool);
         let resp = app
             .oneshot(

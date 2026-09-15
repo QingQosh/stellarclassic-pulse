@@ -5,10 +5,10 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use tower::ServiceExt;
 
-use soroban_pulse::config::{HealthState, IndexerState};
-use soroban_pulse::metrics::init_metrics;
-use soroban_pulse::routes::create_router_with_tx;
-use soroban_pulse::schema_validator::SchemaValidator;
+use stellarclassic_pulse::config::{HealthState, IndexerState};
+use stellarclassic_pulse::metrics::init_metrics;
+use stellarclassic_pulse::routes::create_router_with_tx;
+use stellarclassic_pulse::schema_validator::SchemaValidator;
 
 async fn make_router_with_schema(pool: PgPool, api_key: Option<String>) -> axum::Router {
     let health_state = Arc::new(HealthState::new(60));
@@ -21,7 +21,7 @@ async fn make_router_with_schema(pool: PgPool, api_key: Option<String>) -> axum:
     let schema_validator = Arc::new(SchemaValidator::new(pool.clone()));
     schema_validator.load_schemas().await.unwrap();
 
-    let config = soroban_pulse::config::Config {
+    let config = stellarclassic_pulse::config::Config {
         database_url: String::new(),
         database_replica_url: None,
         stellar_rpc_url: String::new(),
@@ -47,7 +47,7 @@ async fn make_router_with_schema(pool: PgPool, api_key: Option<String>) -> axum:
         indexer_error_backoff_ms: 10000,
         sse_keepalive_interval_ms: 15000,
         sse_max_connections: 1000,
-        environment: soroban_pulse::config::Environment::Development,
+        environment: stellarclassic_pulse::config::Environment::Development,
         max_body_size_bytes: 1024 * 1024,
         log_sample_rate: 1,
         indexer_event_types: Vec::new(),
@@ -276,7 +276,7 @@ async fn invalid_schema_rejected(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn schema_health_check_runs_without_error(pool: PgPool) {
     // Should not panic. All canonical queries run against the test schema.
-    soroban_pulse::index_monitor::run_schema_health_check(&pool).await;
+    stellarclassic_pulse::index_monitor::run_schema_health_check(&pool).await;
 }
 
 /// Verify the health check correctly reports zero unused indexes on a fresh
@@ -285,10 +285,10 @@ async fn schema_health_check_runs_without_error(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn schema_health_check_emits_gauges_on_fresh_schema(pool: PgPool) {
     // A fresh schema has idx_scan = 0 for all indexes (no traffic yet).
-    // The function should emit soroban_pulse_schema_unused_indexes_total >= 0
+    // The function should emit stellarclassic_pulse_schema_unused_indexes_total >= 0
     // without error.  We cannot assert the exact gauge value here without a
     // metrics recorder, but we can confirm no panic and a clean return.
-    soroban_pulse::index_monitor::run_schema_health_check(&pool).await;
+    stellarclassic_pulse::index_monitor::run_schema_health_check(&pool).await;
 }
 
 /// Verify the health check handles a schema with pre-created future partitions
@@ -299,6 +299,6 @@ async fn schema_health_check_partition_check_does_not_panic(pool: PgPool) {
     // run_schema_health_check checks whether the next 2 months are present.
     // On today's date (2026-07-28) both 2026-08 and 2026-09 exist, so
     // missing_future_partitions should be 0.
-    soroban_pulse::index_monitor::run_schema_health_check(&pool).await;
+    stellarclassic_pulse::index_monitor::run_schema_health_check(&pool).await;
     // No assertion needed beyond no panic — gauge value verified via Prometheus.
 }

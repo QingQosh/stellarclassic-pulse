@@ -1105,7 +1105,7 @@ mod tests {
         let config = VapidConfig {
             public_key: "BNcRd…test-key".to_string(),
             private_key: "priv-key".to_string(),
-            subject: "mailto:admin@sorobanpulse.io".to_string(),
+            subject: "mailto:admin@stellarclassicpulse.io".to_string(),
         };
         let header = build_vapid_auth_header(
             &config,

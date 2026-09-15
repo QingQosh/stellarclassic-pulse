@@ -4,9 +4,9 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use tower::ServiceExt;
 
-use soroban_pulse::config::{HealthState, IndexerState};
-use soroban_pulse::metrics::init_metrics;
-use soroban_pulse::routes::create_router;
+use stellarclassic_pulse::config::{HealthState, IndexerState};
+use stellarclassic_pulse::metrics::init_metrics;
+use stellarclassic_pulse::routes::create_router;
 
 fn make_router(pool: PgPool, api_key: Option<String>) -> axum::Router {
     let health_state = Arc::new(HealthState::new(60));
@@ -14,7 +14,7 @@ fn make_router(pool: PgPool, api_key: Option<String>) -> axum::Router {
     let indexer_state = Arc::new(IndexerState::new());
     let prometheus_handle = init_metrics();
     let api_keys = api_key.into_iter().collect();
-    let config = soroban_pulse::config::Config::default();
+    let config = stellarclassic_pulse::config::Config::default();
     create_router(
         pool,
         api_keys,
@@ -175,7 +175,7 @@ async fn metrics_endpoint_returns_prometheus_text(pool: PgPool) {
             .to_vec(),
     )
     .unwrap();
-    assert!(body.contains("soroban_pulse"));
+    assert!(body.contains("stellarclassic_pulse"));
 }
 
 // --- Issue #185: from_ledger / to_ledger on contract endpoint ---
@@ -1033,7 +1033,7 @@ async fn openapi_json_returns_valid_spec(pool: PgPool) {
         serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert!(body.get("paths").is_some());
     assert!(body.get("info").is_some());
-    assert_eq!(body["info"]["title"], "Soroban Pulse API");
+    assert_eq!(body["info"]["title"], "StellarClassic Pulse API");
 }
 
 // --- GET /v1/contracts endpoint ---

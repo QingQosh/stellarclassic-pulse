@@ -5,16 +5,16 @@ use std::sync::Arc;
 use std::time::Duration;
 use tower::ServiceExt;
 
-use soroban_pulse::config::{HealthState, IndexerState};
-use soroban_pulse::metrics::init_metrics;
-use soroban_pulse::routes::create_router;
+use stellarclassic_pulse::config::{HealthState, IndexerState};
+use stellarclassic_pulse::metrics::init_metrics;
+use stellarclassic_pulse::routes::create_router;
 
 fn make_router(pool: PgPool) -> axum::Router {
     let health_state = Arc::new(HealthState::new(60));
     health_state.update_last_poll();
     let indexer_state = Arc::new(IndexerState::new());
     let prometheus_handle = init_metrics();
-    let config = soroban_pulse::config::Config::default();
+    let config = stellarclassic_pulse::config::Config::default();
     create_router(
         pool,
         vec![],

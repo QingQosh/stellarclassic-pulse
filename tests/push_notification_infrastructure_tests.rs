@@ -7,7 +7,7 @@
 //! - Notification preference management (quiet hours, validation)
 //! - Web Push subscription serialization
 
-use soroban_pulse::push_notification::{
+use stellarclassic_pulse::push_notification::{
     build_vapid_auth_header, DeliveryAnalytics, DeviceType, NotificationPreferences,
     PushWorkerConfig, RetryConfig, VapidConfig, WebPushKeys, WebPushSubscription,
 };
@@ -29,7 +29,7 @@ fn vapid_auth_header_format() {
     let config = VapidConfig {
         public_key: "BNcRdTEST".to_string(),
         private_key: "privkey".to_string(),
-        subject: "mailto:test@sorobanpulse.io".to_string(),
+        subject: "mailto:test@stellarclassicpulse.io".to_string(),
     };
     let header =
         build_vapid_auth_header(&config, "https://fcm.googleapis.com/push/v1/token123").unwrap();

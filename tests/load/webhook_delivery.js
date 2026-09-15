@@ -8,7 +8,7 @@
 //   - HMAC signature presence on outgoing webhook calls
 //
 // Because k6 cannot act as a webhook receiver directly, this script drives
-// the Soroban Pulse API and polls the admin/metrics endpoint to observe
+// the StellarClassic Pulse API and polls the admin/metrics endpoint to observe
 // webhook failure counters and queue depth.
 //
 // For end-to-end delivery latency you need a real (or stubbed) webhook
@@ -126,8 +126,8 @@ export function observeMetrics() {
   errorRate.add(!ok);
 
   if (ok && res.body) {
-    // Extract soroban_pulse_webhook_failures_total from Prometheus text format
-    const match = res.body.match(/soroban_pulse_webhook_failures_total\s+(\d+)/);
+    // Extract stellarclassic_pulse_webhook_failures_total from Prometheus text format
+    const match = res.body.match(/stellarclassic_pulse_webhook_failures_total\s+(\d+)/);
     if (match) {
       webhookFailures.add(parseInt(match[1], 10));
     }

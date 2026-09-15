@@ -27,7 +27,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  DATABASE_URL: postgres://postgres:postgres@localhost/soroban_pulse_test
+  DATABASE_URL: postgres://postgres:postgres@localhost/stellarclassic_pulse_test
   STELLAR_RPC_URL: http://localhost:8000
   # Score thresholds — also documented in mutants.toml
   MUTATION_SCORE_MINIMUM: "70"
@@ -44,7 +44,7 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_DB: soroban_pulse_test
+          POSTGRES_DB: stellarclassic_pulse_test
           POSTGRES_PASSWORD: postgres
         options: >-
           --health-cmd pg_isready

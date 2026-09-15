@@ -13,13 +13,13 @@
 //! ## Metrics emitted
 //! | Name | Kind | Description |
 //! |------|------|-------------|
-//! | `soroban_pulse_pool_queue_depth` | Gauge | Pending acquisition requests |
-//! | `soroban_pulse_pool_acquire_timeout_total` | Counter | Acquisition timeouts |
-//! | `soroban_pulse_pool_connection_age_seconds` | Histogram | Age of recycled connections |
-//! | `soroban_pulse_pool_health_check_failures_total` | Counter | Failed keepalive pings |
-//! | `soroban_pulse_pool_stale_cleaned_total` | Counter | Stale connections removed |
-//! | `soroban_pulse_pool_adaptive_target_min` | Gauge | Recommended min_connections |
-//! | `soroban_pulse_pool_adaptive_target_max` | Gauge | Recommended max_connections |
+//! | `stellarclassic_pulse_pool_queue_depth` | Gauge | Pending acquisition requests |
+//! | `stellarclassic_pulse_pool_acquire_timeout_total` | Counter | Acquisition timeouts |
+//! | `stellarclassic_pulse_pool_connection_age_seconds` | Histogram | Age of recycled connections |
+//! | `stellarclassic_pulse_pool_health_check_failures_total` | Counter | Failed keepalive pings |
+//! | `stellarclassic_pulse_pool_stale_cleaned_total` | Counter | Stale connections removed |
+//! | `stellarclassic_pulse_pool_adaptive_target_min` | Gauge | Recommended min_connections |
+//! | `stellarclassic_pulse_pool_adaptive_target_max` | Gauge | Recommended max_connections |
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};

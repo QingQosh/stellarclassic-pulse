@@ -23,12 +23,12 @@
 
 use axum::{body::Body, http::StatusCode, routing::get, Router};
 use chrono::{Duration, Utc};
-use soroban_pulse::middleware::auth::{
+use stellarclassic_pulse::middleware::auth::{
     admin_auth_middleware, auth_middleware, hash_api_key, key_matches_any, AdminAuthState,
     AuthState,
 };
-use soroban_pulse::middleware::security_headers::security_headers_middleware;
-use soroban_pulse::zero_trust::{AccessDecision, AccessLogger, RequestContext, RequestSignature};
+use stellarclassic_pulse::middleware::security_headers::security_headers_middleware;
+use stellarclassic_pulse::zero_trust::{AccessDecision, AccessLogger, RequestContext, RequestSignature};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tower::ServiceExt;

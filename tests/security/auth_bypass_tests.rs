@@ -13,7 +13,7 @@
 //! - Key hashing correctness
 
 use axum::{body::Body, http::StatusCode, routing::get, Router};
-use soroban_pulse::middleware::auth::{
+use stellarclassic_pulse::middleware::auth::{
     admin_auth_middleware, auth_middleware, hash_api_key, key_matches_any, AdminAuthState,
     AuthState, TenantId,
 };

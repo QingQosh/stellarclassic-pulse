@@ -343,7 +343,7 @@ impl DbIsolation {
     pub async fn new() -> Self {
         let schema_name = format!("test_{}", Uuid::new_v4().simple());
         let database_url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/soroban_pulse_test".to_string());
+            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/stellarclassic_pulse_test".to_string());
 
         let pool = sqlx::PgPool::connect(&database_url)
             .await
@@ -563,7 +563,7 @@ mod tests {
 
     #[test]
     fn test_cache_round_trip() {
-        let dir = std::env::temp_dir().join(format!("soroban_pulse_test_{}", Uuid::new_v4().simple()));
+        let dir = std::env::temp_dir().join(format!("stellarclassic_pulse_test_{}", Uuid::new_v4().simple()));
         let runner = ParallelTestRunner::new(&dir);
         let result = TestResult {
             name: "my_test".to_string(),

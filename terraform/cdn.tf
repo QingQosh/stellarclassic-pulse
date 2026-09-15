@@ -1,15 +1,15 @@
-# CloudFront CDN Configuration for SorobanPulse
+# CloudFront CDN Configuration for StellarClassicPulse
 
-resource "aws_cloudfront_distribution" "soroban_pulse" {
+resource "aws_cloudfront_distribution" "stellarclassic_pulse" {
   enabled             = true
   is_ipv6_enabled     = true
-  comment             = "SorobanPulse API CDN"
+  comment             = "StellarClassicPulse API CDN"
   default_root_object = ""
   price_class         = "PriceClass_All"
 
   origin {
     domain_name = var.origin_domain
-    origin_id   = "soroban-pulse-origin"
+    origin_id   = "stellarclassic-pulse-origin"
 
     custom_origin_config {
       http_port              = 80
@@ -27,7 +27,7 @@ resource "aws_cloudfront_distribution" "soroban_pulse" {
   default_cache_behavior {
     allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
     cached_methods   = ["GET", "HEAD", "OPTIONS"]
-    target_origin_id = "soroban-pulse-origin"
+    target_origin_id = "stellarclassic-pulse-origin"
 
     forwarded_values {
       query_string = true
@@ -50,7 +50,7 @@ resource "aws_cloudfront_distribution" "soroban_pulse" {
     path_pattern     = "/api/v1/ledgers/*"
     allowed_methods  = ["GET", "HEAD", "OPTIONS"]
     cached_methods   = ["GET", "HEAD"]
-    target_origin_id = "soroban-pulse-origin"
+    target_origin_id = "stellarclassic-pulse-origin"
 
     forwarded_values {
       query_string = true
@@ -72,7 +72,7 @@ resource "aws_cloudfront_distribution" "soroban_pulse" {
     path_pattern     = "/api/v1/transactions/*"
     allowed_methods  = ["GET", "HEAD", "OPTIONS"]
     cached_methods   = ["GET", "HEAD"]
-    target_origin_id = "soroban-pulse-origin"
+    target_origin_id = "stellarclassic-pulse-origin"
 
     forwarded_values {
       query_string = true
@@ -94,7 +94,7 @@ resource "aws_cloudfront_distribution" "soroban_pulse" {
     path_pattern     = "/api/v1/events/stream*"
     allowed_methods  = ["GET", "HEAD"]
     cached_methods   = ["GET", "HEAD"]
-    target_origin_id = "soroban-pulse-origin"
+    target_origin_id = "stellarclassic-pulse-origin"
 
     forwarded_values {
       query_string = true
@@ -123,15 +123,15 @@ resource "aws_cloudfront_distribution" "soroban_pulse" {
   }
 
   tags = {
-    Name        = "soroban-pulse-cdn"
+    Name        = "stellarclassic-pulse-cdn"
     Environment = var.environment
     ManagedBy   = "terraform"
   }
 }
 
 # CloudFront Origin Access Identity
-resource "aws_cloudfront_origin_access_identity" "soroban_pulse" {
-  comment = "SorobanPulse CDN OAI"
+resource "aws_cloudfront_origin_access_identity" "stellarclassic_pulse" {
+  comment = "StellarClassicPulse CDN OAI"
 }
 
 # Route53 alias for CDN
@@ -141,18 +141,18 @@ resource "aws_route53_record" "cdn" {
   type    = "A"
 
   alias {
-    name                   = aws_cloudfront_distribution.soroban_pulse.domain_name
-    zone_id                = aws_cloudfront_distribution.soroban_pulse.hosted_zone_id
+    name                   = aws_cloudfront_distribution.stellarclassic_pulse.domain_name
+    zone_id                = aws_cloudfront_distribution.stellarclassic_pulse.hosted_zone_id
     evaluate_target_health = false
   }
 }
 
 output "cloudfront_distribution_id" {
-  value       = aws_cloudfront_distribution.soroban_pulse.id
+  value       = aws_cloudfront_distribution.stellarclassic_pulse.id
   description = "CloudFront distribution ID"
 }
 
 output "cloudfront_domain_name" {
-  value       = aws_cloudfront_distribution.soroban_pulse.domain_name
+  value       = aws_cloudfront_distribution.stellarclassic_pulse.domain_name
   description = "CloudFront distribution domain name"
 }

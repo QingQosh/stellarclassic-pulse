@@ -15,7 +15,7 @@ variable "aws_region" {
 variable "container_image" {
   description = "Docker image URI for the application container."
   type        = string
-  default     = "ghcr.io/soroban-pulse/sorobanpulse:latest"
+  default     = "ghcr.io/stellarclassic-pulse/stellarclassicpulse:latest"
 }
 
 variable "task_cpu" {

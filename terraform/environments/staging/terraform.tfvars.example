@@ -1,6 +1,6 @@
 # =============================================================================
 # Staging Environment — terraform.tfvars.example
-# SorobanPulse (Issue #650)
+# StellarClassicPulse (Issue #650)
 #
 # Copy to terraform.tfvars and fill in real values before applying.
 # NEVER commit terraform.tfvars — it may contain sensitive data.
@@ -8,7 +8,7 @@
 
 aws_region   = "us-east-1"
 environment  = "staging"
-project_name = "soroban-pulse"
+project_name = "stellarclassic-pulse"
 
 # ---------------------------------------------------------------------------
 # Networking
@@ -25,7 +25,7 @@ single_nat_gateway   = true   # Single NAT to reduce cost in staging
 # ---------------------------------------------------------------------------
 db_instance_class              = "db.t3.small"
 db_engine_version              = "16.3"
-db_name                        = "soroban_pulse_staging"
+db_name                        = "stellarclassic_pulse_staging"
 db_username                    = "soroban_admin"
 db_allocated_storage           = 20
 db_max_allocated_storage       = 50

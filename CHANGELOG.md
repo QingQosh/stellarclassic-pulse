@@ -12,10 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Email notification feature for event alerts with batching (one email per minute maximum)
 - Email configuration via `EMAIL_SMTP_HOST`, `EMAIL_SMTP_PORT`, `EMAIL_SMTP_USER`, `EMAIL_SMTP_PASSWORD`, `EMAIL_FROM`, `EMAIL_TO`, and `EMAIL_CONTRACT_FILTER` environment variables
 - Email notifications can be filtered by contract ID using `EMAIL_CONTRACT_FILTER`
-- Prometheus metric `soroban_pulse_email_failures_total` for monitoring email delivery failures
+- Prometheus metric `stellarclassic_pulse_email_failures_total` for monitoring email delivery failures
 - Documentation for email notifications in `docs/email-notifications.md`
 - Contract ID format validation for SSE stream endpoint (`/v1/events/stream`)
-- Database pool metrics to Prometheus endpoint (`soroban_pulse_db_pool_size`, `soroban_pulse_db_pool_idle`, `soroban_pulse_db_pool_max`)
+- Database pool metrics to Prometheus endpoint (`stellarclassic_pulse_db_pool_size`, `stellarclassic_pulse_db_pool_idle`, `stellarclassic_pulse_db_pool_max`)
 - Separate CI job for integration tests with real PostgreSQL
 - CHANGELOG.md and release process documentation
 - Server-Sent Events (SSE) streaming with keep-alive pings and automatic reconnection support
@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2026-04-21
 
 ### Added
-- Initial release of Soroban Pulse
+- Initial release of StellarClassic Pulse
 - Event indexing from Soroban RPC
 - REST API for querying indexed events
 - Server-Sent Events (SSE) stream for real-time event notifications
@@ -55,5 +55,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docker and Kubernetes deployment configurations
 - Comprehensive test suite with integration tests
 
-[Unreleased]: https://github.com/Soroban-Pulse/SorobanPulse/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/Soroban-Pulse/SorobanPulse/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Soroban-Pulse/StellarClassicPulse/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Soroban-Pulse/StellarClassicPulse/releases/tag/v0.1.0

@@ -358,7 +358,7 @@ pub fn scan_for_dst_transitions(
 // Timezone handling documentation (Task 5) — exposed as a public struct
 // ---------------------------------------------------------------------------
 
-/// Documents the timezone handling strategy used by SorobanPulse.
+/// Documents the timezone handling strategy used by StellarClassicPulse.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimezoneHandlingDoc {
     pub storage_format: &'static str,

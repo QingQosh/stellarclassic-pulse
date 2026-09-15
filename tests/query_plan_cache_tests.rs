@@ -2,8 +2,8 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Instant;
 
-use soroban_pulse::config::{HealthState, IndexerState};
-use soroban_pulse::metrics::init_metrics;
+use stellarclassic_pulse::config::{HealthState, IndexerState};
+use stellarclassic_pulse::metrics::init_metrics;
 
 #[sqlx::test(migrations = "./migrations")]
 async fn prepared_statement_execution_succeeds(pool: PgPool) {

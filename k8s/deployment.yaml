@@ -1,15 +1,15 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: soroban-pulse
+  name: stellarclassic-pulse
   labels:
-    app: soroban-pulse
+    app: stellarclassic-pulse
     version: v1
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: soroban-pulse
+      app: stellarclassic-pulse
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -18,7 +18,7 @@ spec:
   template:
     metadata:
       labels:
-        app: soroban-pulse
+        app: stellarclassic-pulse
         version: v1
       annotations:
         prometheus.io/scrape: "true"
@@ -31,8 +31,8 @@ spec:
         runAsUser: 1000
         fsGroup: 1000
       containers:
-        - name: soroban-pulse
-          image: soroban-pulse:latest
+        - name: stellarclassic-pulse
+          image: stellarclassic-pulse:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -47,9 +47,9 @@ spec:
               memory: "512Mi"
           envFrom:
             - configMapRef:
-                name: soroban-pulse-config
+                name: stellarclassic-pulse-config
             - secretRef:
-                name: soroban-pulse-secrets
+                name: stellarclassic-pulse-secrets
           livenessProbe:
             httpGet:
               path: /healthz/live
@@ -81,4 +81,4 @@ spec:
       volumes:
         - name: config-volume
           configMap:
-            name: soroban-pulse-config-files
+            name: stellarclassic-pulse-config-files

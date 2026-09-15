@@ -7,7 +7,7 @@
 //! - Access control policy evaluation
 //! - Access logging and audit trail
 
-use soroban_pulse::zero_trust::{
+use stellarclassic_pulse::zero_trust::{
     AccessDecision, AccessLogger, ApiKeySet, PolicyEvaluator, RequestContext, RequestSignature,
 };
 

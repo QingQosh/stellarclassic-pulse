@@ -9,9 +9,9 @@
 mod test_helpers;
 use test_helpers::wait_for;
 
-use soroban_pulse::config::{Config, HealthState, IndexerState};
-use soroban_pulse::indexer::{Indexer, RpcClient};
-use soroban_pulse::models::{GetEventsResult, SorobanEvent};
+use stellarclassic_pulse::config::{Config, HealthState, IndexerState};
+use stellarclassic_pulse::indexer::{Indexer, RpcClient};
+use stellarclassic_pulse::models::{GetEventsResult, SorobanEvent};
 use sqlx::PgPool;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -111,7 +111,7 @@ fn make_indexer(pool: PgPool, rpc: MockRpcClient) -> Indexer<MockRpcClient> {
             indexer_error_backoff_ms: 10000,
             sse_keepalive_interval_ms: 15000,
             sse_max_connections: 1000,
-            environment: soroban_pulse::config::Environment::Development,
+            environment: stellarclassic_pulse::config::Environment::Development,
             max_body_size_bytes: 1024 * 1024,
             log_sample_rate: 1,
             event_data_encryption_key: None,
@@ -214,10 +214,10 @@ async fn http_server_available_during_indexer_stall(pool: PgPool) {
 
     let health_state = Arc::new(HealthState::new(3600)); // very long timeout — not stalled
     let indexer_state = Arc::new(IndexerState::new());
-    let prometheus_handle = soroban_pulse::metrics::init_metrics();
+    let prometheus_handle = stellarclassic_pulse::metrics::init_metrics();
     let config = Config::default();
 
-    let app = soroban_pulse::routes::create_router(
+    let app = stellarclassic_pulse::routes::create_router(
         pool,
         vec![],
         &[],
@@ -256,10 +256,10 @@ async fn health_reports_degraded_when_indexer_stalled(pool: PgPool) {
     // stall_timeout_secs = 1 and last_poll never updated → stalled immediately
     let health_state = Arc::new(HealthState::new(1));
     let indexer_state = Arc::new(IndexerState::new());
-    let prometheus_handle = soroban_pulse::metrics::init_metrics();
+    let prometheus_handle = stellarclassic_pulse::metrics::init_metrics();
     let config = Config::default();
 
-    let app = soroban_pulse::routes::create_router(
+    let app = stellarclassic_pulse::routes::create_router(
         pool,
         vec![],
         &[],
@@ -321,10 +321,10 @@ async fn health_reports_ok_after_indexer_resumes(pool: PgPool) {
     health_state.update_last_poll();
 
     let indexer_state = Arc::new(IndexerState::new());
-    let prometheus_handle = soroban_pulse::metrics::init_metrics();
+    let prometheus_handle = stellarclassic_pulse::metrics::init_metrics();
     let config = Config::default();
 
-    let app = soroban_pulse::routes::create_router(
+    let app = stellarclassic_pulse::routes::create_router(
         pool,
         vec![],
         &[],

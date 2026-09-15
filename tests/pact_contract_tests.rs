@@ -1,7 +1,7 @@
-/// API Contract Tests for SorobanPulse
+/// API Contract Tests for StellarClassicPulse
 ///
 /// This module contains Pact contract tests that verify API compatibility between
-/// the SorobanPulse service and its consumers (web clients, mobile apps, SDKs).
+/// the StellarClassicPulse service and its consumers (web clients, mobile apps, SDKs).
 ///
 /// Pact testing ensures that:
 /// 1. Request/response schemas match between client and server

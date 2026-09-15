@@ -1,5 +1,5 @@
 # =============================================================================
-# Provider Configuration — SorobanPulse (Issue #650)
+# Provider Configuration — StellarClassicPulse (Issue #650)
 #
 # Configures the AWS provider and Terraform backend settings.
 # All resources are created in the configured AWS region.
@@ -23,11 +23,11 @@ terraform {
   # Replace the bucket name and table name for your account before first use.
   # See docs/terraform.md for bootstrap instructions.
   backend "s3" {
-    bucket         = "soroban-pulse-terraform-state"
-    key            = "soroban-pulse/terraform.tfstate"
+    bucket         = "stellarclassic-pulse-terraform-state"
+    key            = "stellarclassic-pulse/terraform.tfstate"
     region         = "us-east-1"
     encrypt        = true
-    dynamodb_table = "soroban-pulse-terraform-locks"
+    dynamodb_table = "stellarclassic-pulse-terraform-locks"
   }
 }
 
@@ -36,7 +36,7 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Project     = "SorobanPulse"
+      Project     = "StellarClassicPulse"
       ManagedBy   = "Terraform"
       Environment = var.environment
     }

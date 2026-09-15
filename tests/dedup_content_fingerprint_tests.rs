@@ -11,7 +11,7 @@
 
 use sqlx::PgPool;
 
-use soroban_pulse::dedup::{compute_fingerprint, is_content_duplicate};
+use stellarclassic_pulse::dedup::{compute_fingerprint, is_content_duplicate};
 
 const CONTRACT_ID: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
 

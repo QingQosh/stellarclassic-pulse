@@ -1,5 +1,5 @@
 image:
-  repository: soroban-pulse
+  repository: stellarclassic-pulse
   tag: latest
   pullPolicy: IfNotPresent
 imagePullSecrets: []
@@ -62,7 +62,7 @@ env:
   CONTRACT_COUNT_CACHE_TTL_SECS: "30"
 
 # Sensitive values — injected into a Kubernetes Secret.
-# For production, prefer existingSecret (see helm/soroban-pulse/README.md).
+# For production, prefer existingSecret (see helm/stellarclassic-pulse/README.md).
 # Never commit real credentials here; pass them via --set or a values override
 # file excluded from version control.
 secrets:
@@ -81,7 +81,7 @@ ingress:
   enabled: false
   className: ""
   annotations: {}
-  host: soroban-pulse.example.com
+  host: stellarclassic-pulse.example.com
   tls: []
 
 autoscaling:

@@ -1,6 +1,6 @@
 # =============================================================================
 # Dev Environment — terraform.tfvars.example
-# SorobanPulse (Issue #833)
+# StellarClassicPulse (Issue #833)
 #
 # Copy to terraform.tfvars and fill in real values before applying.
 # NEVER commit terraform.tfvars — it may contain sensitive data.
@@ -11,7 +11,7 @@
 
 aws_region   = "us-east-1"
 environment  = "dev"
-project_name = "soroban-pulse"
+project_name = "stellarclassic-pulse"
 
 # ---------------------------------------------------------------------------
 # Networking — single AZ to minimize cost
@@ -28,7 +28,7 @@ single_nat_gateway   = true
 # ---------------------------------------------------------------------------
 db_instance_class               = "db.t3.micro"
 db_engine_version               = "16.3"
-db_name                         = "soroban_pulse_dev"
+db_name                         = "stellarclassic_pulse_dev"
 db_username                     = "soroban_admin"
 db_allocated_storage            = 20
 db_max_allocated_storage        = 50

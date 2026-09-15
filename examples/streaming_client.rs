@@ -1,4 +1,4 @@
-// Example client for consuming streaming JSON responses from SorobanPulse
+// Example client for consuming streaming JSON responses from StellarClassicPulse
 // This demonstrates best practices for handling large result sets
 
 use reqwest::Client;

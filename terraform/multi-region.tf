@@ -1,4 +1,4 @@
-# Multi-Region Deployment for SorobanPulse
+# Multi-Region Deployment for StellarClassicPulse
 
 locals {
   regions = {
@@ -9,8 +9,8 @@ locals {
 }
 
 # Primary Region Deployment
-module "soroban_pulse_us_east" {
-  source = "./modules/soroban-pulse"
+module "stellarclassic_pulse_us_east" {
+  source = "./modules/stellarclassic-pulse"
   
   region      = local.regions.primary
   environment = var.environment
@@ -31,8 +31,8 @@ module "soroban_pulse_us_east" {
 }
 
 # Europe Region Deployment
-module "soroban_pulse_eu_west" {
-  source = "./modules/soroban-pulse"
+module "stellarclassic_pulse_eu_west" {
+  source = "./modules/stellarclassic-pulse"
   
   region      = local.regions.secondary
   environment = var.environment
@@ -53,8 +53,8 @@ module "soroban_pulse_eu_west" {
 }
 
 # Asia-Pacific Region Deployment
-module "soroban_pulse_ap_southeast" {
-  source = "./modules/soroban-pulse"
+module "stellarclassic_pulse_ap_southeast" {
+  source = "./modules/stellarclassic-pulse"
   
   region      = local.regions.tertiary
   environment = var.environment
@@ -75,8 +75,8 @@ module "soroban_pulse_ap_southeast" {
 }
 
 # Global Accelerator for multi-region routing
-resource "aws_globalaccelerator_accelerator" "soroban_pulse" {
-  name            = "soroban-pulse-${var.environment}"
+resource "aws_globalaccelerator_accelerator" "stellarclassic_pulse" {
+  name            = "stellarclassic-pulse-${var.environment}"
   ip_address_type = "IPV4"
   enabled         = true
 
@@ -87,8 +87,8 @@ resource "aws_globalaccelerator_accelerator" "soroban_pulse" {
   }
 }
 
-resource "aws_globalaccelerator_listener" "soroban_pulse_https" {
-  accelerator_arn = aws_globalaccelerator_accelerator.soroban_pulse.id
+resource "aws_globalaccelerator_listener" "stellarclassic_pulse_https" {
+  accelerator_arn = aws_globalaccelerator_accelerator.stellarclassic_pulse.id
   protocol        = "TCP"
 
   port_range {
@@ -99,7 +99,7 @@ resource "aws_globalaccelerator_listener" "soroban_pulse_https" {
 
 # Endpoint groups for each region
 resource "aws_globalaccelerator_endpoint_group" "us_east" {
-  listener_arn = aws_globalaccelerator_listener.soroban_pulse_https.id
+  listener_arn = aws_globalaccelerator_listener.stellarclassic_pulse_https.id
   
   endpoint_group_region = local.regions.primary
   traffic_dial_percentage = 100
@@ -110,13 +110,13 @@ resource "aws_globalaccelerator_endpoint_group" "us_east" {
   threshold_count              = 3
 
   endpoint_configuration {
-    endpoint_id = module.soroban_pulse_us_east.load_balancer_arn
+    endpoint_id = module.stellarclassic_pulse_us_east.load_balancer_arn
     weight      = 128
   }
 }
 
 resource "aws_globalaccelerator_endpoint_group" "eu_west" {
-  listener_arn = aws_globalaccelerator_listener.soroban_pulse_https.id
+  listener_arn = aws_globalaccelerator_listener.stellarclassic_pulse_https.id
   
   endpoint_group_region = local.regions.secondary
   traffic_dial_percentage = 80
@@ -127,13 +127,13 @@ resource "aws_globalaccelerator_endpoint_group" "eu_west" {
   threshold_count              = 3
 
   endpoint_configuration {
-    endpoint_id = module.soroban_pulse_eu_west.load_balancer_arn
+    endpoint_id = module.stellarclassic_pulse_eu_west.load_balancer_arn
     weight      = 64
   }
 }
 
 resource "aws_globalaccelerator_endpoint_group" "ap_southeast" {
-  listener_arn = aws_globalaccelerator_listener.soroban_pulse_https.id
+  listener_arn = aws_globalaccelerator_listener.stellarclassic_pulse_https.id
   
   endpoint_group_region = local.regions.tertiary
   traffic_dial_percentage = 80
@@ -144,17 +144,17 @@ resource "aws_globalaccelerator_endpoint_group" "ap_southeast" {
   threshold_count              = 3
 
   endpoint_configuration {
-    endpoint_id = module.soroban_pulse_ap_southeast.load_balancer_arn
+    endpoint_id = module.stellarclassic_pulse_ap_southeast.load_balancer_arn
     weight      = 64
   }
 }
 
 output "global_accelerator_dns" {
-  value       = aws_globalaccelerator_accelerator.soroban_pulse.dns_name
+  value       = aws_globalaccelerator_accelerator.stellarclassic_pulse.dns_name
   description = "Global Accelerator DNS name"
 }
 
 output "global_accelerator_ips" {
-  value       = aws_globalaccelerator_accelerator.soroban_pulse.ip_sets[0].ip_addresses
+  value       = aws_globalaccelerator_accelerator.stellarclassic_pulse.ip_sets[0].ip_addresses
   description = "Global Accelerator static IPs"
 }

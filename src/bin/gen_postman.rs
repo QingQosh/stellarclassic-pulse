@@ -79,7 +79,7 @@ fn build_collection(spec: &Value) -> Value {
     let title = spec
         .pointer("/info/title")
         .and_then(Value::as_str)
-        .unwrap_or("Soroban Pulse API");
+        .unwrap_or("StellarClassic Pulse API");
     let description = spec
         .pointer("/info/description")
         .and_then(Value::as_str)
@@ -453,9 +453,9 @@ fn status_name(code: u16) -> &'static str {
 
 fn build_environments() -> Vec<(&'static str, Value)> {
     vec![
-        ("local",    build_env("Soroban Pulse — Local",    "http://localhost:3000")),
-        ("testnet",  build_env("Soroban Pulse — Testnet",  "https://api.testnet.sorobanpulse.io")),
-        ("mainnet",  build_env("Soroban Pulse — Mainnet",  "https://api.sorobanpulse.io")),
+        ("local",    build_env("StellarClassic Pulse — Local",    "http://localhost:3000")),
+        ("testnet",  build_env("StellarClassic Pulse — Testnet",  "https://api.testnet.stellarclassicpulse.io")),
+        ("mainnet",  build_env("StellarClassic Pulse — Mainnet",  "https://api.stellarclassicpulse.io")),
     ]
 }
 

@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS pagerduty_integrations (
     id                          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     subscription_id             UUID NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
     routing_key                 TEXT NOT NULL,
-    service_name                VARCHAR(255) NOT NULL DEFAULT 'Soroban Pulse',
+    service_name                VARCHAR(255) NOT NULL DEFAULT 'StellarClassic Pulse',
     -- PagerDuty REST API key for schedule/oncall lookups (optional)
     api_key                     TEXT,
     -- Optional escalation policy ID to attach when creating incidents

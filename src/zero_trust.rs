@@ -162,7 +162,7 @@ impl ApiKeySet {
     }
 
     /// Same as [`rotate`](Self::rotate), plus records a
-    /// `soroban_pulse_api_key_rotations_total` metric (Issue #939) — use
+    /// `stellarclassic_pulse_api_key_rotations_total` metric (Issue #939) — use
     /// this instead of `rotate()` directly at any real rotation call site
     /// so rotation events are observable. Kept as a separate method rather
     /// than folding the `metrics::counter!` call into `rotate()` itself so
@@ -170,7 +170,7 @@ impl ApiKeySet {
     /// state transition (see this module's own tests).
     pub fn rotate_with_metrics(&mut self, new_key: impl Into<String>) {
         self.rotate(new_key);
-        m::counter!("soroban_pulse_api_key_rotations_total").increment(1);
+        m::counter!("stellarclassic_pulse_api_key_rotations_total").increment(1);
     }
 
     /// Return `true` if a rotation has occurred within the last

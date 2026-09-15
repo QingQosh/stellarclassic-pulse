@@ -173,7 +173,7 @@ tests/
 // In src/metrics.rs
 pub fn record_webhook_delivery_latency(endpoint: &str, duration_ms: u64) {
     m::histogram!(
-        "soroban_pulse_webhook_delivery_latency_ms",
+        "stellarclassic_pulse_webhook_delivery_latency_ms",
         "endpoint" => endpoint.to_string(),
     ).record(duration_ms as f64);
 }

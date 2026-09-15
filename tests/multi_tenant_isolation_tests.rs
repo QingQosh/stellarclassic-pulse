@@ -21,7 +21,7 @@ use axum::{
     routing::get,
     Extension, Router,
 };
-use soroban_pulse::middleware::{
+use stellarclassic_pulse::middleware::{
     auth_middleware, hash_api_key, AuthState, TenantId,
 };
 use std::{

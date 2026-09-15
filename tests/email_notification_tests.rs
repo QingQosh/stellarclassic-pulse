@@ -1,6 +1,6 @@
 use serde_json::json;
-use soroban_pulse::email::EmailNotifier;
-use soroban_pulse::models::SorobanEvent;
+use stellarclassic_pulse::email::EmailNotifier;
+use stellarclassic_pulse::models::SorobanEvent;
 use tokio::sync::broadcast;
 
 fn mock_event(contract_id: &str, event_type: &str, ledger: u64) -> SorobanEvent {

@@ -269,7 +269,7 @@ pub enum LogOutputTarget {
 pub struct StructuredLogConfig {
     /// Output format: json or text.
     pub format: LogFormat,
-    /// `tracing` level filter string (e.g. "info", "soroban_pulse=debug").
+    /// `tracing` level filter string (e.g. "info", "stellarclassic_pulse=debug").
     pub level_filter: String,
     /// Where log output is directed.
     pub output_target: LogOutputTarget,
@@ -679,12 +679,12 @@ mod tests {
     fn structured_log_config_file_target() {
         std::env::remove_var("LOG_FORMAT");
         std::env::remove_var("LOG_LEVEL");
-        std::env::set_var("LOG_OUTPUT", "/var/log/soroban-pulse.log");
+        std::env::set_var("LOG_OUTPUT", "/var/log/stellarclassic-pulse.log");
 
         let config = StructuredLogConfig::from_env();
         assert_eq!(
             config.output_target,
-            LogOutputTarget::File("/var/log/soroban-pulse.log".to_string())
+            LogOutputTarget::File("/var/log/stellarclassic-pulse.log".to_string())
         );
 
         std::env::remove_var("LOG_OUTPUT");
@@ -693,11 +693,11 @@ mod tests {
     #[test]
     fn structured_log_config_custom_level() {
         std::env::remove_var("LOG_FORMAT");
-        std::env::set_var("LOG_LEVEL", "soroban_pulse=debug,tower_http=warn");
+        std::env::set_var("LOG_LEVEL", "stellarclassic_pulse=debug,tower_http=warn");
         std::env::remove_var("LOG_OUTPUT");
 
         let config = StructuredLogConfig::from_env();
-        assert_eq!(config.level_filter, "soroban_pulse=debug,tower_http=warn");
+        assert_eq!(config.level_filter, "stellarclassic_pulse=debug,tower_http=warn");
 
         std::env::remove_var("LOG_LEVEL");
     }

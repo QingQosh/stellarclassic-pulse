@@ -7,7 +7,7 @@
 //!   schema_cli doc <contract_id> <version> <schema.json>
 
 use serde_json::Value;
-use soroban_pulse::schema_validator::{
+use stellarclassic_pulse::schema_validator::{
     check_compatibility, document_schema, generate_test_data, CompatibilityMode,
 };
 use std::process::ExitCode;

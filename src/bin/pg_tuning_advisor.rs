@@ -1,13 +1,13 @@
 //! PostgreSQL configuration tuning advisor CLI (Issue #824).
 //!
 //! Prints a `postgresql.conf` snippet recommended for the given host profile,
-//! using the PGTune-style heuristics in `soroban_pulse::db_config_advisor`.
+//! using the PGTune-style heuristics in `stellarclassic_pulse::db_config_advisor`.
 //!
 //! Usage:
 //!   cargo run --bin pg_tuning_advisor -- --memory-mb 8192 --cpu-count 4 \
 //!       --max-connections 100 --ssd
 
-use soroban_pulse::db_config_advisor::{recommend_postgres_config, PgTuningInput};
+use stellarclassic_pulse::db_config_advisor::{recommend_postgres_config, PgTuningInput};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

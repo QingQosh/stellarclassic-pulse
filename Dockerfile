@@ -26,11 +26,11 @@ RUN apt-get update && apt-get install -y ca-certificates libssl3 curl && rm -rf 
     && groupadd --gid 10001 soroban && useradd --uid 10001 --gid soroban --no-create-home --shell /usr/sbin/nologin soroban
 
 WORKDIR /app
-COPY --from=builder --chown=soroban:soroban /app/target/release/soroban-pulse .
+COPY --from=builder --chown=soroban:soroban /app/target/release/stellarclassic-pulse .
 COPY --from=builder --chown=soroban:soroban /app/migrations ./migrations
 
 USER soroban:soroban
 EXPOSE 3000
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 \
   CMD curl -f http://localhost:3000/healthz/ready || exit 1
-CMD ["./soroban-pulse"]
+CMD ["./stellarclassic-pulse"]

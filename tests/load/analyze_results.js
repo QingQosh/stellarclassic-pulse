@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // tests/load/analyze_results.js
 //
-// Historical trend analysis and baseline promotion tool for Soroban Pulse load tests.
+// Historical trend analysis and baseline promotion tool for StellarClassic Pulse load tests.
 //
 // Subcommands:
 //   trend   <scenario> [--last N] [--db-size S] [--results-dir D]
@@ -392,7 +392,7 @@ function cmdPromote(args) {
 
 function printHelp() {
   console.log(`
-Soroban Pulse — load test result analysis tool (issue #811)
+StellarClassic Pulse — load test result analysis tool (issue #811)
 
 Usage:
   node tests/load/analyze_results.js <subcommand> [args] [options]

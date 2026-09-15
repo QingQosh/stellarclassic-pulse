@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-This specification outlines a comprehensive enhancement to SorobanPulse's webhook delivery system to address observability gaps, DLQ management, reliability concerns, and operational challenges. The work is organized into 5 major tracks with incremental, measurable deliverables.
+This specification outlines a comprehensive enhancement to StellarClassicPulse's webhook delivery system to address observability gaps, DLQ management, reliability concerns, and operational challenges. The work is organized into 5 major tracks with incremental, measurable deliverables.
 
 **Priority:** High — Affects 100% of webhook subscribers
 **Estimated Effort:** 15-20 story points (phased implementation)
@@ -44,21 +44,21 @@ Add Prometheus histogram for delivery latency:
 // In src/metrics.rs
 pub fn record_webhook_delivery_latency(endpoint: &str, duration_ms: u64) {
     m::histogram!(
-        "soroban_pulse_webhook_delivery_latency_ms",
+        "stellarclassic_pulse_webhook_delivery_latency_ms",
         "endpoint" => endpoint.to_string(),
     ).record(duration_ms as f64);
 }
 
 pub fn record_delivery_queue_depth(subscription_id: &str, count: i64) {
     m::gauge!(
-        "soroban_pulse_delivery_queue_depth",
+        "stellarclassic_pulse_delivery_queue_depth",
         "subscription_id" => subscription_id.to_string(),
     ).set(count as f64);
 }
 
 pub fn record_endpoint_health_status(endpoint: &str, status: &str) {
     m::gauge!(
-        "soroban_pulse_endpoint_health_status",
+        "stellarclassic_pulse_endpoint_health_status",
         "endpoint" => endpoint.to_string(),
         "status" => status.to_string(),
     ).set(1.0);
@@ -572,11 +572,11 @@ Create migration file: `migrations/20260728000001_webhook_delivery_improvements.
 ## 7. MONITORING POST-LAUNCH
 
 Track these metrics:
-- `soroban_pulse_webhook_delivery_latency_ms` — p50/p95/p99
-- `soroban_pulse_endpoint_health_status` — count by status
-- `soroban_pulse_delivery_queue_depth` — backlog per subscription
-- `soroban_pulse_dlq_backlog_alert` — trigger count
-- `soroban_pulse_circuit_breaker_state_changes` — opens/closes/recoveries
+- `stellarclassic_pulse_webhook_delivery_latency_ms` — p50/p95/p99
+- `stellarclassic_pulse_endpoint_health_status` — count by status
+- `stellarclassic_pulse_delivery_queue_depth` — backlog per subscription
+- `stellarclassic_pulse_dlq_backlog_alert` — trigger count
+- `stellarclassic_pulse_circuit_breaker_state_changes` — opens/closes/recoveries
 - Customer SLO attainment — percent > 99.5%
 
 ---

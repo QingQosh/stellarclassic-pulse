@@ -110,7 +110,7 @@ impl FeatureFlagWatcher {
     pub async fn run_once(&self) {
         if let Some(rate) = self.current_error_rate().await {
             extern crate metrics as m;
-            m::gauge!("soroban_pulse_feature_flag_error_rate").set(rate);
+            m::gauge!("stellarclassic_pulse_feature_flag_error_rate").set(rate);
 
             if rate > self.rollback_threshold {
                 self.rollback_enabled_flags(rate).await;

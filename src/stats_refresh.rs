@@ -60,7 +60,7 @@ async fn refresh_one(pool: &PgPool, view: &str) {
         Ok(_) => {
             let duration = start.elapsed();
             m::histogram!(
-                "soroban_pulse_matview_refresh_duration_seconds",
+                "stellarclassic_pulse_matview_refresh_duration_seconds",
                 "view" => view.to_string()
             )
             .record(duration.as_secs_f64());
@@ -68,7 +68,7 @@ async fn refresh_one(pool: &PgPool, view: &str) {
         }
         Err(ref e) if is_lock_timeout(e) => {
             m::counter!(
-                "soroban_pulse_matview_refresh_timeout_total",
+                "stellarclassic_pulse_matview_refresh_timeout_total",
                 "view" => view.to_string()
             )
             .increment(1);

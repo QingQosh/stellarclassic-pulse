@@ -58,7 +58,7 @@ impl Default for EventBridgeConfig {
         Self {
             event_bus_name: "default".to_string(),
             region: std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string()),
-            source: "soroban-pulse".to_string(),
+            source: "stellarclassic-pulse".to_string(),
             detail_type: "SorobanEvent".to_string(),
             event_pattern: None,
             rule_name: None,

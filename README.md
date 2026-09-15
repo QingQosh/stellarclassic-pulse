@@ -1,6 +1,6 @@
-# SorobanPulse Backend
+# StellarClassicPulse Backend
 
-The Rust core of SorobanPulse — a real-time event streaming and observability platform for Soroban smart contracts on the Stellar blockchain.
+The Rust core of StellarClassicPulse — a real-time event streaming and observability platform for Soroban smart contracts on the Stellar blockchain.
 
 ## What's in here
 
@@ -24,7 +24,7 @@ The Rust core of SorobanPulse — a real-time event streaming and observability 
 
 ## Related repo
 
-Client tooling (dashboard, CLI, SDKs, VS Code extension) lives in **[sorobanpulse-clients](../sorobanpulse-clients)**.
+Client tooling (dashboard, CLI, SDKs, VS Code extension) lives in **[stellarclassicpulse-clients](../stellarclassicpulse-clients)**.
 
 The dashboard and CLI both connect to this backend over HTTP (default port **3000**).
 

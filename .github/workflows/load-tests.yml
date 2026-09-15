@@ -29,7 +29,7 @@ on:
 
 env:
   BASE_URL: "http://localhost:3000"
-  DATABASE_URL: "postgres://postgres:postgres@localhost/soroban_pulse_test"
+  DATABASE_URL: "postgres://postgres:postgres@localhost/stellarclassic_pulse_test"
   STELLAR_RPC_URL: "http://localhost:8000"
 
 jobs:
@@ -52,13 +52,13 @@ jobs:
         id: build
         run: |
           cargo build --release
-          echo "binary_path=target/release/soroban-pulse" >> "$GITHUB_OUTPUT"
+          echo "binary_path=target/release/stellarclassic-pulse" >> "$GITHUB_OUTPUT"
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: soroban-pulse-binary
-          path: target/release/soroban-pulse
+          name: stellarclassic-pulse-binary
+          path: target/release/stellarclassic-pulse
           retention-days: 1
 
   # ── Steady-state baseline (events.js) ─────────────────────────────────────
@@ -72,7 +72,7 @@ jobs:
         image: postgres:15
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: soroban_pulse_test
+          POSTGRES_DB: stellarclassic_pulse_test
         ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready
@@ -86,11 +86,11 @@ jobs:
       - name: Download binary
         uses: actions/download-artifact@v4
         with:
-          name: soroban-pulse-binary
+          name: stellarclassic-pulse-binary
           path: target/release/
 
       - name: Make binary executable
-        run: chmod +x target/release/soroban-pulse
+        run: chmod +x target/release/stellarclassic-pulse
 
       - name: Install k6
         run: |
@@ -106,7 +106,7 @@ jobs:
 
       - name: Seed database
         run: |
-          PGPASSWORD=postgres psql -h localhost -U postgres soroban_pulse_test \
+          PGPASSWORD=postgres psql -h localhost -U postgres stellarclassic_pulse_test \
             -f tests/e2e/seed.sql || true
 
       - name: Start service
@@ -115,10 +115,10 @@ jobs:
           DATABASE_URL=$DATABASE_URL \
           STELLAR_RPC_URL=$STELLAR_RPC_URL \
           PORT=3000 \
-          nohup target/release/soroban-pulse &
+          nohup target/release/stellarclassic-pulse &
           echo $! > /tmp/service.pid
           sleep 5
-          curl -sf http://localhost:3000/healthz/ready || (cat /tmp/soroban-pulse.log; exit 1)
+          curl -sf http://localhost:3000/healthz/ready || (cat /tmp/stellarclassic-pulse.log; exit 1)
 
       - name: Run events steady-state load test
         run: |
@@ -164,7 +164,7 @@ jobs:
         image: postgres:15
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: soroban_pulse_test
+          POSTGRES_DB: stellarclassic_pulse_test
         ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready
@@ -178,10 +178,10 @@ jobs:
       - name: Download binary
         uses: actions/download-artifact@v4
         with:
-          name: soroban-pulse-binary
+          name: stellarclassic-pulse-binary
           path: target/release/
 
-      - run: chmod +x target/release/soroban-pulse
+      - run: chmod +x target/release/stellarclassic-pulse
 
       - name: Install k6
         run: |
@@ -195,12 +195,12 @@ jobs:
           sudo apt-get update && sudo apt-get install -y k6
 
       - name: Seed database
-        run: PGPASSWORD=postgres psql -h localhost -U postgres soroban_pulse_test -f tests/e2e/seed.sql || true
+        run: PGPASSWORD=postgres psql -h localhost -U postgres stellarclassic_pulse_test -f tests/e2e/seed.sql || true
 
       - name: Start service
         run: |
           RUST_LOG=warn DATABASE_URL=$DATABASE_URL STELLAR_RPC_URL=$STELLAR_RPC_URL PORT=3000 \
-          nohup target/release/soroban-pulse &
+          nohup target/release/stellarclassic-pulse &
           echo $! > /tmp/service.pid
           sleep 5
 
@@ -242,7 +242,7 @@ jobs:
         image: postgres:15
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: soroban_pulse_test
+          POSTGRES_DB: stellarclassic_pulse_test
         ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready
@@ -253,8 +253,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-        with: { name: soroban-pulse-binary, path: target/release/ }
-      - run: chmod +x target/release/soroban-pulse
+        with: { name: stellarclassic-pulse-binary, path: target/release/ }
+      - run: chmod +x target/release/stellarclassic-pulse
 
       - name: Install k6
         run: |
@@ -269,9 +269,9 @@ jobs:
 
       - name: Seed & start
         run: |
-          PGPASSWORD=postgres psql -h localhost -U postgres soroban_pulse_test -f tests/e2e/seed.sql || true
+          PGPASSWORD=postgres psql -h localhost -U postgres stellarclassic_pulse_test -f tests/e2e/seed.sql || true
           RUST_LOG=warn DATABASE_URL=$DATABASE_URL STELLAR_RPC_URL=$STELLAR_RPC_URL PORT=3000 \
-          nohup target/release/soroban-pulse &
+          nohup target/release/stellarclassic-pulse &
           echo $! > /tmp/service.pid && sleep 5
 
       - run: |
@@ -302,7 +302,7 @@ jobs:
         image: postgres:15
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: soroban_pulse_test
+          POSTGRES_DB: stellarclassic_pulse_test
         ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready
@@ -313,8 +313,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-        with: { name: soroban-pulse-binary, path: target/release/ }
-      - run: chmod +x target/release/soroban-pulse
+        with: { name: stellarclassic-pulse-binary, path: target/release/ }
+      - run: chmod +x target/release/stellarclassic-pulse
 
       - name: Install k6
         run: |
@@ -329,9 +329,9 @@ jobs:
 
       - name: Seed & start
         run: |
-          PGPASSWORD=postgres psql -h localhost -U postgres soroban_pulse_test -f tests/e2e/seed.sql || true
+          PGPASSWORD=postgres psql -h localhost -U postgres stellarclassic_pulse_test -f tests/e2e/seed.sql || true
           RUST_LOG=warn DATABASE_URL=$DATABASE_URL STELLAR_RPC_URL=$STELLAR_RPC_URL PORT=3000 \
-          nohup target/release/soroban-pulse &
+          nohup target/release/stellarclassic-pulse &
           echo $! > /tmp/service.pid && sleep 5
 
       - run: |
@@ -363,7 +363,7 @@ jobs:
         image: postgres:15
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: soroban_pulse_test
+          POSTGRES_DB: stellarclassic_pulse_test
         ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready
@@ -374,8 +374,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-        with: { name: soroban-pulse-binary, path: target/release/ }
-      - run: chmod +x target/release/soroban-pulse
+        with: { name: stellarclassic-pulse-binary, path: target/release/ }
+      - run: chmod +x target/release/stellarclassic-pulse
 
       - name: Install k6
         run: |
@@ -390,9 +390,9 @@ jobs:
 
       - name: Seed & start
         run: |
-          PGPASSWORD=postgres psql -h localhost -U postgres soroban_pulse_test -f tests/e2e/seed.sql || true
+          PGPASSWORD=postgres psql -h localhost -U postgres stellarclassic_pulse_test -f tests/e2e/seed.sql || true
           RUST_LOG=warn DATABASE_URL=$DATABASE_URL STELLAR_RPC_URL=$STELLAR_RPC_URL PORT=3000 \
-          nohup target/release/soroban-pulse &
+          nohup target/release/stellarclassic-pulse &
           echo $! > /tmp/service.pid && sleep 5
 
       - name: Run filter scenarios load test
@@ -436,7 +436,7 @@ jobs:
         image: postgres:15
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: soroban_pulse_test
+          POSTGRES_DB: stellarclassic_pulse_test
         ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready
@@ -447,8 +447,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-        with: { name: soroban-pulse-binary, path: target/release/ }
-      - run: chmod +x target/release/soroban-pulse
+        with: { name: stellarclassic-pulse-binary, path: target/release/ }
+      - run: chmod +x target/release/stellarclassic-pulse
 
       - name: Install k6
         run: |
@@ -463,9 +463,9 @@ jobs:
 
       - name: Seed & start
         run: |
-          PGPASSWORD=postgres psql -h localhost -U postgres soroban_pulse_test -f tests/e2e/seed.sql || true
+          PGPASSWORD=postgres psql -h localhost -U postgres stellarclassic_pulse_test -f tests/e2e/seed.sql || true
           RUST_LOG=warn DATABASE_URL=$DATABASE_URL STELLAR_RPC_URL=$STELLAR_RPC_URL PORT=3000 \
-          nohup target/release/soroban-pulse &
+          nohup target/release/stellarclassic-pulse &
           echo $! > /tmp/service.pid && sleep 5
 
       - name: Run soak test

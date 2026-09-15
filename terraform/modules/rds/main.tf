@@ -25,7 +25,7 @@ resource "random_password" "db" {
 
 resource "aws_secretsmanager_secret" "db" {
   name                    = "${var.name_prefix}/rds/credentials"
-  description             = "SorobanPulse RDS master credentials for ${var.name_prefix}."
+  description             = "StellarClassicPulse RDS master credentials for ${var.name_prefix}."
   recovery_window_in_days = 7
 
   tags = {

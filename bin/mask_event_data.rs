@@ -27,7 +27,7 @@ struct DataMasker {
 impl DataMasker {
     fn new(seed: Option<String>) -> Self {
         Self {
-            seed: seed.unwrap_or_else(|| "sorobanpulse-masking-salt-2024".to_string()),
+            seed: seed.unwrap_or_else(|| "stellarclassicpulse-masking-salt-2024".to_string()),
         }
     }
 

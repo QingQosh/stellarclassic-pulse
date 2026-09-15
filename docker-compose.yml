@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-soroban}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-soroban}
-      POSTGRES_DB: ${POSTGRES_DB:-soroban_pulse}
+      POSTGRES_DB: ${POSTGRES_DB:-stellarclassic_pulse}
     ports:
       - "5432:5432"
     volumes:
@@ -21,7 +21,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgres://soroban:soroban@db:5432/soroban_pulse}
+      DATABASE_URL: ${DATABASE_URL:-postgres://soroban:soroban@db:5432/stellarclassic_pulse}
       STELLAR_RPC_URL: ${STELLAR_RPC_URL:-https://soroban-testnet.stellar.org}
       START_LEDGER: ${START_LEDGER:-0}
       PORT: ${PORT:-3000}
@@ -62,7 +62,7 @@ services:
     volumes:
       - grafanadata:/var/lib/grafana
       - ./docs/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./docs/grafana-dashboard.json:/var/lib/grafana/dashboards/soroban-pulse-sla.json:ro
+      - ./docs/grafana-dashboard.json:/var/lib/grafana/dashboards/stellarclassic-pulse-sla.json:ro
     depends_on:
       - prometheus
 

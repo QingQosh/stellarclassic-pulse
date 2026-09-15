@@ -1,7 +1,7 @@
 //! Cryptographic Strength Verification Tests
 //!
 //! Verifies the security properties of every cryptographic primitive used by
-//! SorobanPulse:
+//! StellarClassicPulse:
 //!
 //! - HMAC-SHA256 request signing (zero-trust layer)
 //! - API key hashing (SHA-256)
@@ -14,8 +14,8 @@
 use chrono::{Duration, Utc};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use soroban_pulse::middleware::auth::{hash_api_key, key_matches_any};
-use soroban_pulse::zero_trust::{ApiKeySet, RequestSignature};
+use stellarclassic_pulse::middleware::auth::{hash_api_key, key_matches_any};
+use stellarclassic_pulse::zero_trust::{ApiKeySet, RequestSignature};
 
 type HmacSha256 = Hmac<Sha256>;
 

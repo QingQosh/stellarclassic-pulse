@@ -809,7 +809,7 @@ pub async fn run_email_delivery_worker(pool: PgPool) {
         .unwrap_or(587);
     let smtp_user = std::env::var("EMAIL_SMTP_USER").ok();
     let smtp_pass = std::env::var("EMAIL_SMTP_PASSWORD").ok();
-    let from = std::env::var("EMAIL_FROM").unwrap_or_else(|_| "noreply@soroban-pulse".to_string());
+    let from = std::env::var("EMAIL_FROM").unwrap_or_else(|_| "noreply@stellarclassic-pulse".to_string());
 
     if smtp_host.is_empty() {
         tracing::info!("EMAIL_SMTP_HOST not set — subscription email worker disabled");
