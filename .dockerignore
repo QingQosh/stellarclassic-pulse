@@ -6,3 +6,9 @@ tests/
 docs/
 **/__pycache__/
 **/*.rs.bk
+
+# StellarClassic Pulse specific
+.env.production*
+.env.staging*
+target/
+*.log
