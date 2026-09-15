@@ -6,7 +6,7 @@ labels: bug
 
 ## Describe the bug
 
-<!-- A clear description of what the bug is. -->
+<!-- A clear and concise description of what the bug is. -->
 
 ## Steps to reproduce
 
@@ -27,3 +27,8 @@ labels: bug
 - OS:
 - Rust version (`rustc --version`):
 - Service version / commit:
+- Deployment method (Docker / binary / k8s):
+
+## Additional context
+
+<!-- Anything else that might help — screenshots, config snippets (no secrets). -->
