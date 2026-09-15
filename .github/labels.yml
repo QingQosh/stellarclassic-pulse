@@ -1,0 +1,35 @@
+- name: drips-wave
+  color: "7B5EA7"
+  description: Issue is part of the Drips Stellar Wave Program
+
+- name: good first issue
+  color: "7057ff"
+  description: Good for newcomers
+
+- name: help wanted
+  color: "008672"
+  description: Extra attention is needed
+
+- name: priority:high
+  color: "e11d48"
+  description: High priority issue
+
+- name: priority:medium
+  color: "f97316"
+  description: Medium priority issue
+
+- name: priority:low
+  color: "84cc16"
+  description: Low priority issue
+
+- name: complexity:low
+  color: "bbf7d0"
+  description: Low complexity — straightforward change
+
+- name: complexity:medium
+  color: "fef08a"
+  description: Medium complexity
+
+- name: complexity:high
+  color: "fecaca"
+  description: High complexity — significant design decisions
