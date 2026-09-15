@@ -11,3 +11,7 @@ too-many-arguments-threshold = 8
 
 # Allow long functions in integration-heavy modules (e.g. handlers, indexer).
 too-many-lines-threshold = 120
+
+# StellarClassic Pulse specific lints
+avoid-breaking-exported-api = false
+msrv = "1.75.0"
